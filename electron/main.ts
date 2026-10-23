@@ -1,0 +1,721 @@
+import { app, BrowserWindow, ipcMain, shell, protocol, net } from 'electron';
+import path from 'path';
+import * as db from './db';
+import * as arxiv from './arxiv';
+import * as llm from './llm';
+import * as gh from './github-bridge';
+import * as insights from './insights';
+import fs from 'fs';
+
+let win: BrowserWindow | null = null;
+
+// 在途任务注册表（取消 + 退出清理）
+const activeAbort = new Set<AbortController>();
+
+// 自定义协议必须在 app ready 之前注册 scheme
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'local-figure', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  { scheme: 'local-pdf', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+]);
+
+function createWindow() {
+  win = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 960,
+    minHeight: 640,
+    title: 'Paper Reader',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  if (process.env.VITE_DEV_SERVER_URL) {
+    win.loadURL(process.env.VITE_DEV_SERVER_URL);
+  } else {
+    win.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+}
+
+app.whenReady().then(async () => {
+  protocol.handle('local-figure', (request) => {
+    const url = request.url.replace(/^local-figure:\/\//, '');
+    // url 形如 <paperId>/fig-N.ext；规范化 + 防目录穿越
+    const safe = path.normalize(decodeURIComponent(url)).replace(/^([.]{2}[\/\\])+/, '');
+    const filePath = path.join(app.getPath('userData'), 'figures', safe);
+    return net.fetch('file:///' + filePath.replace(/\\/g, '/'));
+  });
+  // PDF：local-pdf://p/<paperId> → userData/pdfs/<paperId>.pdf
+  // 注意：纯数字 host 会被 URL 解析成 IPv4（local-pdf://2 → 0.0.0.2），故用 path 段承载 id
+  protocol.handle('local-pdf', (request) => {
+    const u = new URL(request.url);
+    const id = u.pathname.replace(/\/+/g, '').split('/')[0] || u.hostname;
+    const safe = path.basename(decodeURIComponent(id)); // 只留文件名防穿越
+    const filePath = path.join(app.getPath('userData'), 'pdfs', `${safe}.pdf`);
+    return net.fetch('file:///' + filePath.replace(/\\/g, '/'));
+  });
+  // E2E 模式：加载测试脚本不创建窗口
+  if (process.env.PR_E2E) {
+    require(path.join(__dirname, 'e2e-entry.js'));
+    return;
+  }
+  if (process.env.PR_PDF_E2E) {
+    // 完整链路（dev 有 dist-electron/pdf-e2e-entry.js）；打包版走内联冒烟
+    const entry = path.join(__dirname, 'pdf-e2e-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
+    // 打包版内联冒烟：asar 内 pdfjs 可导入 + 能解析真实 PDF（测试脚本预放）
+    const logFile = process.env.PR_E2E_LOG!;
+    const doneFile = process.env.PR_E2E_DONE!;
+    const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
+    try {
+      if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
+      await app.whenReady();
+      log('== packaged pdf check ==');
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      log('import pdf.mjs: PASS');
+      const workerMod = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+      (globalThis as any).pdfjsWorker = workerMod;
+      log('import pdf.worker.mjs: PASS');
+      const pdfPath = path.join(app.getPath('userData'), 'pdfs', '1.pdf');
+      if (!fs.existsSync(pdfPath)) { log(`FATAL: pdf not found at ${pdfPath}`); }
+      else {
+        const data = new Uint8Array(fs.readFileSync(pdfPath));
+        const doc = await pdfjs.getDocument({ data, useSystemFonts: true }).promise;
+        log(`getDocument: PASS (${doc.numPages} pages)`);
+        const tc = await doc.getPage(1).then(pg => pg.getTextContent());
+        const text = tc.items.map((it: any) => it.str).join(' ').slice(0, 60);
+        log(`getTextContent: PASS (${text.replace(/\n/g, ' ')})`);
+        log('E2E ALL PASS');
+      }
+    } catch (e: any) {
+      log(`FATAL: ${e?.stack ?? e}`);
+    } finally {
+      fs.writeFileSync(doneFile, '1');
+      app.quit();
+    }
+    return;
+  }
+  if (process.env.PR_PDF_UI_E2E) {
+    // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议）
+    const win = new BrowserWindow({
+      width: 1400, height: 900, show: true,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+    });
+    registerIpc();
+    const logFile = process.env.PR_E2E_LOG!;
+    const doneFile = process.env.PR_E2E_DONE!;
+    const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
+    try {
+      win.webContents.on('did-finish-load', async () => {
+        await new Promise(r => setTimeout(r, 1200));
+        const html = fs.readFileSync(path.resolve('tests/fixtures/2609.34683.html'), 'utf8');
+        const parsed = arxiv.parseArxivHtml(html, '2609.34683');
+        const paperId = db.insertPaper({ arxivId: '2609.34683', title: parsed.title, authors: parsed.authors, sourceUrl: '', importType: 'html' });
+        db.insertBlocks(paperId, parsed.blocks);
+        log(`import: PASS (paper ${paperId}, ${parsed.blocks.length} blocks)`);
+
+        const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
+        fs.mkdirSync(pdfsDir, { recursive: true });
+        const seed = path.resolve('build/test-paper.pdf');
+        if (fs.existsSync(seed)) fs.copyFileSync(seed, path.join(pdfsDir, `${paperId}.pdf`));
+        log(`pdf seeded: ${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`)) ? 'PASS' : 'FAIL'}`);
+
+        await win.webContents.executeJavaScript(`
+          window.__store.getState().openPaper(${paperId}).then(() => {
+            window.__store.getState().setLayout('pdf-dual');
+          })
+        `);
+        await new Promise(r => setTimeout(r, 5000));
+
+        const stats: any = await win.webContents.executeJavaScript(`
+          (() => {
+            const canvases = document.querySelectorAll('.pdf-page canvas');
+            const pages = document.querySelectorAll('.pdf-page');
+            const tp = document.querySelectorAll('.tp-page');
+            const badge = document.querySelector('.pdf-page-badge');
+            const err = document.querySelector('.pdf-error');
+            const loading = document.querySelector('.pdf-view > .pdf-loading, .pdf-pane > .pdf-loading');
+            return { canvases: canvases.length, pages: pages.length, tpPages: tp.length, badge: badge?.textContent ?? null,
+                     firstCanvasW: canvases[0]?.width ?? 0,
+                     errText: err?.textContent?.slice(0, 160) ?? null,
+                     loadingText: loading?.textContent ?? null };
+          })()
+        `);
+        log(`pdf view: canvases=${stats.canvases}/${stats.pages} pages, tpPages=${stats.tpPages}, badge=${JSON.stringify(stats.badge)}`);
+        if (stats.errText) log(`pdf error text: ${stats.errText}`);
+        if (stats.loadingText) log(`pdf loading text: ${stats.loadingText}`);
+        log(`canvas rendered: ${stats.canvases >= 1 && stats.firstCanvasW > 300 ? 'PASS' : 'FAIL'}`);
+        log(`translated panel: ${stats.tpPages >= 1 ? 'PASS' : 'FAIL'}`);
+
+        const img = await win.webContents.capturePage();
+        fs.mkdirSync(path.resolve('build'), { recursive: true });
+        fs.writeFileSync(path.resolve('build/pdf-ui-e2e.png'), img.toPNG());
+        log('screenshot saved');
+        const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300 && stats.tpPages >= 1;
+        if (allPass) log('E2E ALL PASS');
+        else log('E2E FAIL (see above)');
+        fs.writeFileSync(doneFile, '1');
+        app.quit();
+      });
+      const url = process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199';
+      await win.loadURL(url);
+    } catch (e: any) {
+      log(`FATAL: ${e?.stack ?? e}`);
+      fs.writeFileSync(doneFile, '1');
+      app.quit();
+    }
+    return;
+  }
+  if (process.env.PR_SOAK) {
+    require(path.join(__dirname, 'soak-entry.js'));
+    return;
+  }
+  createWindow();
+  registerIpc();
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+// 退出前取消所有在途请求
+app.on('before-quit', () => {
+  for (const ctl of activeAbort) { try { ctl.abort(); } catch {} }
+});
+
+// ==================== IPC 基础设施 ====================
+// 统一错误结构：{ok, error, hint}
+type Handler = (e: Electron.IpcMainInvokeEvent, ...args: any[]) => any;
+
+function wrap(name: string, fn: Handler) {
+  ipcMain.handle(name, async (e, ...args) => {
+    try {
+      return { ok: true, data: await fn(e, ...args) };
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message ?? err).replace(/^Error:\s*/, ''), hint: err?.hint ?? '' };
+    }
+  });
+}
+
+function send(channel: string, payload: any) {
+  win?.webContents.send(channel, payload);
+}
+
+// ==================== IPC ====================
+function registerIpc() {
+  // ---------- papers ----------
+  wrap('papers:list', () => db.listPapers());
+  wrap('papers:get', (_e, id: number) => { db.touchPaper(id); return db.getPaper(id); });
+  wrap('papers:delete', (_e, id: number) => { db.deletePaper(id); return true; });
+  wrap('papers:getBlocks', (_e, id: number) => db.getBlocks(id));
+
+  wrap('papers:importArxiv', async (_e, input: string) => {
+    const id = arxiv.normalizeArxivId(input);
+    if (!id) throw new Error('无法识别 arXiv ID（形如 2609.34683 或完整 URL）');
+    const paperId = await importPaperCore(id, 'html');
+    return { paperId, count: (db.getBlocks(paperId) as any[]).length };
+  });
+
+  wrap('papers:importText', (_e, arg: { arxivId: string; title: string; text: string }) => {
+    const parsed = arxiv.parsePlainText(arg.text, arg.arxivId, arg.title);
+    const paperId = db.insertPaper({
+      arxivId: arg.arxivId, title: arg.title || arg.arxivId, authors: '',
+      sourceUrl: `https://arxiv.org/abs/${arg.arxivId}`, importType: 'text',
+    });
+    db.insertBlocks(paperId, parsed.blocks);
+    return { paperId, count: parsed.blocks.length };
+  });
+
+  // 导入串行队列（防 SQLite 写锁）
+  let importChain: Promise<any> = Promise.resolve();
+  function importPaperCore(arxivId: string, _mode: string): Promise<number> {
+    const task = importChain.then(async () => {
+      const parsed = await arxiv.fetchAndParse(arxivId);
+      const paperId = db.insertPaper({
+        arxivId, title: parsed.title, authors: parsed.authors,
+        sourceUrl: `https://arxiv.org/abs/${arxivId}`, importType: parsed.importType,
+      });
+      db.insertBlocks(paperId, parsed.blocks);
+
+      // 图表下载（不阻塞导入返回——后台跑）
+      downloadFiguresFor(paperId, arxivId).catch(() => {});
+      // Triage 摘要后台生成
+      generateTriageInBackground(paperId).catch(() => {});
+      // PDF 后台下载（原版视图用）
+      downloadPdfFor(paperId, arxivId).catch(() => {});
+      return paperId;
+    });
+    importChain = task.catch(() => {});
+    return task;
+  }
+
+  // ---------- PDF 支撑 ----------
+  const pdfJobs = new Set<number>();
+  async function downloadPdfFor(paperId: number, arxivId: string): Promise<boolean> {
+    if (pdfJobs.has(paperId)) return false;
+    pdfJobs.add(paperId);
+    try {
+      const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
+      fs.mkdirSync(pdfsDir, { recursive: true });
+      const dest = path.join(pdfsDir, `${paperId}.pdf`);
+      if (fs.existsSync(dest) && fs.statSync(dest).size > 10000) return true;
+      const resp = await fetch(`https://arxiv.org/pdf/${arxivId}`, { signal: AbortSignal.timeout(90000) });
+      if (!resp.ok) return false;
+      const buf = Buffer.from(await resp.arrayBuffer());
+      if (buf.length < 10000 || buf.slice(0, 4).toString() !== '%PDF') return false;
+      fs.writeFileSync(dest, buf);
+      send('pdf:ready', { paperId });
+      return true;
+    } catch { return false; } finally { pdfJobs.delete(paperId); }
+  }
+
+  // 确保论文 PDF 存在（返回是否存在）
+  wrap('pdf:ensure', async (_e, paperId: number) => {
+    const paper = db.getPaper(paperId) as any;
+    if (!paper?.arxiv_id) return { exists: false };
+    const dest = path.join(app.getPath('userData'), 'pdfs', `${paperId}.pdf`);
+    if (fs.existsSync(dest) && fs.statSync(dest).size > 10000) return { exists: true };
+    // 后台下载不等待（首次导入已在 importPaperCore 里触发）
+    const exists = await downloadPdfFor(paperId, paper.arxiv_id);
+    return { exists };
+  });
+
+  wrap('pdf:onReady', (_e, cb: any) => cb); // 占位（渲染层用事件订阅，见 preload）
+
+  // 页面对齐：解析 PDF 文本层，为每个 block 定位页码
+  wrap('pdf:pageMap', async (_e, paperId: number) => {
+    const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
+    const pdfPath = path.join(pdfsDir, `${paperId}.pdf`);
+    if (!fs.existsSync(pdfPath)) return { exists: false, map: {} };
+    try {
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      const workerMod = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+      (globalThis as any).pdfjsWorker = workerMod;
+      const doc = await pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(pdfPath)), useSystemFonts: true }).promise;
+      const pageTexts: string[] = [];
+      for (let p = 1; p <= doc.numPages; p++) {
+        const tc = await doc.getPage(p).then(pg => pg.getTextContent());
+        pageTexts.push(tc.items.map((it: any) => it.str).join(' ').replace(/\s+/g, ' '));
+      }
+      const blocks = db.getBlocks(paperId) as any[];
+      const map: Record<number, number> = {};
+      let pageCursor = 0;
+      for (const b of blocks) {
+        if (b.type === 'fig') { map[b.pid] = pageCursor + 1; continue; }
+        const needle = b.en.replace(/\$[^$]*\$/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+        if (!needle) { map[b.pid] = pageCursor + 1; continue; }
+        // 从当前页向后找（文档顺序假设）
+        let found = -1;
+        for (let p = pageCursor; p < pageTexts.length; p++) {
+          if (pageTexts[p].includes(needle)) { found = p; break; }
+        }
+        if (found === -1) {
+          // 全文兜底
+          for (let p = 0; p < pageTexts.length; p++) {
+            if (pageTexts[p].includes(needle)) { found = p; break; }
+          }
+        }
+        if (found >= 0) { pageCursor = found; map[b.pid] = found + 1; }
+        else map[b.pid] = pageCursor + 1;
+      }
+      return { exists: true, numPages: doc.numPages, map };
+    } catch (e) {
+      return { exists: true, map: {}, error: String(e) };
+    }
+  });
+
+  async function downloadFiguresFor(paperId: number, arxivId: string) {
+    // 重新拉 HTML 找图（fetchAndParse 没保留原始 html——用 blocks 里 figPath 的远端 URL 直接下）
+    const blocks = db.getBlocks(paperId) as any[];
+    const fsMod = await import('fs');
+    const figuresDir = path.join(app.getPath('userData'), 'figures', String(paperId));
+    fsMod.mkdirSync(figuresDir, { recursive: true });
+    let i = 0;
+    const stmt = db.getDb().prepare('UPDATE blocks SET fig_path=? WHERE pid=?');
+    for (const b of blocks) {
+      if (b.type !== 'fig' || !b.fig_path) continue;
+      i++;
+      const url = b.fig_path;
+      const ext = (url.match(/\.(svg|png|jpg|jpeg|gif)$/i) || [, 'png'])[1];
+      const fname = `fig-${i}.${ext}`;
+      try {
+        const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
+        if (!resp.ok) continue;
+        const buf = Buffer.from(await resp.arrayBuffer());
+        fsMod.writeFileSync(path.join(figuresDir, fname), buf);
+        stmt.run(`${paperId}/${fname}`, b.pid);
+        send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
+      } catch { /* 单图失败跳过 */ }
+    }
+  }
+
+  function generateTriageInBackground(paperId: number) {
+    const provider = getDefaultProvider();
+    if (!provider) return Promise.resolve(); // 未配置 provider 则跳过
+    const blocks = db.getBlocks(paperId) as any[];
+    const paper = db.getPaper(paperId) as any;
+    const abstract = blocks.find(b => /abstract/i.test(b.en) && b.type === 'heading')
+      ? (blocks[blocks.findIndex(b => /abstract/i.test(b.en))]?.en ?? '')
+      : blocks.slice(0, 3).map(b => b.en).join(' ');
+    const bodySample = blocks.filter(b => b.type === 'para').slice(0, 10).map(b => b.en).join('\n').slice(0, 4000);
+    const knownTitles = (db.listPapers() as any[]).filter(p => p.id !== paperId).map(p => p.title).slice(0, 20);
+    return insights.genTriageSummary(provider, paper.title, paper.authors ?? '', abstract, bodySample, knownTitles)
+      .then(s => {
+        db.saveSummary(paperId, JSON.stringify(s), '', provider.name, provider.model);
+        send('summary:ready', { paperId, summary: s });
+      })
+      .catch(() => { /* 摘要失败不打扰 */ });
+  }
+
+  // ---------- summaries ----------
+  wrap('summary:get', (_e, paperId: number) => db.getSummary(paperId));
+  wrap('summary:regen', async (_e, paperId: number) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider');
+    await generateTriageInBackground(paperId);
+    return db.getSummary(paperId);
+  });
+
+  // 分节通读摘要
+  wrap('summary:sections', async (_e, paperId: number) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider');
+    const existing = db.getSummary(paperId) as any;
+    if (existing?.section_summaries) return JSON.parse(existing.section_summaries);
+    const blocks = db.getBlocks(paperId) as any[];
+    // 按 heading 分组
+    const sections: Array<{ heading: string; text: string }> = [];
+    let cur: { heading: string; text: string } | null = null;
+    for (const b of blocks) {
+      if (b.type === 'heading') {
+        if (cur) sections.push(cur);
+        cur = { heading: b.en, text: '' };
+      } else if (cur && b.type === 'para') {
+        cur.text += b.en + '\n';
+      }
+    }
+    if (cur) sections.push(cur);
+    const result = await insights.genSectionSummaries(provider, sections);
+    const packed = JSON.stringify(result);
+    const old = db.getSummary(paperId) as any;
+    db.saveSummary(paperId, old?.summary ?? '', packed, provider.name, provider.model);
+    return result;
+  });
+
+  // ---------- translations ----------
+  wrap('tr:save', (_e, a: { paperId: number; pid: number; zh: string; provider: string; model: string }) => {
+    db.saveTranslation(a.paperId, a.pid, a.zh, a.provider, a.model);
+    return true;
+  });
+
+  // 批量翻译（带取消）
+  const trAbort = new Map<number, AbortController>(); // paperId → ctl
+  wrap('tr:translateAll', async (e, arg: {
+    paperId: number; blocks: Array<{ pid: number; en: string }>; scope: 'untranslated' | 'all';
+  }) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider，请先到设置页添加');
+    const ctl = new AbortController();
+    trAbort.set(arg.paperId, ctl);
+    activeAbort.add(ctl);
+    const glossary = loadGlossaryForTranslation();
+    const concurrency = 3;
+    let done = 0;
+    let cancelled = false;
+    const queue = [...arg.blocks];
+    const providerCfg = provider;
+
+    async function worker() {
+      for (;;) {
+        if (cancelled || ctl.signal.aborted) return;
+        const item = queue.shift();
+        if (!item) return;
+        const zh = await translateBlock(providerCfg, item.en, glossary, ctl.signal);
+        done++;
+        if (zh.ok) {
+          db.saveTranslation(arg.paperId, item.pid, zh.text!, providerCfg.name, providerCfg.model);
+          e.sender.send('tr:progress', { pid: item.pid, zh: zh.text, done, total: arg.blocks.length });
+        } else {
+          e.sender.send('tr:progress', { pid: item.pid, err: zh.err, done, total: arg.blocks.length });
+        }
+      }
+    }
+    try {
+      await Promise.all(Array.from({ length: concurrency }, worker));
+    } finally {
+      trAbort.delete(arg.paperId);
+      activeAbort.delete(ctl);
+    }
+    return { cancelled, done };
+  });
+
+  wrap('tr:cancel', (_e, paperId: number) => {
+    trAbort.get(paperId)?.abort();
+    return true;
+  });
+
+  function translateBlock(
+    provider: llm.ProviderConfig, en: string, glossary: string, signal?: AbortSignal
+  ): Promise<{ ok: boolean; text?: string; err?: string }> {
+    return new Promise((resolve) => {
+      let acc = '';
+      llm.chatStream(provider, [
+        { role: 'system', content: `你是专业的 AI/ML 论文翻译。把英文段落翻译成流畅的中文，要求：
+1. 术语保留英文（如 KV cache、prefill、speculative decoding）
+2. 数学公式（$...$ 或 $$...$$）原样保留，绝对不要改动公式内容
+3. 只输出译文，不要任何解释或前缀
+4. 严格保持原文的段落结构：一段对一段，不要合并或拆分段落；图表标题（Table/Figure caption）译为「表 N：…」「图 N：…」保持编号
+${glossary}` },
+        { role: 'user', content: en },
+      ], {
+        onDelta: (d) => { acc += d; },
+        onDone: (full) => resolve({ ok: true, text: (full || acc).trim() }),
+        onError: (err) => resolve({ ok: false, err }),
+      }, { temperature: 0.2, maxTokens: 2048, signal });
+    });
+  }
+
+  function loadGlossaryForTranslation(): string {
+    const root = gh.getRepoRoot();
+    if (!root) return '';
+    const terms = gh.loadGlossary(root).filter(t => t.level === 'learning' || t.level === 'unknown');
+    if (!terms.length) return '';
+    const lines = terms.slice(0, 120).map(t => `- ${t.term}: ${t.explain}`);
+    return `\n术语表（这些术语已有既定解释，翻译时保持一致）：\n${lines.join('\n')}`;
+  }
+
+  // 术语一致性校验
+  wrap('tr:checkTerms', async (_e, paperId: number) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider');
+    const root = gh.getRepoRoot();
+    const glossary = root ? gh.loadGlossary(root) : [];
+    const blocks = db.getBlocks(paperId) as any[];
+    const translated = blocks.filter((b: any) => b.zh && b.type === 'para').map((b: any) => ({ pid: b.pid, en: b.en, zh: b.zh }));
+    return insights.checkTermConsistency(provider, translated, glossary);
+  });
+
+  // ---------- highlights & QA ----------
+  wrap('hl:add', (_e, h: { paperId: number; pid: number; textEn: string; note?: string; color?: string }) => db.addHighlight(h));
+  wrap('hl:list', (_e, paperId: number) => db.listHighlights(paperId));
+  wrap('hl:remove', (_e, id: number) => { db.removeHighlight(id); return true; });
+
+  wrap('qa:ask', async (e, arg: {
+    paperId: number; pid: number; question: string; context: string; highlightId?: number;
+  }) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider，请先到设置页添加');
+    const qaId = db.addQa({ paperId: arg.paperId, highlightId: arg.highlightId, pid: arg.pid, question: arg.question, answer: '', provider: provider.name, model: provider.model });
+    const ch = `qa:stream:${qaId}`;
+    const ctl = new AbortController();
+    activeAbort.add(ctl);
+    let acc = '';
+    await llm.chatStream(provider, [
+      { role: 'system', content: `你是论文阅读助手。用中文回答。
+规则：
+1. 先直接回答问题，再补充细节
+2. 回答依据论文上下文，不编造论文没有的内容
+3. 引用依据时标注段落位置，格式【段落 #N】（N 是上下文中标注的段号）
+4. 术语保留英文` },
+      { role: 'user', content: arg.context },
+      { role: 'user', content: `我的问题：${arg.question}` },
+    ], {
+      onDelta: (d) => { acc += d; e.sender.send(ch, { delta: d }); },
+      onDone: (full) => {
+        const answer = (full || acc).trim();
+        db.getDb().prepare('UPDATE qa_pairs SET answer=? WHERE id=?').run(answer, qaId);
+        e.sender.send(ch, { done: true });
+      },
+      onError: (err) => e.sender.send(ch, { error: err }),
+    }, { temperature: 0.4, maxTokens: 4096, signal: ctl.signal }).finally(() => activeAbort.delete(ctl));
+    return qaId;
+  });
+
+  wrap('qa:list', (_e, paperId: number) => db.listQa(paperId));
+
+  // ---------- flashcards ----------
+  wrap('fc:save', (_e, f: { paperId: number; pid: number; front: string; back: string }) => db.addFlashcard(f));
+  wrap('fc:updateBack', (_e, id: number, back: string) => { db.updateFlashcardBack(id, back); return true; });
+  wrap('fc:listDue', () => db.listDueFlashcards());
+  wrap('fc:grade', (_e, id: number, q: number) => { db.gradeFlashcard(id, q); return true; });
+  // AI 补闪卡答案
+  wrap('fc:genBack', async (_e, f: { paperId: number; pid: number; front: string; id: number }) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider');
+    const blocks = db.getBlocks(f.paperId) as any[];
+    const idx = blocks.findIndex(b => b.pid === f.pid);
+    const ctx = blocks.slice(Math.max(0, idx - 1), idx + 2).map(b => b.en).join('\n').slice(0, 3000);
+    const back = await insights.chatOnce(provider, [
+      { role: 'system', content: '为这张论文闪卡生成简短答案（中文 2-4 句，术语保留英文）。只输出答案。' },
+      { role: 'user', content: `卡片正面（问题/术语）：${f.front}\n\n论文上下文：\n${ctx}` },
+    ], 512);
+    db.updateFlashcardBack(f.id, back);
+    return back;
+  });
+
+  // ---------- providers ----------
+  wrap('pv:list', () => {
+    const rows = db.getDb().prepare('SELECT * FROM providers ORDER BY id').all() as any[];
+    return rows.map(r => ({ ...r, api_key: maskKey(llm.decryptSecret(r.api_key)) }));
+  });
+  wrap('pv:save', (_e, p: { id?: number; name: string; protocol: 'openai' | 'anthropic'; baseUrl: string; apiKey: string; model: string; isDefault: boolean; existingEncrypted?: string }) => {
+    const d = db.getDb();
+    const keyEnc = p.apiKey ? llm.encryptSecret(p.apiKey) : (p.existingEncrypted ?? '');
+    if (!keyEnc) throw new Error('API Key 不能为空');
+    if (p.id) {
+      d.prepare('UPDATE providers SET name=?, protocol=?, base_url=?, api_key=?, model=?, is_default=? WHERE id=?')
+        .run(p.name, p.protocol, p.baseUrl, keyEnc, p.model, p.isDefault ? 1 : 0, p.id);
+      if (p.isDefault) d.prepare('UPDATE providers SET is_default=0 WHERE id<>?').run(p.id);
+    } else {
+      const info = d.prepare('INSERT INTO providers (name, protocol, base_url, api_key, model, is_default) VALUES (?,?,?,?,?,?)')
+        .run(p.name, p.protocol, p.baseUrl, keyEnc, p.model, p.isDefault ? 1 : 0);
+      if (p.isDefault) d.prepare('UPDATE providers SET is_default=0 WHERE id<>?').run(info.lastInsertRowid);
+    }
+    return true;
+  });
+  wrap('pv:delete', (_e, id: number) => { db.getDb().prepare('DELETE FROM providers WHERE id=?').run(id); return true; });
+  wrap('pv:test', async (_e, p: { protocol: string; baseUrl: string; apiKey: string; model: string }) => {
+    return await new Promise<{ ok: boolean; msg: string }>((resolve) => {
+      let acc = '';
+      llm.chatStream(
+        { name: 'test', protocol: p.protocol as any, baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model },
+        [{ role: 'user', content: '回复「OK」两个字即可' }],
+        {
+          onDelta: (d) => { acc += d; },
+          onDone: () => resolve({ ok: true, msg: `连通成功：${acc.trim().slice(0, 20)}` }),
+          onError: (err) => resolve({ ok: false, msg: err }),
+        },
+        { maxTokens: 16, temperature: 0 }
+      );
+    });
+  });
+
+  function getDefaultProvider(): llm.ProviderConfig | null {
+    const d = db.getDb();
+    let row = d.prepare('SELECT * FROM providers WHERE is_default=1').get() as any;
+    if (!row) row = d.prepare('SELECT * FROM providers ORDER BY id LIMIT 1').get() as any;
+    if (!row) return null;
+    return {
+      id: row.id, name: row.name, protocol: row.protocol,
+      baseUrl: row.base_url, apiKey: llm.decryptSecret(row.api_key), model: row.model,
+    };
+  }
+
+  // ---------- bibtex ----------
+  wrap('bibtex:export', async () => {
+    const papers = db.listPapers() as any[];
+    const entries: string[] = [];
+    for (const p of papers) {
+      const key = (p.arxiv_id || `paper${p.id}`).replace(/\./g, '_');
+      const year = (p.created_at ?? '').slice(0, 4) || new Date().getFullYear().toString();
+      entries.push(`@misc{${key},
+  title = {${p.title}},
+  author = {${p.authors || 'Unknown'}},
+  year = {${year}},
+  eprint = {${p.arxiv_id}},
+  archivePrefix = {arXiv},
+  url = {${p.source_url || `https://arxiv.org/abs/${p.arxiv_id}`}}
+}`);
+    }
+    return entries.join('\n\n');
+  });
+
+  // ---------- github bridge ----------
+  wrap('gh:setRepo', (_e, p: string) => {
+    const r = gh.setRepoRoot(p);
+    if (r.ok) db.setSetting('repo_path', p);
+    return r;
+  });
+  wrap('gh:getRepo', () => {
+    const p = gh.getRepoRoot();
+    return { path: p, connected: !!p };
+  });
+  wrap('gh:listFulltext', () => {
+    const root = gh.getRepoRoot();
+    if (!root) return [];
+    return gh.listFulltextFiles(root);
+  });
+  wrap('gh:importFulltext', (_e, arxivId: string) => {
+    const root = gh.getRepoRoot();
+    if (!root) throw new Error('未连接仓库');
+    const text = gh.readFulltext(root, arxivId);
+    if (!text) throw new Error(`.fulltext/${arxivId}.txt 不存在`);
+    const parsed = arxiv.parsePlainText(text, arxivId, arxivId);
+    const paperId = db.insertPaper({
+      arxivId, title: arxivId, authors: '', sourceUrl: `https://arxiv.org/abs/${arxivId}`, importType: 'text',
+    });
+    db.insertBlocks(paperId, parsed.blocks);
+    generateTriageInBackground(paperId).catch(() => {});
+    return { paperId, count: parsed.blocks.length };
+  });
+  wrap('gh:listNotes', () => {
+    const root = gh.getRepoRoot();
+    return root ? gh.listNotes(root) : [];
+  });
+  wrap('gh:readNote', (_e, name: string) => {
+    const root = gh.getRepoRoot();
+    if (!root) return null;
+    return gh.readNote(root, name);
+  });
+  wrap('gh:writeQa', (_e, arg: { arxivId: string; question: string; answer: string }) => {
+    const root = gh.getRepoRoot();
+    if (!root) throw new Error('未连接仓库');
+    const date = new Date().toISOString().slice(0, 10);
+    return gh.appendQaToNote(root, arg.arxivId, { question: arg.question, answer: arg.answer, date });
+  });
+  // 导出阅读摘要到知识库
+  wrap('gh:exportSummary', (_e, paperId: number) => {
+    const root = gh.getRepoRoot();
+    if (!root) throw new Error('未连接仓库');
+    const paper = db.getPaper(paperId) as any;
+    const sum = db.getSummary(paperId) as any;
+    const qa = db.listQa(paperId) as any[];
+    const hls = db.listHighlights(paperId) as any[];
+    const blocks = db.getBlocks(paperId) as any[];
+    const date = new Date().toISOString().slice(0, 10);
+    let triage: insights.TriageSummary | null = null;
+    try { triage = sum?.summary ? JSON.parse(sum.summary) : null; } catch { triage = null; }
+    const md = `---
+论文: ${paper.title}
+arxiv: ${paper.arxiv_id}
+日期: ${date}
+状态: Paper Reader 阅读摘要
+---
+
+# ${paper.title}
+
+> Paper Reader 自动导出 · ${date}
+
+## 快速评估
+${triage ? `- **一句话**：${triage.oneLiner}
+- **核心问题**：${triage.problem}
+- **方法**：${triage.method}
+- **结果**：${triage.results}
+- **关联**：${triage.related}` : '（未生成 AI 摘要）'}
+
+## 高亮摘录（${hls.length} 条）
+${hls.map(h => `- ${h.text_en}`).join('\n') || '（无）'}
+
+## 问答记录（${qa.length} 条）
+${qa.filter(q => q.answer).map(q => `> ❓ **Q:** ${q.question}\n>\n> **A:** ${q.answer.slice(0, 500)}`).join('\n\n') || '（无）'}
+`;
+    const fname = `paper-reader-${paper.arxiv_id.replace(/\./g, '-')}.md`;
+    fs.writeFileSync(path.join(root, 'notes', 'papers', fname), md, 'utf8');
+    return { ok: true, note: fname };
+  });
+}
+
+function maskKey(k: string): string {
+  if (!k) return '';
+  if (k.length <= 8) return '****';
+  return k.slice(0, 4) + '****' + k.slice(-4);
+}

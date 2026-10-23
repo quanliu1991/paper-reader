@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
+.vite/
+scripts/.test-*
+screenshot-*.png
+tests/.arxiv-bundle.mjs
