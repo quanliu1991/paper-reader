@@ -1,9 +1,9 @@
-import { memo } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import RichText from './RichText';
 import type { BlockRow } from '../store';
 
 // 学术样式译文面板：按论文原始结构（章节层级/段落/图表标题）排版
-// pageMap 存在时按页分组，与 PDF 分页一致；不存在时连续排版
+// pageMap 存在时按页分组，与 PDF 分页一致；visiblePage 变化时自动滚到对应分组
 export default function TranslatedPanel({
   blocks, pageMap, visiblePage, onJumpPage,
 }: {
@@ -12,6 +12,24 @@ export default function TranslatedPanel({
   visiblePage: number;
   onJumpPage: (p: number) => void;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 跟随 PDF 当前页滚动（页分组变化时）
+  useEffect(() => {
+    if (!pageMap || !visiblePage) return;
+    const host = containerRef.current;
+    if (!host) return;
+    const target = host.querySelector(`[data-tpage="${visiblePage}"]`) as HTMLElement | null;
+    if (target) {
+      // 已在视口内不滚动，避免抖动
+      const hostRect = host.getBoundingClientRect();
+      const tRect = target.getBoundingClientRect();
+      if (tRect.top < hostRect.top + 40 || tRect.bottom > hostRect.bottom - 40) {
+        host.scrollTo({ top: target.offsetTop - host.offsetTop - 16, behavior: 'smooth' });
+      }
+    }
+  }, [visiblePage, pageMap]);
+
   // 有页映射时按页分组渲染
   const groups: Array<{ page: number | null; items: BlockRow[] }> = [];
   if (pageMap) {
@@ -26,7 +44,7 @@ export default function TranslatedPanel({
   }
 
   return (
-    <div className="translated-panel academic">
+    <div className="translated-panel academic" ref={containerRef}>
       {groups.map((g, gi) => (
         <PageGroup
           key={gi}
@@ -51,7 +69,7 @@ const PageGroup = memo(function PageGroup({
   showPageHeader: boolean;
 }) {
   return (
-    <section className={`tp-page ${active ? 'active' : ''}`}>
+    <section className={`tp-page ${active ? 'active' : ''}`} data-tpage={page ?? undefined}>
       {showPageHeader && page !== null && (
         <div className="tp-page-header" onClick={() => onJumpPage(page)}>
           — 第 {page} 页 —
@@ -84,7 +102,7 @@ function TranslatedBlock({ b }: { b: BlockRow }) {
     <p className="tp-para">
       {b.zh
         ? <RichText text={b.zh} />
-        : <span className="tp-pending">{b.en.slice(0, 120)}{b.en.length > 120 ? '…' : ''}</span>}
+        : <span className="tp-pending">{b.en}</span>}
     </p>
   );
 }

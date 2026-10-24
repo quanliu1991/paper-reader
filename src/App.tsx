@@ -13,6 +13,18 @@ export default function App() {
 
   useEffect(() => { loadPapers(); }, []);
 
+  // text 降级论文升级完成后刷新列表 + 当前阅读中的论文
+  useEffect(() => {
+    return window.api.onPaperUpgraded(async (p: any) => {
+      await loadPapers();
+      const st = useStore.getState();
+      if (st.currentPaper?.id === p.paperId) {
+        await st.openPaper(p.paperId);
+        st.toast({ type: 'success', msg: '论文已升级为结构化版本（含图表与 PDF）' });
+      }
+    });
+  }, [loadPapers]);
+
   return (
     <div className="app">
       <header className="topbar">

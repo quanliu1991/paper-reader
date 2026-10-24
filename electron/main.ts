@@ -333,6 +333,35 @@ function registerIpc() {
     }
   });
 
+  // text 降级论文自动升级入口（注册后异步执行）
+  function scheduleUpgradeTextImports() {
+    setTimeout(() => { upgradeTextImports().catch(() => {}); }, 3000);
+  }
+  scheduleUpgradeTextImports();
+
+  // text 降级论文自动升级：重抓 HTML 结构化导入（含图表）+ PDF
+  async function upgradeTextImports() {
+    const rows = db.getDb().prepare("SELECT id, arxiv_id FROM papers WHERE import_type='text'").all() as any[];
+    console.log(`[upgrade] text papers: ${rows.length}`);
+    if (!rows.length) return;
+    for (const row of rows) {
+      try {
+        const parsed = await arxiv.fetchAndParse(row.arxiv_id);
+        console.log(`[upgrade] ${row.arxiv_id}: importType=${parsed.importType}, blocks=${parsed.blocks.length}`);
+        if (parsed.importType !== 'html') continue; // 仍无 HTML，保持现状
+        // 删旧 blocks 重插（旧 translations 的 pid 引用失效，一并清掉）
+        db.getDb().prepare('DELETE FROM blocks WHERE paper_id=?').run(row.id);
+        db.getDb().prepare('DELETE FROM translations WHERE paper_id=?').run(row.id);
+        db.getDb().prepare('UPDATE papers SET title=?, authors=?, import_type=? WHERE id=?')
+          .run(parsed.title, parsed.authors, 'html', row.id);
+        db.insertBlocks(row.id, parsed.blocks);
+        downloadFiguresFor(row.id, row.arxiv_id).catch(() => {});
+        downloadPdfFor(row.id, row.arxiv_id).catch(() => {});
+        send('paper:upgraded', { paperId: row.id, title: parsed.title });
+      } catch (e) { console.log(`[upgrade] ${row.arxiv_id} FAILED: ${e}`); }
+    }
+  }
+
   async function downloadFiguresFor(paperId: number, arxivId: string) {
     // 重新拉 HTML 找图（fetchAndParse 没保留原始 html——用 blocks 里 figPath 的远端 URL 直接下）
     const blocks = db.getBlocks(paperId) as any[];

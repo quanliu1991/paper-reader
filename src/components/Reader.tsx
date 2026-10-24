@@ -252,8 +252,12 @@ export default function Reader() {
               />
             </div>
           )}
-          {layout === 'pdf-dual' && pageMap && (
-            <div className="pdf-page-badge">第 {visiblePage} 页</div>
+          {isPdfLayout && pdfReady && (
+            <div className="pdf-page-badge">
+              <button onClick={() => setJumpToPage(Math.max(1, visiblePage - 1))} title="上一页">‹</button>
+              <span>第 {visiblePage} 页</span>
+              <button onClick={() => setJumpToPage(visiblePage + 1)} title="下一页">›</button>
+            </div>
           )}
         </div>
       ) : (

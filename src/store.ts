@@ -73,7 +73,8 @@ export const useStore = create<Store>((set, get) => ({
   blocks: [],
   highlights: [],
   qaList: [],
-  layout: 'dual',
+  // 布局选择持久化：默认 PDF 原版对照（与论文排版一致），记住用户切换
+  layout: (localStorage.getItem('pr:layout') as Store['layout']) || 'pdf-dual',
   translating: false,
   translateProgress: null,
   fontSize: 15,
@@ -96,7 +97,7 @@ export const useStore = create<Store>((set, get) => ({
     const qaList = await window.api.listQa(id);
     set({ currentPaper: paper, blocks, highlights, qaList, view: 'reader', paletteOpen: false });
   },
-  setLayout: (l) => set({ layout: l }),
+  setLayout: (l) => { localStorage.setItem('pr:layout', l); set({ layout: l }); },
   setFontSize: (n) => set({ fontSize: Math.max(12, Math.min(22, n)) }),
   setColumnWidth: (w) => set({ columnWidth: w }),
   setImmersive: (b) => set({ immersive: b }),

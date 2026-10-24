@@ -285,7 +285,8 @@ mark.hl { animation: hl-in 0.3s ease; }
 .pdf-loading { color: #ddd; text-align: center; padding: 40px 0; font-size: 13px; }
 .pdf-page .pdf-loading { color: #999; padding: 180px 0; }
 .pdf-error { margin: 60px auto; max-width: 420px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 28px; font-size: 14px; color: var(--muted); text-align: center; }
-.pdf-page-badge { position: fixed; bottom: 18px; left: 50%; transform: translateX(-70%); background: rgba(0,0,0,0.65); color: #fff; font-size: 12px; padding: 4px 14px; border-radius: 12px; z-index: 30; }
+.pdf-page-badge { position: fixed; bottom: 18px; left: 50%; transform: translateX(-70%); background: rgba(0,0,0,0.65); color: #fff; font-size: 12px; padding: 4px 10px; border-radius: 12px; z-index: 30; display: flex; align-items: center; gap: 6px; }
+.pdf-page-badge button { background: none; border: none; color: #fff; font-size: 15px; cursor: pointer; padding: 0 4px; line-height: 1; }
 
 /* 学术样式译文面板 */
 .translated-panel.academic { padding: 28px 34px 80px; max-width: 860px; margin: 0 auto; font-family: "Georgia", "Times New Roman", "Noto Serif SC", "SimSun", serif; }
@@ -304,3 +305,8 @@ mark.hl { animation: hl-in 0.3s ease; }
   .tp-figcap { color: #aaa; }
   .pdf-pane { background: #33353a; }
 }
+
+/* 页码徽章按钮 */
+.pdf-page-badge { display: flex; align-items: center; gap: 8px; }
+.pdf-page-badge button { background: none; border: none; color: #fff; font-size: 16px; cursor: pointer; padding: 2px 8px; border-radius: 6px; }
+.pdf-page-badge button:hover { background: rgba(255,255,255,0.15); }

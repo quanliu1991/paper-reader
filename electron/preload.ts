@@ -52,6 +52,11 @@ const api = {
     ipcRenderer.on('pdf:ready', l);
     return () => { ipcRenderer.removeListener('pdf:ready', l); };
   },
+  onPaperUpgraded: (cb: (p: any) => void): (() => void) => {
+    const l = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('paper:upgraded', l);
+    return () => { ipcRenderer.removeListener('paper:upgraded', l); };
+  },
   // highlights & qa
   addHighlight: (h: { paperId: number; pid: number; textEn: string; note?: string; color?: string }) => call('hl:add', h),
   listHighlights: (paperId: number) => call('hl:list', paperId),
