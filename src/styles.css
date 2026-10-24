@@ -310,3 +310,33 @@ mark.hl { animation: hl-in 0.3s ease; }
 .pdf-page-badge { display: flex; align-items: center; gap: 8px; }
 .pdf-page-badge button { background: none; border: none; color: #fff; font-size: 16px; cursor: pointer; padding: 2px 8px; border-radius: 6px; }
 .pdf-page-badge button:hover { background: rgba(255,255,255,0.15); }
+
+/* ==================== 豆包式交互 ==================== */
+
+/* 译文段落：hover 微亮 + 选中高亮（点击联动 PDF） */
+.tp-para, .tp-heading, .tp-fig { border-radius: 4px; transition: background .15s; cursor: pointer; }
+.tp-para:hover, .tp-heading:hover, .tp-fig:hover { background: rgba(59, 130, 246, 0.07); }
+.tp-selected { background: rgba(59, 130, 246, 0.16) !important; box-shadow: inset 3px 0 0 #3b82f6; }
+
+/* PDF 目标页闪烁定位 */
+.pdf-page.pdf-flash { animation: pdfFlash 1.2s ease-out; }
+@keyframes pdfFlash {
+  0% { box-shadow: 0 0 0 3px #3b82f6, 0 2px 10px rgba(0,0,0,0.35); }
+  100% { box-shadow: 0 2px 10px rgba(0,0,0,0.35); }
+}
+
+/* 划词三键（豆包式） */
+.sel-popover .ai-btn { padding: 3px 10px; font-size: 12.5px; border-radius: 5px; background: #2563eb; color: #fff; border: none; cursor: pointer; }
+.sel-popover .ai-btn:hover { background: #1d4ed8; }
+
+/* 快捷结果浮层（解释/搜索/翻译） */
+.quick-result { position: fixed; z-index: 60; width: 400px; max-width: 90vw; border-radius: 10px; padding: 0; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,0.18); }
+.quick-result .qr-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: rgba(59,130,246,0.08); border-bottom: 1px solid var(--border); font-size: 12px; }
+.quick-result .qr-kind { padding: 1px 8px; border-radius: 4px; font-weight: 600; }
+.qr-kind.explain { background: #ede9fe; color: #6d28d9; }
+.qr-kind.search { background: #dcfce7; color: #15803d; }
+.qr-kind.translate { background: #dbeafe; color: #1d4ed8; }
+.quick-result .qr-text { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-result .qr-close { border: none; background: none; font-size: 16px; cursor: pointer; color: var(--muted); padding: 0 2px; }
+.quick-result .qr-body { padding: 10px 14px; font-size: 13.5px; line-height: 1.7; max-height: 260px; overflow-y: auto; }
+.quick-result .qr-loading { color: var(--muted); }

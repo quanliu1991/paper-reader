@@ -8,10 +8,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 // PDF 原版视图：分页 canvas 渲染 + 可见页追踪（懒渲染）
 // onVisiblePageChange 上报当前页，供译文面板同步
 export default function PdfView({
-  paperId, scrollToPage, onVisiblePage, visiblePageRef,
+  paperId, jumpReq, onVisiblePage, visiblePageRef,
 }: {
   paperId: number;
-  scrollToPage: number | null;          // 外部请求跳页
+  jumpReq: { page: number; seq: number } | null;   // 外部请求跳页（seq 保证同页重复触发）
   onVisiblePage: (p: number) => void;
   visiblePageRef: React.MutableRefObject<number>;
 }) {
@@ -85,16 +85,19 @@ export default function PdfView({
     return () => io.disconnect();
   }, [doc, numPages, renderPage, onVisiblePage, visiblePageRef]);
 
-  // 外部跳页
+  // 外部跳页（seq 保证同页重复点击也触发）
   useEffect(() => {
-    if (!scrollToPage || !numPages) return;
-    const el = pageRefs.current.get(scrollToPage);
+    if (!jumpReq || !numPages) return;
+    const el = pageRefs.current.get(jumpReq.page);
     if (el) {
       scrollLockRef.current = true;
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      setTimeout(() => { scrollLockRef.current = false; }, 700);
+      el.classList.remove('pdf-flash');
+      void el.offsetWidth; // 重置动画
+      el.classList.add('pdf-flash');
+      setTimeout(() => { el.classList.remove('pdf-flash'); scrollLockRef.current = false; }, 1200);
     }
-  }, [scrollToPage, numPages]);
+  }, [jumpReq, numPages]);
 
   if (error) {
     return (

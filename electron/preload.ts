@@ -47,6 +47,10 @@ const api = {
   // pdf
   ensurePdf: (paperId: number) => call('pdf:ensure', paperId),
   pdfPageMap: (paperId: number) => call('pdf:pageMap', paperId),
+  // 划词快捷三键（豆包式）
+  quickAction: (arg: { kind: 'explain' | 'search' | 'translate'; text: string; context?: string }) => call('quick:action', arg),
+  // 翻译版 PDF 导出
+  exportTranslatedPdf: (arg: { paperId: number; html: string; title: string }) => call('pdf:exportTranslated', arg),
   onPdfReady: (cb: (p: any) => void): (() => void) => {
     const l = (_e: any, p: any) => cb(p);
     ipcRenderer.on('pdf:ready', l);

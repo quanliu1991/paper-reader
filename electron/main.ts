@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, protocol, net } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, protocol, net } from 'electron';
 import path from 'path';
 import * as db from './db';
 import * as arxiv from './arxiv';
@@ -538,6 +538,38 @@ ${glossary}` },
   wrap('hl:list', (_e, paperId: number) => db.listHighlights(paperId));
   wrap('hl:remove', (_e, id: number) => { db.removeHighlight(id); return true; });
 
+  // 豆包式划词三键：解释 / 搜索 / 翻译（一次性返回，不落库）
+  wrap('quick:action', async (_e, arg: { kind: 'explain' | 'search' | 'translate'; text: string; context?: string }) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider，请先到设置页添加');
+    const sys: Record<string, string> = {
+      explain: `你是 AI/ML 领域的资深研究者。用户在阅读论文时选中了一段文字，请解释其中的关键概念。要求：
+1. 先一句话点明它是什么，再展开 2-4 句细节
+2. 术语保留英文，配日常类比帮助理解
+3. 如有相关公式，用 $...$ 写出并解释符号含义
+4. 控制在 200 字以内，直接输出解释，不要前缀`,
+      search: `用户在阅读论文《${arg.context ?? ''}》时选中了一段文字，想了解相关背景。请基于你的知识给出：
+1. 这个概念/工作的背景与来源（谁提出、解决什么问题）
+2. 相关的重要工作或替代方案（2-3 个）
+3. 在这篇论文语境下的作用
+控制在 200 字以内，术语保留英文。`,
+      translate: `你是专业的 AI/ML 论文翻译。把选中的英文翻译成流畅中文：术语保留英文（如 KV cache、prefill），数学公式 $...$ 原样保留。只输出译文。`,
+    };
+    const acc: string[] = [];
+    let quickErr: string | null = null;
+    await llm.chatStream(provider, [
+      { role: 'system', content: sys[arg.kind] },
+      { role: 'user', content: arg.text },
+    ], {
+      onDelta: d => { acc.push(d); },
+      onDone: () => {},
+      onError: err => { quickErr = err; },
+    });
+    if (quickErr) throw new Error(quickErr);
+    return acc.join('');
+  });
+
+
   wrap('qa:ask', async (e, arg: {
     paperId: number; pid: number; question: string; context: string; highlightId?: number;
   }) => {
@@ -656,6 +688,59 @@ ${glossary}` },
 }`);
     }
     return entries.join('\n\n');
+  });
+
+  // 翻译版 PDF 导出：渲染层把译文 HTML 发来，主进程窗口化打印为 PDF（豆包式一键下载）
+  wrap('pdf:exportTranslated', async (_e, arg: { paperId: number; html: string; title: string }) => {
+    const paper = db.getPaper(arg.paperId) as any;
+    const title = arg.title || paper?.title || 'translation';
+    // local-figure:// 引用转 base64 内联（离线打印窗口没有自定义协议）
+    const figDir = path.join(app.getPath('userData'), 'figures');
+    let html = arg.html.replace(/local-figure:\/\/([^"'\s)]+)/g, (_m, rel: string) => {
+      try {
+        const name = rel.split('/').pop() ?? '';
+        const p = path.join(figDir, path.basename(decodeURIComponent(name)));
+        const buf = fs.readFileSync(p);
+        const ext = (p.match(/\.(png|jpg|jpeg|gif)$/i) || [, 'png'])[1] as string;
+        return `data:image/${ext};base64,${buf.toString('base64')}`;
+      } catch { return ''; }
+    });
+    const exportWin = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+    try {
+      const fullHtml = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>
+  body { font-family: "Georgia", "Times New Roman", "Noto Serif SC", "SimSun", serif; margin: 0; color: #1a1a1a; }
+  .doc { max-width: 760px; margin: 0 auto; padding: 48px 40px; }
+  h1.doc-title { font-size: 22px; text-align: center; margin: 0 0 6px; }
+  .doc-meta { text-align: center; color: #666; font-size: 12px; margin-bottom: 28px; }
+  h2 { font-size: 17px; margin: 24px 0 10px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; }
+  p { text-indent: 2em; margin: 0 0 10px; line-height: 1.85; text-align: justify; font-size: 14px; }
+  figure { margin: 16px auto; text-align: center; page-break-inside: avoid; }
+  figure img { max-width: 88%; }
+  figcaption { font-size: 12px; color: #555; margin-top: 6px; }
+  .page-header { text-align: center; color: #999; font-size: 11px; margin: 20px 0 10px; letter-spacing: 2px; font-family: "Segoe UI", sans-serif; }
+  @page { margin: 18mm 16mm; }
+  @media print { .doc { padding: 0; } }
+</style></head><body><div class="doc">${html}</div></body></html>`;
+      await exportWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(fullHtml));
+      await new Promise(r => setTimeout(r, 600)); // 等图片加载
+      const pdf = await exportWin.webContents.printToPDF({
+        printBackground: true,
+        pageSize: 'A4',
+        margins: { top: 0.6, bottom: 0.6, left: 0.55, right: 0.55 },
+      });
+      const fileName = `${title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)}_中文版.pdf`;
+      const { canceled, filePath } = await dialog.showSaveDialog(win!, {
+        defaultPath: fileName,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      });
+      if (canceled || !filePath) return { saved: false };
+      fs.writeFileSync(filePath, pdf);
+      return { saved: true, filePath };
+    } finally {
+      exportWin.destroy();
+    }
   });
 
   // ---------- github bridge ----------

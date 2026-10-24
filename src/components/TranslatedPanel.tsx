@@ -1,16 +1,18 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import RichText from './RichText';
 import type { BlockRow } from '../store';
 
 // 学术样式译文面板：按论文原始结构（章节层级/段落/图表标题）排版
-// pageMap 存在时按页分组，与 PDF 分页一致；visiblePage 变化时自动滚到对应分组
+// 豆包式交互：点击译文段落 → 高亮并联动 PDF 跳到对应页；页头点击反向跳 PDF
 export default function TranslatedPanel({
-  blocks, pageMap, visiblePage, onJumpPage,
+  blocks, pageMap, visiblePage, onJumpPage, onSelectPid, activePid,
 }: {
   blocks: BlockRow[];
   pageMap: Record<number, number> | null;
   visiblePage: number;
   onJumpPage: (p: number) => void;
+  onSelectPid?: (pid: number, page: number | null) => void;
+  activePid?: number | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -53,6 +55,8 @@ export default function TranslatedPanel({
           active={g.page !== null && g.page === visiblePage}
           onJumpPage={onJumpPage}
           showPageHeader={pageMap !== null}
+          onSelectPid={onSelectPid}
+          activePid={activePid}
         />
       ))}
     </div>
@@ -60,13 +64,15 @@ export default function TranslatedPanel({
 }
 
 const PageGroup = memo(function PageGroup({
-  page, items, active, onJumpPage, showPageHeader,
+  page, items, active, onJumpPage, showPageHeader, onSelectPid, activePid,
 }: {
   page: number | null;
   items: BlockRow[];
   active: boolean;
   onJumpPage: (p: number) => void;
   showPageHeader: boolean;
+  onSelectPid?: (pid: number, page: number | null) => void;
+  activePid?: number | null;
 }) {
   return (
     <section className={`tp-page ${active ? 'active' : ''}`} data-tpage={page ?? undefined}>
@@ -75,22 +81,37 @@ const PageGroup = memo(function PageGroup({
           — 第 {page} 页 —
         </div>
       )}
-      {items.map(b => <TranslatedBlock key={b.pid} b={b} />)}
+      {items.map(b => (
+        <TranslatedBlock
+          key={b.pid}
+          b={b}
+          selected={activePid === b.pid}
+          onClick={() => onSelectPid?.(b.pid, page)}
+        />
+      ))}
     </section>
   );
 });
 
-function TranslatedBlock({ b }: { b: BlockRow }) {
+function TranslatedBlock({ b, selected, onClick }: {
+  b: BlockRow;
+  selected: boolean;
+  onClick: () => void;
+}) {
   if (b.type === 'heading') {
     return (
-      <h2 className="tp-heading" style={{ fontSize: `${1.5 - b.level * 0.12}em` }}>
+      <h2
+        className={`tp-heading ${selected ? 'tp-selected' : ''}`}
+        style={{ fontSize: `${1.5 - b.level * 0.12}em` }}
+        onClick={onClick}
+      >
         {b.zh ?? <span className="tp-pending">{b.en}</span>}
       </h2>
     );
   }
   if (b.type === 'fig') {
     return (
-      <figure className="tp-fig">
+      <figure className={`tp-fig ${selected ? 'tp-selected' : ''}`} onClick={onClick}>
         {b.fig_path && <img src={`local-figure://${b.fig_path}`} alt={b.en.slice(0, 50)} loading="lazy" />}
         <figcaption className="tp-figcap">
           {b.fig_kind === 'table' ? '表' : '图'} · {b.zh ?? b.en}
@@ -99,7 +120,7 @@ function TranslatedBlock({ b }: { b: BlockRow }) {
     );
   }
   return (
-    <p className="tp-para">
+    <p className={`tp-para ${selected ? 'tp-selected' : ''}`} onClick={onClick}>
       {b.zh
         ? <RichText text={b.zh} />
         : <span className="tp-pending">{b.en}</span>}

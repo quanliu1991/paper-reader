@@ -28,6 +28,8 @@ export default function Reader() {
   const immersive = useStore(s => s.immersive);
 
   const [popover, setPopover] = useState<{ x: number; y: number; text: string; pid: number } | null>(null);
+  // 豆包式划词快捷结果（解释/搜索/翻译）
+  const [quickResult, setQuickResult] = useState<{ x: number; y: number; kind: 'explain' | 'search' | 'translate'; text: string; answer: string; loading: boolean } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollRatioRef = useRef(0);
   const suppressSaveRef = useRef(false);
@@ -36,8 +38,14 @@ export default function Reader() {
   const [pdfReady, setPdfReady] = useState(false);
   const [pageMap, setPageMap] = useState<Record<number, number> | null>(null);
   const [visiblePage, setVisiblePage] = useState(1);
-  const [jumpToPage, setJumpToPage] = useState<number | null>(null);
+  const [jumpReq, setJumpReq] = useState<{ page: number; seq: number } | null>(null);
+  const jumpSeqRef = useRef(0);
+  function requestJump(p: number) { jumpSeqRef.current += 1; setJumpReq({ page: p, seq: jumpSeqRef.current }); }
   const visiblePageRef = useRef(1);
+  // 豆包式段落联动：选中的译文段落
+  const [selectedPid, setSelectedPid] = useState<number | null>(null);
+  // 翻译版 PDF 导出
+  const [exporting, setExporting] = useState(false);
   const isPdfLayout = layout === 'pdf-dual' || layout === 'pdf';
 
   // 打开论文时探测 PDF + 构建 pageMap
@@ -181,6 +189,49 @@ export default function Reader() {
     setPopover(null);
   }
 
+  // 豆包式划词三键：解释 / 搜索 / 翻译（行内浮层出结果，不打断阅读）
+  async function runQuick(kind: 'explain' | 'search' | 'translate') {
+    if (!popover) return;
+    const { x, y, text } = popover;
+    setPopover(null);
+    setQuickResult({ x, y, kind, text, answer: '', loading: true });
+    try {
+      const answer = await window.api.quickAction({ kind, text, context: paper.title });
+      setQuickResult(q => q && { ...q, answer, loading: false });
+    } catch (e: any) {
+      setQuickResult(q => q && { ...q, answer: `⚠ ${e?.message ?? '失败'}`, loading: false });
+    }
+  }
+
+  // 导出翻译版 PDF（学术排版，图表内联）
+  async function exportTranslatedPdf() {
+    if (exporting) return;
+    const translated = blocks.filter(b => b.zh || b.type === 'fig');
+    if (!translated.some(b => b.zh)) {
+      window.dispatchEvent(new CustomEvent('pr:toast', { detail: { type: 'info', msg: '还没有译文，先点「翻译全文」' } }));
+      return;
+    }
+    setExporting(true);
+    try {
+      const parts: string[] = [`<h1 class="doc-title">${escHtml(paper.title)}</h1>`, `<div class="doc-meta">${escHtml(paper.authors ?? '')} · arXiv ${escHtml(paper.arxiv_id ?? '')} · Paper Reader 中译版</div>`];
+      for (const b of translated) {
+        if (b.type === 'heading') {
+          parts.push(`<h${Math.min(3, b.level + 1)}>${escHtml(b.zh ?? b.en)}</h${Math.min(3, b.level + 1)}>`);
+        } else if (b.type === 'fig') {
+          if (b.fig_path) parts.push(`<figure><img src="local-figure://${b.fig_path}"><figcaption>${escHtml((b.fig_kind === 'table' ? '表：' : '图：') + (b.zh ?? b.en))}</figcaption></figure>`);
+        } else {
+          parts.push(`<p>${zhToHtml(b.zh ?? '')}</p>`);
+        }
+      }
+      const r = await window.api.exportTranslatedPdf({ paperId: paper.id, html: parts.join('\n'), title: paper.title });
+      if (r.saved) window.dispatchEvent(new CustomEvent('pr:toast', { detail: { type: 'success', msg: `已导出：${r.filePath}` } }));
+    } catch (e: any) {
+      window.dispatchEvent(new CustomEvent('pr:toast', { detail: { type: 'error', msg: `导出失败：${e?.message ?? e}` } }));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function saveFlashcard() {
     if (!popover) return;
     await window.api.saveFlashcard({ paperId: paper.id, pid: popover.pid, front: popover.text, back: '' });
@@ -230,6 +281,9 @@ export default function Reader() {
             </button>
           </div>
           <button onClick={() => useStore.getState().setImmersive(true)} title="沉浸模式 (Ctrl+Shift+F)">⛶</button>
+          <button onClick={exportTranslatedPdf} title="导出翻译版 PDF（学术排版）" disabled={exporting}>
+            {exporting ? '导出中…' : '⇩ PDF'}
+          </button>
           <button className="primary" onClick={translateAll} disabled={translating}>
             {translating ? `翻译中 ${progress?.done ?? 0}/${progress?.total ?? 0}` : '翻译全文'}
           </button>
@@ -239,7 +293,7 @@ export default function Reader() {
         <div className="pdf-layout">
           <div className="pdf-pane">
             {pdfReady
-              ? <PdfView paperId={paper.id} scrollToPage={jumpToPage} onVisiblePage={p => setVisiblePage(p)} visiblePageRef={visiblePageRef} />
+              ? <PdfView paperId={paper.id} jumpReq={jumpReq} onVisiblePage={p => setVisiblePage(p)} visiblePageRef={visiblePageRef} />
               : <div className="pdf-loading">PDF 下载中…（首次导入论文时后台自动下载）</div>}
           </div>
           {layout === 'pdf-dual' && (
@@ -248,15 +302,20 @@ export default function Reader() {
                 blocks={blocks}
                 pageMap={pageMap}
                 visiblePage={visiblePage}
-                onJumpPage={p => setJumpToPage(p)}
+                onJumpPage={p => requestJump(p)}
+                activePid={selectedPid}
+                onSelectPid={(pid, page) => {
+                  setSelectedPid(pid);
+                  if (page && page !== visiblePageRef.current) requestJump(page);
+                }}
               />
             </div>
           )}
           {isPdfLayout && pdfReady && (
             <div className="pdf-page-badge">
-              <button onClick={() => setJumpToPage(Math.max(1, visiblePage - 1))} title="上一页">‹</button>
+              <button onClick={() => requestJump(Math.max(1, visiblePage - 1))} title="上一页">‹</button>
               <span>第 {visiblePage} 页</span>
-              <button onClick={() => setJumpToPage(visiblePage + 1)} title="下一页">›</button>
+              <button onClick={() => requestJump(visiblePage + 1)} title="下一页">›</button>
             </div>
           )}
         </div>
@@ -278,6 +337,10 @@ export default function Reader() {
       {askPanelOpen && <AskPanel />}
       {popover && (
         <div className="sel-popover glass" style={{ left: Math.max(70, popover.x - 150), top: Math.max(8, popover.y) }}>
+          <button className="ai-btn" onClick={() => runQuick('explain')} title="AI 解释这个概念">解释</button>
+          <button className="ai-btn" onClick={() => runQuick('search')} title="联网搜索相关背景">搜索</button>
+          <button className="ai-btn" onClick={() => runQuick('translate')} title="翻译选中的句子">翻译</button>
+          <span className="pop-sep" />
           {HL_COLORS.map(c => (
             <button key={c.id} className="hl-color-btn" style={{ background: c.bg }} onClick={() => saveHighlight(c.id)} title={`高亮-${c.label}`} />
           ))}
@@ -285,7 +348,20 @@ export default function Reader() {
           <button onClick={copySelection} title="复制">⧉</button>
           <button className="primary" onClick={askSelection} title="提问">提问</button>
           <button onClick={saveFlashcard} title="存为闪卡">闪卡</button>
-          <button onClick={() => { translateOne(popover.pid, blocks.find(b => b.pid === popover.pid)?.en ?? ''); setPopover(null); }} title="仅译此段">译此段</button>
+        </div>
+      )}
+      {quickResult && (
+        <div className="quick-result glass" style={{ left: Math.max(70, quickResult.x - 220), top: quickResult.y + 36 }}>
+          <div className="qr-head">
+            <span className={`qr-kind ${quickResult.kind}`}>{quickResult.kind === 'explain' ? '解释' : quickResult.kind === 'search' ? '搜索' : '翻译'}</span>
+            <span className="qr-text">{quickResult.text.slice(0, 60)}{quickResult.text.length > 60 ? '…' : ''}</span>
+            <button className="qr-close" onClick={() => setQuickResult(null)}>×</button>
+          </div>
+          <div className="qr-body">
+            {quickResult.loading
+              ? <span className="qr-loading">思考中…</span>
+              : <RichText text={quickResult.answer} />}
+          </div>
         </div>
       )}
     </div>
@@ -356,6 +432,12 @@ function FigureView({ b, side }: { b: import('../store').BlockRow; side: 'en' | 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+// 导出用：转义 + 公式占位（printToPDF 无 KaTeX，保留 $...$ 原文）
+function zhToHtml(s: string): string {
+  return escapeHtml(s);
+}
+const escHtml = escapeHtml;
 
 function markHighlights(en: string, items: Array<{ text: string; color: string }>): string {
   let html = escapeHtml(en);
