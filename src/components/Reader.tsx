@@ -5,6 +5,7 @@ import AskPanel from './AskPanel';
 import CommandPalette from './CommandPalette';
 import PdfView from './PdfView';
 import TranslatedPanel from './TranslatedPanel';
+import TranslateView from './TranslateView';
 
 const HL_COLORS = [
   { id: 'yellow', label: '黄', bg: '#fff3b0' },
@@ -116,7 +117,7 @@ export default function Reader() {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
         e.preventDefault();
-        const cycle = ['pdf-dual', 'pdf', 'dual', 'en', 'zh'] as const;
+        const cycle = ['translate', 'pdf-dual', 'en', 'zh'] as const;
         const cur = useStore.getState().layout;
         const idx = cycle.indexOf(cur as any);
         useStore.getState().setLayout(cycle[(idx + 1) % cycle.length] as any);
@@ -267,9 +268,8 @@ export default function Reader() {
           <button className="icon-btn" onClick={() => useStore.getState().setView('list')} title="返回列表">←</button>
           <span className="title">{paper.title}</span>
           <div className="toolbar-group">
-            <button onClick={() => setLayout('pdf-dual')} className={layout === 'pdf-dual' ? 'active' : ''} title="PDF 原版 + 译文（与论文排版一致）">原版</button>
-            <button onClick={() => setLayout('pdf')} className={layout === 'pdf' ? 'active' : ''} title="仅 PDF 原版">PDF</button>
-            <button onClick={() => setLayout('dual')} className={layout === 'dual' ? 'active' : ''}>对照</button>
+            <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="翻译全文：左英文右中文，段落逐行对照（豆包式）">对照</button>
+            <button onClick={() => setLayout('pdf-dual')} className={layout === 'pdf-dual' ? 'active' : ''} title="PDF 原版 + 译文分页对照">原版</button>
             <button onClick={() => setLayout('en')} className={layout === 'en' ? 'active' : ''}>原文</button>
             <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''}>译文</button>
           </div>
@@ -318,6 +318,19 @@ export default function Reader() {
               <button onClick={() => requestJump(visiblePage + 1)} title="下一页">›</button>
             </div>
           )}
+        </div>
+      ) : layout === 'translate' ? (
+        <div
+          className="reader-scroll translate-host"
+          ref={scrollRef}
+          onMouseUp={onMouseUp}
+        >
+          <TranslateView
+            blocks={blocks}
+            fontSize={fontSize}
+            hlByPid={hlByPid}
+            translating={translating}
+          />
         </div>
       ) : (
         <div

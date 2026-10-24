@@ -340,3 +340,91 @@ mark.hl { animation: hl-in 0.3s ease; }
 .quick-result .qr-close { border: none; background: none; font-size: 16px; cursor: pointer; color: var(--muted); padding: 0 2px; }
 .quick-result .qr-body { padding: 10px 14px; font-size: 13.5px; line-height: 1.7; max-height: 260px; overflow-y: auto; }
 .quick-result .qr-loading { color: var(--muted); }
+
+/* ==================== 豆包式翻译全文视图 ==================== */
+
+/* 宿主：单容器滚动，文档感白底 */
+.reader-scroll.translate-host { padding: 0; background: var(--panel); }
+.translate-view {
+  max-width: 1280px; margin: 0 auto; padding: 28px 20px 80px;
+  font-family: "Georgia", "Times New Roman", "Noto Serif SC", "SimSun", serif;
+  display: flex; flex-direction: column; gap: 2px;
+}
+
+/* 行：左右两格网格（结构性空间对应） */
+.tv-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px;
+  position: relative; border-radius: 6px; padding: 2px 8px; margin: 0 -8px;
+  transition: background .12s;
+}
+.tv-row:hover { background: rgba(59, 130, 246, 0.05); }
+.tv-row.active { background: rgba(59, 130, 246, 0.12); box-shadow: inset 3px 0 0 #3b82f6; }
+
+/* 中缝分隔线 */
+.tv-para-row::before {
+  content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px;
+  width: 1px; background: var(--border); opacity: 0.7;
+}
+
+/* 格：左右内边距错开中缝 */
+.tv-cell { padding: 4px 14px; min-width: 0; overflow-wrap: break-word; }
+.tv-cell.en { padding-left: 0; }
+.tv-cell.zh { padding-right: 0; background: rgba(251, 191, 36, 0.045); border-radius: 4px; }
+
+/* 段落排版（两侧同构） */
+.tv-p { margin: 4px 0 10px; line-height: 1.8; text-align: justify; font-size: 0.95em; }
+.tv-cell.en .tv-p { color: #333; }
+.tv-cell.zh .tv-p { color: #1f2937; }
+
+/* 标题行 */
+.tv-heading { font-weight: 700; color: #111; margin: 18px 0 6px; line-height: 1.35; }
+.tv-heading.l1 { font-size: 1.35em; }
+.tv-heading.l2 { font-size: 1.2em; }
+.tv-heading.l3 { font-size: 1.08em; }
+.tv-heading.l4, .tv-heading.l5 { font-size: 1em; }
+.tv-heading-pending { color: var(--muted); }
+
+/* 图表行：跨中缝居中 */
+.tv-fig-row { display: flex; justify-content: center; padding: 10px 0; }
+.tv-fig { margin: 0; text-align: center; max-width: 70%; }
+.tv-fig img { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; }
+.tv-fig-placeholder { font-size: 28px; padding: 20px 40px; background: var(--bg); border-radius: 6px; }
+.tv-fig figcaption { margin-top: 8px; font-size: 0.8em; color: #666; line-height: 1.5; }
+.tv-fig .cap-en { display: block; }
+.tv-fig .cap-zh { display: block; color: #444; }
+
+/* 待翻译占位（豆包式轻量条，不显示英文全文） */
+.tv-pending-bar {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 14px; border-radius: 12px;
+  background: var(--bg); color: var(--muted); font-size: 0.82em;
+  font-family: "Segoe UI", sans-serif;
+}
+.tv-pending-bar .dot { width: 5px; height: 5px; border-radius: 50%; background: #d1d5db; animation: tvPulse 1.4s infinite; }
+.tv-pending-bar .dot:nth-child(2) { animation-delay: 0.2s; }
+.tv-pending-bar .dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes tvPulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+/* 长内容折叠（豆包淡化隐藏 + 点击展开） */
+.tv-collapsed { max-height: 260px; overflow: hidden; position: relative; }
+.tv-collapsed::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 84px;
+  background: linear-gradient(transparent, var(--panel));
+}
+.tv-expand-hint {
+  position: absolute; right: 8px; bottom: 4px; z-index: 2;
+  padding: 2px 12px; border-radius: 12px; font-size: 12px;
+  background: #eff6ff; color: #1d4ed8; cursor: pointer;
+  font-family: "Segoe UI", sans-serif; border: 1px solid #bfdbfe;
+}
+.tv-expand-hint:hover { background: #dbeafe; }
+
+/* 暗色适配 */
+@media (prefers-color-scheme: dark) {
+  .tv-cell.en .tv-p { color: #c8c6c2; }
+  .tv-cell.zh .tv-p { color: #e5e3df; }
+  .tv-cell.zh { background: rgba(251, 191, 36, 0.06); }
+  .tv-heading { color: #eee; }
+  .tv-fig figcaption { color: #aaa; }
+  .tv-collapsed::after { background: linear-gradient(transparent, var(--panel)); }
+}

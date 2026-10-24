@@ -40,7 +40,7 @@ interface Store {
   highlights: HighlightRow[];
   qaList: QaRow[];
   // 阅读状态
-  layout: 'dual' | 'en' | 'zh' | 'pdf-dual' | 'pdf';
+  layout: 'translate' | 'dual' | 'en' | 'zh' | 'pdf-dual' | 'pdf';
   translating: boolean;
   translateProgress: { done: number; total: number } | null;
   fontSize: number;
@@ -73,8 +73,8 @@ export const useStore = create<Store>((set, get) => ({
   blocks: [],
   highlights: [],
   qaList: [],
-  // 布局选择持久化：默认 PDF 原版对照（与论文排版一致），记住用户切换
-  layout: (localStorage.getItem('pr:layout') as Store['layout']) || 'pdf-dual',
+  // 布局选择持久化：默认豆包式翻译全文对照，记住用户切换
+  layout: (localStorage.getItem('pr:layout') as Store['layout']) || 'translate',
   translating: false,
   translateProgress: null,
   fontSize: 15,

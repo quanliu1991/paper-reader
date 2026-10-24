@@ -130,11 +130,44 @@ app.whenReady().then(async () => {
 
         await win.webContents.executeJavaScript(`
           window.__store.getState().openPaper(${paperId}).then(() => {
-            window.__store.getState().setLayout('pdf-dual');
+            window.__store.getState().setLayout('translate');
           })
         `);
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, 2000));
 
+        // 阶段 1：豆包式翻译全文视图（默认视图）
+        const tvStats: any = await win.webContents.executeJavaScript(`
+          (() => {
+            const rows = document.querySelectorAll('.tv-row');
+            const paraRows = document.querySelectorAll('.tv-para-row');
+            const pending = document.querySelectorAll('.tv-pending-bar');
+            const collapsed = document.querySelectorAll('.tv-collapsed');
+            const expandHints = document.querySelectorAll('.tv-expand-hint');
+            return { rows: rows.length, paraRows: paraRows.length, pending: pending.length,
+                     collapsed: collapsed.length, expandHints: expandHints.length,
+                     firstParaPid: paraRows[0]?.dataset.pid ?? null };
+          })()
+        `);
+        log(`translate view: rows=${tvStats.rows}, paraRows=${tvStats.paraRows}, pending=${tvStats.pending}, collapsed=${tvStats.collapsed}`);
+        // 联动高亮：点击第一个段落行，等 React 状态更新后断言同行双语同亮
+        const linked: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            const paraRows = document.querySelectorAll('.tv-para-row');
+            if (!paraRows.length) return { linked: false, reason: 'no paraRows' };
+            paraRows[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await new Promise(r => setTimeout(r, 300));
+            const activeRow = document.querySelector('.tv-row.active');
+            const enCell = activeRow?.querySelector('.tv-cell.en');
+            const zhCell = activeRow?.querySelector('.tv-cell.zh');
+            return { linked: !!(activeRow && enCell && zhCell), pid: activeRow?.dataset.pid ?? null };
+          })()
+        `);
+        log(`row-linked-highlight: ${linked.linked ? 'PASS' : 'FAIL'}（pid=${linked.pid}, 同行双语同亮）`);
+        log(`translate view render: ${tvStats.rows >= 50 ? 'PASS' : 'FAIL'}`);
+
+        // 阶段 2：PDF 原版模式仍可用
+        await win.webContents.executeJavaScript(`window.__store.getState().setLayout('pdf-dual')`);
+        await new Promise(r => setTimeout(r, 4000));
         const stats: any = await win.webContents.executeJavaScript(`
           (() => {
             const canvases = document.querySelectorAll('.pdf-page canvas');
@@ -158,8 +191,14 @@ app.whenReady().then(async () => {
         const img = await win.webContents.capturePage();
         fs.mkdirSync(path.resolve('build'), { recursive: true });
         fs.writeFileSync(path.resolve('build/pdf-ui-e2e.png'), img.toPNG());
-        log('screenshot saved');
-        const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300 && stats.tpPages >= 1;
+        // translate 视图单独截图（切回去再截）
+        await win.webContents.executeJavaScript(`window.__store.getState().setLayout('translate')`);
+        await new Promise(r => setTimeout(r, 800));
+        const tvImg = await win.webContents.capturePage();
+        fs.writeFileSync(path.resolve('build/translate-ui-e2e.png'), tvImg.toPNG());
+        log('screenshots saved');
+        const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300 && stats.tpPages >= 1
+          && tvStats.rows >= 50 && linked.linked;
         if (allPass) log('E2E ALL PASS');
         else log('E2E FAIL (see above)');
         fs.writeFileSync(doneFile, '1');
