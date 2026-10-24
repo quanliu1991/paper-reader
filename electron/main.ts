@@ -103,6 +103,73 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  if (process.env.PR_UI_INSPECT) {
+    // 用户库检查：打开真实库中最近论文，检查渲染状态并截图
+    const win = new BrowserWindow({
+      width: 1400, height: 900, show: true,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+    });
+    registerIpc();
+    const logFile = process.env.PR_E2E_LOG!;
+    const doneFile = process.env.PR_E2E_DONE!;
+    const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
+    try {
+      await win.loadURL(process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199');
+      await new Promise(r => setTimeout(r, 1500));
+      const papers = db.listPapers() as any[];
+      const target = papers.find(p => p.last_opened_at) ?? papers[0];
+      if (!target) { log('no papers in library'); fs.writeFileSync(doneFile, '1'); app.quit(); return; }
+      log(`opening paper ${target.id}: ${target.title.slice(0, 50)} (import=${target.import_type})`);
+      await win.webContents.executeJavaScript(`
+        window.__store.getState().openPaper(${target.id}).then(() => {
+          window.__store.getState().setLayout('translate');
+        })
+      `);
+      await new Promise(r => setTimeout(r, 2500));
+      const diag: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const st = window.__store.getState();
+          const tv = document.querySelector('.translate-view');
+          const rows = document.querySelectorAll('.tv-row');
+          const tvStyle = tv ? getComputedStyle(tv) : null;
+          const firstRow = document.querySelector('.tv-para-row');
+          const rowStyle = firstRow ? getComputedStyle(firstRow) : null;
+          const enCell = firstRow?.querySelector('.tv-cell.en');
+          const zhCell = firstRow?.querySelector('.tv-cell.zh');
+          // 宽度链路排查：translate-view → tv-row → cell
+          const chain = [];
+          let el = tv;
+          while (el && el !== document.body) {
+            const r = el.getBoundingClientRect();
+            const cs = getComputedStyle(el);
+            chain.push(\`\${el.className?.toString().slice(0,40) || el.tagName}: w=\${Math.round(r.width)} maxw=\${cs.maxWidth} flex=\${cs.flex} grid-cols=\${cs.gridTemplateColumns?.slice(0,40)}\`);
+            el = el.parentElement;
+          }
+          return {
+            layout: st.layout, blocks: st.blocks.length,
+            viewMounted: !!tv, rows: rows.length,
+            tvW: tv ? Math.round(tv.getBoundingClientRect().width) : 0,
+            chain,
+            pendingBars: document.querySelectorAll('.tv-pending-bar').length,
+            collapsed: document.querySelectorAll('.tv-collapsed').length,
+            hasKaTeX: !!document.querySelector('.katex'),
+          };
+        })()
+      `);
+      log('diag: ' + JSON.stringify(diag, null, 1));
+      const img = await win.webContents.capturePage();
+      fs.mkdirSync(path.resolve('build'), { recursive: true });
+      fs.writeFileSync(path.resolve('build/inspect-user.png'), img.toPNG());
+      log('screenshot saved');
+      log('INSPECT DONE');
+    } catch (e: any) {
+      log(`FATAL: ${e?.stack ?? e}`);
+    } finally {
+      fs.writeFileSync(doneFile, '1');
+      setTimeout(() => app.quit(), 300);
+    }
+    return;
+  }
   if (process.env.PR_PDF_UI_E2E) {
     // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议）
     const win = new BrowserWindow({
