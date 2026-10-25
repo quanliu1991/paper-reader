@@ -112,6 +112,41 @@ function migrate(d: Database.Database) {
     created_at TEXT DEFAULT (datetime('now','localtime'))
   );
   CREATE INDEX IF NOT EXISTS idx_fc_due ON flashcards(due);
+
+  CREATE TABLE IF NOT EXISTS topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    query TEXT DEFAULT '',
+    status TEXT DEFAULT 'building',            -- building | ready | error
+    node_count INTEGER DEFAULT 0,
+    edge_count INTEGER DEFAULT 0,
+    note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+
+  CREATE TABLE IF NOT EXISTS topic_papers (
+    topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    arxiv_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    year INTEGER,
+    citation_count INTEGER DEFAULT 0,
+    layer TEXT DEFAULT 'node',                 -- foundation | key | bridge | frontier
+    in_degree INTEGER DEFAULT 0,               -- 图内被引（核心度信号）
+    out_degree INTEGER DEFAULT 0,              -- 图内引用（依赖信号）
+    read_order INTEGER,                        -- 推荐阅读顺序（1 = 最先读）
+    imported INTEGER DEFAULT 0,                -- 是否已导入论文库
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (topic_id, arxiv_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_tp_topic ON topic_papers(topic_id);
+
+  CREATE TABLE IF NOT EXISTS topic_edges (
+    topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    src TEXT NOT NULL,                         -- 引用方 arxiv_id
+    dst TEXT NOT NULL,                         -- 被引方 arxiv_id
+    PRIMARY KEY (topic_id, src, dst)
+  );
   `);
   migrateColumns(d);
 }
@@ -288,4 +323,87 @@ export function gradeFlashcard(id: number, q: number) {
 export function getReadProgress(paperId: number): number {
   const row = getDb().prepare('SELECT value FROM settings WHERE key=?').get(`read:${paperId}`) as any;
   return row ? Number(row.value) || 0 : 0;
+}
+
+// ---------- 主题依赖库 ----------
+export interface TopicPaperRow {
+  topic_id: number; arxiv_id: string; title: string; year: number | null;
+  citation_count: number; layer: string; in_degree: number; out_degree: number;
+  read_order: number | null; imported: number;
+}
+
+export function createTopic(name: string, query: string): number {
+  const d = getDb();
+  d.prepare(
+    `INSERT INTO topics (name, query, status) VALUES (?,?, 'building')
+     ON CONFLICT(name) DO UPDATE SET query=excluded.query, status='building', updated_at=datetime('now','localtime')`
+  ).run(name, query);
+  const row = d.prepare('SELECT id FROM topics WHERE name=?').get(name) as any;
+  const id = row.id;
+  d.prepare('DELETE FROM topic_papers WHERE topic_id=?').run(id);
+  d.prepare('DELETE FROM topic_edges WHERE topic_id=?').run(id);
+  return id;
+}
+
+export function getTopic(id: number) {
+  return getDb().prepare('SELECT * FROM topics WHERE id=?').get(id);
+}
+
+export function getTopicByName(name: string) {
+  return getDb().prepare('SELECT * FROM topics WHERE name=?').get(name);
+}
+
+export function listTopics() {
+  return getDb().prepare('SELECT * FROM topics ORDER BY updated_at DESC').all();
+}
+
+export function deleteTopic(id: number) {
+  const d = getDb();
+  d.prepare('DELETE FROM topic_papers WHERE topic_id=?').run(id);
+  d.prepare('DELETE FROM topic_edges WHERE topic_id=?').run(id);
+  d.prepare('DELETE FROM topics WHERE id=?').run(id);
+}
+
+export function saveTopicGraph(
+  topicId: number,
+  papers: Array<TopicPaperRow & { created_at?: string }>,
+  edges: Array<{ src: string; dst: string }>,
+) {
+  const d = getDb();
+  const tx = d.transaction(() => {
+    d.prepare('DELETE FROM topic_papers WHERE topic_id=?').run(topicId);
+    d.prepare('DELETE FROM topic_edges WHERE topic_id=?').run(topicId);
+    const upPaper = d.prepare(
+      `INSERT OR REPLACE INTO topic_papers (topic_id, arxiv_id, title, year, citation_count, layer, in_degree, out_degree, read_order, imported)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    );
+    for (const p of papers) {
+      upPaper.run(topicId, p.arxiv_id, p.title, p.year, p.citation_count, p.layer, p.in_degree, p.out_degree, p.read_order, p.imported);
+    }
+    const upEdge = d.prepare('INSERT OR REPLACE INTO topic_edges (topic_id, src, dst) VALUES (?,?,?)');
+    for (const e of edges) upEdge.run(topicId, e.src, e.dst);
+    d.prepare(
+      `UPDATE topics SET status='ready', node_count=?, edge_count=?, updated_at=datetime('now','localtime') WHERE id=?`
+    ).run(papers.length, edges.length, topicId);
+  });
+  tx();
+}
+
+export function setTopicError(topicId: number, msg: string) {
+  getDb().prepare(`UPDATE topics SET status='error', note=?, updated_at=datetime('now','localtime') WHERE id=?`).run(msg.slice(0, 500), topicId);
+}
+
+export function listTopicPapers(topicId: number) {
+  return getDb().prepare(
+    `SELECT tp.*, (SELECT p.id FROM papers p WHERE p.arxiv_id=tp.arxiv_id) AS library_paper_id
+     FROM topic_papers tp WHERE tp.topic_id=? ORDER BY tp.read_order IS NULL, tp.read_order, tp.in_degree DESC`
+  ).all(topicId) as any[];
+}
+
+export function listTopicEdges(topicId: number) {
+  return getDb().prepare('SELECT src, dst FROM topic_edges WHERE topic_id=?').all(topicId) as any[];
+}
+
+export function markTopicPaperImported(topicId: number, arxivId: string) {
+  getDb().prepare('UPDATE topic_papers SET imported=1 WHERE topic_id=? AND arxiv_id=?').run(topicId, arxivId);
 }

@@ -96,6 +96,17 @@ const api = {
   readNote: (name: string) => call('gh:readNote', name),
   writeQa: (arg: { arxivId: string; question: string; answer: string }) => call('gh:writeQa', arg),
   exportSummaryToRepo: (paperId: number) => call('gh:exportSummary', paperId),
+  // topics（主题依赖库）
+  buildTopic: (arg: { name: string; query: string }) => call('topic:build', arg),
+  listTopics: () => call('topic:list'),
+  getTopic: (topicId: number) => call('topic:get', topicId),
+  deleteTopic: (topicId: number) => call('topic:delete', topicId),
+  importTopicPaper: (arg: { topicId: number; arxivId: string }) => call('topic:importPaper', arg),
+  onTopicProgress: (cb: (p: any) => void): (() => void) => {
+    const l = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('topic:progress', l);
+    return () => { ipcRenderer.removeListener('topic:progress', l); };
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);

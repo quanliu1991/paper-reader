@@ -30,7 +30,7 @@ export interface ProviderRow {
 
 export interface ToastMsg { id: number; type: 'success' | 'error' | 'info'; msg: string; action?: { label: string; run: () => void } }
 
-type View = 'list' | 'reader' | 'settings' | 'review';
+type View = 'list' | 'reader' | 'settings' | 'review' | 'topics';
 
 interface Store {
   view: View;

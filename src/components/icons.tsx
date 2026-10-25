@@ -17,6 +17,19 @@ export function IconReview({ s = 18 }: { s?: number }) {
   );
 }
 
+export function IconGraph({ s = 18 }: { s?: number }) {
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="5" cy="6" r="2.5" />
+      <circle cx="19" cy="5" r="2.5" />
+      <circle cx="12" cy="12" r="2.5" />
+      <circle cx="5" cy="19" r="2.5" />
+      <circle cx="19" cy="18" r="2.5" />
+      <path d="M7.3 7 9.8 10.3M14.2 10.4 16.6 7.2M14.3 13.6 16.7 16.4M9.8 13.7 7.3 16.9" />
+    </svg>
+  );
+}
+
 export function IconSettings({ s = 18 }: { s?: number }) {
   return (
     <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

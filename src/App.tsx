@@ -4,9 +4,10 @@ import PaperList from './components/PaperList';
 import Reader from './components/Reader';
 import Settings from './components/Settings';
 import Review from './components/Review';
+import TopicView from './components/TopicView';
 import CommandPalette from './components/CommandPalette';
 import ToastHost from './components/Toast';
-import { IconLibrary, IconReview, IconSettings, IconSearch } from './components/icons';
+import { IconLibrary, IconReview, IconSettings, IconSearch, IconGraph } from './components/icons';
 
 export default function App() {
   const view = useStore(s => s.view);
@@ -48,6 +49,13 @@ export default function App() {
             <IconLibrary />
           </button>
           <button
+            className={`nav-btn ${view === 'topics' ? 'on' : ''}`}
+            onClick={() => useStore.getState().setView('topics')}
+            title="主题依赖库"
+          >
+            <IconGraph />
+          </button>
+          <button
             className={`nav-btn ${view === 'review' ? 'on' : ''}`}
             onClick={() => useStore.getState().setView('review')}
             title="闪卡复习"
@@ -82,6 +90,7 @@ export default function App() {
           {view === 'reader' && <Reader />}
           {view === 'settings' && <Settings />}
           {view === 'review' && <Review />}
+          {view === 'topics' && <TopicView />}
         </main>
       </div>
 

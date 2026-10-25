@@ -6,6 +6,7 @@ import * as llm from './llm';
 import * as gh from './github-bridge';
 import * as insights from './insights';
 import * as tr from './translate';
+import * as topicGraph from './topic-graph';
 import fs from 'fs';
 
 let win: BrowserWindow | null = null;
@@ -248,6 +249,95 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  if (process.env.PR_TOPIC_UI_E2E) {
+    // 主题依赖库 UI E2E：真实网络构建 → 断言分层列表 + 阅读顺序
+    const win = new BrowserWindow({
+      width: 1400, height: 900, show: true,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+    });
+    registerIpc();
+    const logFile = process.env.PR_E2E_LOG!;
+    const doneFile = process.env.PR_E2E_DONE!;
+    const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
+    try {
+      await win.loadURL(process.env.VITE_DEV_SERVER_URL!);
+      await new Promise(r => setTimeout(r, 1200));
+
+      // 阶段 0：侧栏导航存在主题入口
+      const shell: any = await win.webContents.executeJavaScript(`
+        (() => ({
+          hasSidebar: !!document.querySelector('.sidebar'),
+          navBtnTitles: [...document.querySelectorAll('.nav-btn')].map(b => b.title),
+        }))()
+      `);
+      log(`shell: navBtns=${JSON.stringify(shell.navBtnTitles)}`);
+      log(`sidebar topic entry: ${shell.navBtnTitles.includes('主题依赖库') ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 1：切到主题页，看到构建表单
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('topics')`);
+      await new Promise(r => setTimeout(r, 600));
+      const form: any = await win.webContents.executeJavaScript(`
+        (() => ({
+          hasBuildBox: !!document.querySelector('.topic-build-box'),
+          inputs: document.querySelectorAll('.topic-build-box input').length,
+          emptyHint: !!document.querySelector('.empty-hint'),
+        }))()
+      `);
+      log(`topic form: buildBox=${form.hasBuildBox}, inputs=${form.inputs}, emptyHint=${form.emptyHint}`);
+
+      // 阶段 2：真实构建主题（网络：arXiv + Semantic Scholar）
+      await win.webContents.executeJavaScript(`
+        (async () => {
+          const inputs = document.querySelectorAll('.topic-build-box input');
+          const setVal = (el, v) => {
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true }));
+          };
+          setVal(inputs[0], '投机解码');
+          setVal(inputs[1], 'speculative decoding');
+          document.querySelector('.topic-build-box button.primary').click();
+        })()
+      `);
+      let detail: any = null;
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        detail = await win.webContents.executeJavaScript(`
+          (() => {
+            const sections = document.querySelectorAll('.topic-section');
+            const papers = document.querySelectorAll('.topic-paper');
+            const badges = [...document.querySelectorAll('.layer-badge')].map(b => b.textContent);
+            const orders = [...document.querySelectorAll('.read-order')].map(o => o.textContent);
+            const progress = document.querySelector('.topic-progress')?.textContent ?? '';
+            const buildBtn = document.querySelector('.topic-build-box button.primary')?.textContent ?? '';
+            return { sections: sections.length, papers: papers.length, badges, firstOrders: orders.slice(0, 5), progress };
+          })()
+        `);
+        if (detail.papers > 0) break;
+      }
+      log(`topic detail: sections=${detail?.sections}, papers=${detail?.papers}, layers=${JSON.stringify(detail?.badges)}, firstOrders=${JSON.stringify(detail?.firstOrders)}`);
+      log(`topic built: ${detail && detail.papers >= 20 && detail.sections >= 2 ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 3：返回列表页回看主题卡片
+      await win.webContents.executeJavaScript(`document.querySelector('.icon-btn[title="返回主题列表"]')?.click()`);
+      await new Promise(r => setTimeout(r, 500));
+      const list: any = await win.webContents.executeJavaScript(`
+        (() => ({
+          cards: document.querySelectorAll('.topic-card').length,
+          firstCard: document.querySelector('.tc-name')?.textContent ?? null,
+        }))()
+      `);
+      log(`topic list: cards=${list.cards}, first=${list.firstCard}`);
+      log(`topic card: ${list.cards >= 1 && list.firstCard === '投机解码' ? 'PASS' : 'FAIL'}`);
+
+      fs.writeFileSync(doneFile, 'done');
+    } catch (e: any) {
+      log(`FATAL: ${e?.stack ?? e}`);
+      fs.writeFileSync(doneFile, 'error');
+    } finally {
+      app.quit();
+    }
+    return;
+  }
   if (process.env.PR_PDF_UI_E2E) {
     // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议）
     const win = new BrowserWindow({
@@ -418,6 +508,48 @@ function registerIpc() {
   wrap('papers:get', (_e, id: number) => { db.touchPaper(id); return db.getPaper(id); });
   wrap('papers:delete', (_e, id: number) => { db.deletePaper(id); return true; });
   wrap('papers:getBlocks', (_e, id: number) => db.getBlocks(id));
+
+  // ---------- 主题依赖库 ----------
+  const topicJobs = new Set<number>(); // 构建中防重
+  wrap('topic:build', async (_e, arg: { name: string; query: string }) => {
+    if (!arg.query?.trim()) throw new Error('查询词不能为空');
+    const topicId = db.createTopic(arg.name.trim() || arg.query.trim(), arg.query.trim());
+    if (topicJobs.has(topicId)) throw new Error('该主题正在构建中');
+    topicJobs.add(topicId);
+    try {
+      const result = await topicGraph.buildTopicGraph(arg.query.trim(), msg => {
+        send('topic:progress', { topicId, msg });
+      });
+      db.saveTopicGraph(topicId,
+        result.nodes.map(n => ({
+          topic_id: topicId, arxiv_id: n.arxivId, title: n.title, year: n.year,
+          citation_count: n.citationCount, layer: n.layer, in_degree: n.inDeg,
+          out_degree: n.outDeg, read_order: n.readOrder, imported: 0,
+        })),
+        result.edges,
+      );
+      return { topicId, nodeCount: result.nodes.length, edgeCount: result.edges.length };
+    } catch (e: any) {
+      db.setTopicError(topicId, e?.message ?? String(e));
+      throw e;
+    } finally {
+      topicJobs.delete(topicId);
+    }
+  });
+  wrap('topic:list', () => db.listTopics());
+  wrap('topic:get', (_e, topicId: number) => ({
+    topic: db.getTopic(topicId),
+    papers: db.listTopicPapers(topicId),
+    edges: db.listTopicEdges(topicId),
+  }));
+  wrap('topic:delete', (_e, topicId: number) => { db.deleteTopic(topicId); return true; });
+  wrap('topic:importPaper', async (_e, arg: { topicId: number; arxivId: string }) => {
+    const id = arxiv.normalizeArxivId(arg.arxivId);
+    if (!id) throw new Error('无法识别 arXiv ID');
+    const paperId = await importPaperCore(id, 'html');
+    db.markTopicPaperImported(arg.topicId, arg.arxivId);
+    return { paperId };
+  });
 
   wrap('papers:importArxiv', async (_e, input: string) => {
     const id = arxiv.normalizeArxivId(input);
