@@ -2,14 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { toast, toastErr } from './Toast';
 
-interface LiveMsg { role: 'q' | 'a'; text: string; streaming?: boolean; qaId?: number }
+interface LiveMsg { role: 'q' | 'a'; text: string; streaming?: boolean; qaId?: number; feedback?: 'tooShallow' | 'tooDeep' | 'justRight' }
 
 const FOLLOWUPS = [
-  { label: '详细解释', prompt: '请更详细地解释上面提到的关键概念，我背景是 AI Infra 方向。' },
+  { label: '详细解释', prompt: '请更详细地解释上面提到的关键概念。' },
   { label: '举个例子', prompt: '能给一个具体例子帮助理解吗？' },
   { label: '换个说法', prompt: '请用更通俗的语言重新解释一遍。' },
   { label: '这篇的局限', prompt: '这个方法有什么局限性？论文自己提到或你能推断的。' },
 ];
+
+interface Suggestion { label: string; prompt: string }
 
 export default function AskPanel() {
   const paper = useStore(s => s.currentPaper)!;
@@ -21,6 +23,8 @@ export default function AskPanel() {
   const [input, setInput] = useState('');
   const [msgs, setMsgs] = useState<LiveMsg[]>([]);
   const [busy, setBusy] = useState(false);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [suggestRationale, setSuggestRationale] = useState('');
   const threadRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -33,14 +37,23 @@ export default function AskPanel() {
     setMsgs(hist);
   }, [qaList]);
 
+  // 打开面板时拉画像驱动的建议问题（不耗 LLM）
+  useEffect(() => {
+    if (!paper?.id) return;
+    window.api.profileSuggest(paper.id)
+      .then((r: any) => { setSuggestions(r.questions ?? []); setSuggestRationale(r.rationale ?? ''); })
+      .catch(() => {});
+  }, [paper?.id, qaList.length]);
+
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
   }, [msgs]);
 
-  async function ask(questionText?: string) {
+  async function ask(questionText?: string, isFollowup = false) {
     const question = (questionText ?? input).trim();
     if (!question || busy) return;
     setBusy(true); setInput('');
+    if (isFollowup) window.api.profileFeedback('followup').catch(() => {});
 
     const pid = pendingSelection?.pid ?? blocks[0]?.pid;
     const selText = pendingSelection?.text ?? '';
@@ -78,6 +91,16 @@ export default function AskPanel() {
     }
   }
 
+  // 深度反馈：进画像账本，下轮回答自动调整
+  async function feedback(qaId: number, kind: 'tooShallow' | 'tooDeep' | 'justRight') {
+    setMsgs(m => m.map(x => x.qaId === qaId && x.role === 'a' ? { ...x, feedback: kind } : x));
+    try {
+      await window.api.profileFeedback(kind);
+      const hint = kind === 'tooShallow' ? '已记录，后续回答会更深入' : kind === 'tooDeep' ? '已记录，后续回答会更通俗' : '已记录，保持当前深度';
+      toast('info', hint);
+    } catch { /* 静默 */ }
+  }
+
   // 引用定位：【段落 #N】→ 滚动到该段并闪烁
   function jumpToRef(ref: string) {
     const m = ref.match(/#(\d+)/);
@@ -111,6 +134,8 @@ export default function AskPanel() {
     }
   }
 
+  const lastDone = msgs.length > 0 && msgs[msgs.length - 1].role === 'a' && !msgs[msgs.length - 1].streaming && msgs[msgs.length - 1].text;
+
   return (
     <div className="ask-panel">
       <div className="head">
@@ -124,7 +149,19 @@ export default function AskPanel() {
         <div className="sel-quote">{pendingSelection.text.slice(0, 400)}</div>
       )}
       <div className="thread" ref={threadRef}>
-        {msgs.length === 0 && <div className="hint">选中论文文字点「提问」，或直接输入问题。回答会标注【段落 #N】依据，可点击跳转。</div>}
+        {msgs.length === 0 && (
+          <div className="hint">
+            选中论文文字点「提问」，或直接输入问题。回答会标注【段落 #N】依据，可点击跳转。
+            {suggestions.length > 0 && (
+              <div className="suggest-block">
+                <div className="suggest-why">{suggestRationale}</div>
+                {suggestions.map(s => (
+                  <button key={s.label} className="chip suggest-chip" onClick={() => ask(s.prompt)}>{s.label}</button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {msgs.map((m, i) => (
           <div key={i} className={`msg ${m.role}`}>
             {m.role === 'q'
@@ -133,18 +170,29 @@ export default function AskPanel() {
                   {renderWithRefs(m.text, jumpToRef)}
                 </div>
             }
-            {m.role === 'a' && !m.streaming && m.text && (
+            {m.role === 'a' && !m.streaming && m.text && !m.text.startsWith('⚠') && (
               <div className="actions">
+                {!m.feedback ? (
+                  <>
+                    <button className="fb-btn" onClick={() => feedback(m.qaId!, 'tooShallow')} title="回答太浅，后续会更深入">太浅</button>
+                    <button className="fb-btn ok" onClick={() => feedback(m.qaId!, 'justRight')} title="深度刚好，保持">刚好</button>
+                    <button className="fb-btn" onClick={() => feedback(m.qaId!, 'tooDeep')} title="回答太深，后续会更通俗">太深</button>
+                  </>
+                ) : (
+                  <span className="fb-done">{
+                    m.feedback === 'tooShallow' ? '✓ 已反馈：要更深' : m.feedback === 'tooDeep' ? '✓ 已反馈：要更浅' : '✓ 深度合适'
+                  }</span>
+                )}
                 <button onClick={() => writeBack(m.qaId!)}>写回笔记</button>
               </div>
             )}
           </div>
         ))}
         {/* 追问芯片：最后一条是完成态回答时展示 */}
-        {msgs.length > 0 && msgs[msgs.length - 1].role === 'a' && !msgs[msgs.length - 1].streaming && !busy && (
+        {lastDone && !busy && (
           <div className="followup-chips">
             {FOLLOWUPS.map(f => (
-              <button key={f.label} className="chip" onClick={() => ask(f.prompt)}>{f.label}</button>
+              <button key={f.label} className="chip" onClick={() => ask(f.prompt, true)}>{f.label}</button>
             ))}
           </div>
         )}

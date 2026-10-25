@@ -74,6 +74,16 @@ const api = {
     return () => { ipcRenderer.removeListener(ch, l); };
   },
   listQa: (paperId: number) => call('qa:list', paperId),
+  // reader profile
+  getProfile: () => call('profile:get'),
+  setProfileBg: (bg: string) => call('profile:setBg', bg),
+  profileFeedback: (kind: 'tooShallow' | 'tooDeep' | 'justRight' | 'followup') => call('profile:feedback', kind),
+  profileSuggest: (paperId: number) => call('profile:suggest', paperId),
+  onProfileChanged: (cb: (p: any) => void): (() => void) => {
+    const l = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('profile:changed', l);
+    return () => { ipcRenderer.removeListener('profile:changed', l); };
+  },
   // flashcards
   saveFlashcard: (f: { paperId: number; pid: number; front: string; back: string }) => call('fc:save', f),
   updateFlashcardBack: (id: number, back: string) => call('fc:updateBack', id, back),

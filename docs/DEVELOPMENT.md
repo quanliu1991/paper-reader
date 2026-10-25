@@ -91,3 +91,4 @@ onNsEvent: (cb) => { const l = (_e, p) => cb(p); ipcRenderer.on('ns:event', l);
 4. **fontsource 懒加载**：unicode-range 分包在 DOM 无中文时不请求字体——启动必须显式 `document.fonts.load()` 预载。
 5. **SQLite upsert lastInsertRowid**：`ON CONFLICT DO UPDATE` 时不可靠，显式 `SELECT id` 查回。
 6. **PDF 译文层依赖翻译完成顺序**：pageMap 对齐率约 82%，未对齐段落显示原文——测试断言用总量级不用精确数。
+7. **多变量逗号声明 + `??` 的工具链 bug**（2026-10 实测）：`const a = x.k ?? 0, b = y.k ?? 0, c = z.k ?? 0;` 在本仓库 esbuild→Node 22 链路上，第 2 个及以后的绑定可能静默取 `??` 默认值（首绑定正常）。表现为「逻辑看着对、跑起来不对，插桩可见 raw 访问有值而解构变量为默认」。**规避**：nullable 多声明一律每个变量单独一行。已修复 `insights.ts`/`topic-graph.ts` 两处；写新代码时禁止一行多 nullable 绑定。

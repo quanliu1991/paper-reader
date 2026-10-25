@@ -249,8 +249,94 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  if (process.env.PR_PROFILE_UI_E2E) {
+    // 读者画像 UI E2E：设置页画像卡 + 反馈信号 + 建议问题（隔离 userData，勿动真实库）
+    if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
+    const win = new BrowserWindow({
+      width: 1400, height: 900, show: true,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+    });
+    registerIpc();
+    const logFile = process.env.PR_E2E_LOG!;
+    const doneFile = process.env.PR_E2E_DONE!;
+    const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
+    try {
+      await win.loadURL(process.env.VITE_DEV_SERVER_URL!);
+      await new Promise(r => setTimeout(r, 1000));
+
+      // 阶段 0：设置页画像卡渲染（轮询等待 React 挂载 + getProfile 返回）
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('settings')`);
+      let card: any = null;
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 400));
+        card = await win.webContents.executeJavaScript(`
+          (() => ({
+            hasSection: !!document.querySelector('.profile-box'),
+            hasStrategy: !!document.querySelector('.strategy-card'),
+            hasTextarea: !!document.querySelector('.profile-box textarea'),
+            hasSaveBtn: !!document.querySelector('.profile-save-row button.primary'),
+          }) )()
+        `).catch(() => null);
+        if (card && card.hasSection && card.hasSaveBtn) break;
+      }
+      log(`profile card: box=${card?.hasSection}, strategy=${card?.hasStrategy}, textarea=${card?.hasTextarea}, saveBtn=${card?.hasSaveBtn}`);
+      log(`profile card render: ${card?.hasSection && card?.hasTextarea && card?.hasSaveBtn ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 1：保存背景自述（原生 setter 触发 React onChange）
+      await win.webContents.executeJavaScript(`
+        (async () => {
+          const ta = document.querySelector('.profile-box textarea');
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          setter.call(ta, 'AI Infra 方向，熟悉 serving，不熟悉编译优化');
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          await new Promise(r => setTimeout(r, 200));
+          const btn = document.querySelector('.profile-save-row button.primary');
+          if (!btn) throw new Error('save button gone');
+          btn.click();
+          await new Promise(r => setTimeout(r, 800));
+        })()
+      `).catch(e => log(`stage1 js error: ${String(e).slice(0, 120)}`));
+      const saved: any = await win.webContents.executeJavaScript(`window.api.getProfile()`).catch(() => null);
+      log(`bg saved: ${saved?.bg?.includes('AI Infra') ? 'PASS' : 'FAIL'} (${(saved?.bg ?? 'null').slice(0, 30)})`);
+
+      // 阶段 2：反馈信号 ×3 太浅 → 策略调深
+      await win.webContents.executeJavaScript(`
+        (async () => { for (let i = 0; i < 3; i++) await window.api.profileFeedback('tooShallow'); })()
+      `);
+      const p2: any = await win.webContents.executeJavaScript(`window.api.getProfile()`);
+      const deepened = p2.strategy.depthRule.includes('更深');
+      log(`feedback accumulate: signals.tooShallow=${p2.signals?.tooShallow ?? 0}, strategy deepened=${deepened}`);
+      log(`feedback loop: ${(p2.signals?.tooShallow ?? 0) === 3 && deepened ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 3：设置页策略卡显示信号 pill
+      await new Promise(r => setTimeout(r, 300));
+      const pills: any = await win.webContents.executeJavaScript(`
+        (() => ({ n: document.querySelectorAll('.signal-pill').length, text: document.querySelector('.signal-pill')?.textContent ?? '' }) )()
+      `);
+      log(`signal pills: n=${pills.n}, first="${pills.text.trim()}"`);
+      log(`strategy visual: ${pills.n >= 1 ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 4：建议问题（无 LLM 依赖）
+      const sug: any = await win.webContents.executeJavaScript(`window.api.profileSuggest(999999)`);
+      log(`suggest: n=${sug.questions?.length ?? 0}, rationale="${(sug.rationale ?? '').slice(0, 40)}"`);
+      log(`suggest works: ${(sug.questions?.length ?? 0) === 3 ? 'PASS' : 'FAIL'}`);
+
+      const allPass = card.hasSection && card.hasTextarea && saved.bg?.includes('AI Infra')
+        && (p2.signals?.tooShallow ?? 0) === 3 && deepened && pills.n >= 1 && (sug.questions?.length ?? 0) === 3;
+      log(allPass ? 'ALL PASS' : 'HAS FAIL');
+      fs.writeFileSync(doneFile, doneFile);
+      fs.writeFileSync(doneFile, '1');
+    } catch (e: any) {
+      log(`FATAL: ${e?.stack ?? e}`);
+      fs.writeFileSync(doneFile, '1');
+    } finally {
+      app.quit();
+    }
+    return;
+  }
   if (process.env.PR_TOPIC_UI_E2E) {
-    // 主题依赖库 UI E2E：真实网络构建 → 断言分层列表 + 阅读顺序
+    // 主题依赖库 UI E2E：真实网络构建 → 断言分层列表 + 阅读顺序（隔离 userData）
+    if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
     const win = new BrowserWindow({
       width: 1400, height: 900, show: true,
       webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
@@ -339,7 +425,8 @@ app.whenReady().then(async () => {
     return;
   }
   if (process.env.PR_PDF_UI_E2E) {
-    // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议）
+    // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议；隔离 userData）
+    if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
     const win = new BrowserWindow({
       width: 1400, height: 900, show: true,
       webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
@@ -517,7 +604,10 @@ function wrap(name: string, fn: Handler) {
 }
 
 function send(channel: string, payload: any) {
-  win?.webContents.send(channel, payload);
+  // 广播所有窗口（E2E/多窗口场景下 win 引用可能不是触发窗口）
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { w.webContents.send(channel, payload); } catch { /* 窗口可能已销毁 */ }
+  }
 }
 
 // ==================== IPC ====================
@@ -971,15 +1061,80 @@ function registerIpc() {
     const ctl = new AbortController();
     activeAbort.add(ctl);
     let acc = '';
-    await llm.chatStream(provider, [
-      { role: 'system', content: `你是论文阅读助手。用中文回答。
+
+    // ---- 上下文组装（升级：画像 + 摘要 + 多轮历史 + 相关段落检索） ----
+    const profile = db.getReaderProfile();
+    const strategy = insights.deriveReaderStrategy(profile);
+    // 问题类型信号：概念/方法/结果（关键词启发式，进画像账本）
+    const q = arg.question;
+    const qKind = /是什么|什么是|概念|含义|意思|区别|为什么.*叫|指的/.test(q) ? 'concept'
+      : /怎么|如何|为什么|机理|机制|步骤|算法|实现|流程/.test(q) ? 'method'
+      : /实验|结果|性能|提升|多少|对比|baseline|消融|数字/.test(q) ? 'result' : null;
+    if (qKind) db.bumpSignal(qKind as any);
+
+    // 相关段落检索：问题词命中（简单词袋，无向量索引也够用）
+    const allBlocks = db.getBlocks(arg.paperId) as any[];
+    const qWords = [...new Set(q.toLowerCase().match(/[a-z]{3,}/g) ?? [])];
+    const scored = allBlocks
+      .filter(b => b.type === 'para' && b.en)
+      .map(b => {
+        const en = b.en.toLowerCase();
+        let sc = qWords.reduce((s, w) => s + (en.includes(w) ? 1 : 0), 0);
+        // 当前段落附近加权（问题往往针对正在读的位置）
+        if (Math.abs(b.seq - (allBlocks.find(x => x.pid === arg.pid)?.seq ?? 0)) <= 3) sc += 1.5;
+        return { b, sc };
+      })
+      .filter(x => x.sc > 0)
+      .sort((a, b2) => b2.sc - a.sc)
+      .slice(0, 6)
+      .map(x => x.b);
+    const retrievedCtx = scored
+      .map(b => `【段落 #${b.seq + 1}】${b.en}`)
+      .join('\n\n')
+      .slice(0, 8000);
+    // 当前位置上下文（划线场景优先）
+    const localCtx = arg.context?.slice(0, 4000) ?? '';
+
+    // 多轮历史：本论文最近 3 轮问答（追问连贯性）
+    const hist = (db.listQa(arg.paperId) as any[]).filter(x => x.answer).slice(-6);
+    const histMsgs: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    for (const h of hist) {
+      histMsgs.push({ role: 'user', content: h.question.slice(0, 500) });
+      histMsgs.push({ role: 'assistant', content: h.answer.slice(0, 1000) });
+    }
+
+    // 摘要注入（Triage 卡片已有就复用）
+    const summaryRow = db.getSummary(arg.paperId) as any;
+    let summaryLine = '';
+    if (summaryRow?.summary) {
+      try {
+        const s = JSON.parse(summaryRow.summary);
+        summaryLine = `论文一句话：${s.oneLiner ?? ''}\n方法：${s.method ?? ''}\n结果：${s.results ?? ''}`;
+      } catch { /* 摘要格式异常跳过 */ }
+    }
+
+    const sys = `你是论文阅读助手。用中文回答。
 规则：
 1. 先直接回答问题，再补充细节
-2. 回答依据论文上下文，不编造论文没有的内容
+2. 回答依据论文上下文，不编造论文没有的内容；论文没提到的可以补充但要标注「论文之外」
 3. 引用依据时标注段落位置，格式【段落 #N】（N 是上下文中标注的段号）
-4. 术语保留英文` },
-      { role: 'user', content: arg.context },
-      { role: 'user', content: `我的问题：${arg.question}` },
+4. 术语保留英文
+5. 用户可能在追问上一轮，结合历史回答保持连贯，不要重复解释已解释过的概念
+
+读者画像（据此调整回答方式）：
+${strategy.depthRule}
+${strategy.vocabRule}${profile.bg ? `\n用户自述背景：${profile.bg.slice(0, 300)}` : ''}`;
+
+    const userParts: string[] = [];
+    if (summaryLine) userParts.push(`【论文概览】\n${summaryLine}`);
+    if (localCtx) userParts.push(`【用户当前位置上下文】\n${localCtx}`);
+    if (retrievedCtx) userParts.push(`【与问题相关的段落（检索）】\n${retrievedCtx}`);
+    userParts.push(`我的问题：${arg.question}`);
+
+    await llm.chatStream(provider, [
+      { role: 'system', content: sys },
+      ...histMsgs,
+      { role: 'user', content: userParts.join('\n\n') },
     ], {
       onDelta: (d) => { acc += d; e.sender.send(ch, { delta: d }); },
       onDone: (full) => {
@@ -990,6 +1145,25 @@ function registerIpc() {
       onError: (err) => e.sender.send(ch, { error: err }),
     }, { temperature: 0.4, maxTokens: 4096, signal: ctl.signal }).finally(() => activeAbort.delete(ctl));
     return qaId;
+  });
+
+  // ---------- 读者画像 ----------
+  wrap('profile:get', () => {
+    const profile = db.getReaderProfile();
+    const strategy = insights.deriveReaderStrategy(profile);
+    return { ...profile, strategy };
+  });
+  wrap('profile:setBg', (_e, bg: string) => { db.setReaderBg(bg); return true; });
+  wrap('profile:feedback', (_e, kind: 'tooShallow' | 'tooDeep' | 'justRight' | 'followup') => {
+    db.bumpSignal(kind);
+    send('profile:changed', { kind });
+    return true;
+  });
+  wrap('profile:suggest', (_e, paperId: number) => {
+    const profile = db.getReaderProfile();
+    const strategy = insights.deriveReaderStrategy(profile);
+    const headings = (db.getBlocks(paperId) as any[]).filter(b => b.type === 'heading').map(b => b.en);
+    return { questions: insights.suggestQuestions(strategy, headings), rationale: strategy.rationale, kind: strategy.suggestKind };
   });
 
   wrap('qa:list', (_e, paperId: number) => db.listQa(paperId));

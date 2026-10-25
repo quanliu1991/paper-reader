@@ -718,3 +718,39 @@ mark.hl { animation: hl-in 0.3s ease; }
 .tp-actions button:disabled { opacity: 0.55; cursor: default; }
 .arxiv-link { font-size: 12px; color: var(--text-3); text-decoration: none; }
 .arxiv-link:hover { color: var(--accent); }
+
+/* ================= 问答体验升级：反馈键 + 建议问题 + 画像卡 ================= */
+.msg .actions { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.fb-btn {
+  font-size: 11px; padding: 2px 10px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card); color: var(--text-3);
+}
+.fb-btn:hover { border-color: var(--accent); color: var(--accent); }
+.fb-btn.ok:hover { border-color: #3d8b5f; color: #3d8b5f; }
+.fb-done { font-size: 11px; color: #3d8b5f; }
+.suggest-block { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.suggest-why { font-size: 11px; color: var(--text-3); font-style: normal; }
+.suggest-chip { text-align: left; justify-content: flex-start; }
+.suggest-chip::before { content: '💡 '; font-size: 11px; }
+
+/* 读者画像设置卡 */
+.profile-box textarea {
+  width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  font-size: 13px; background: var(--card); color: var(--text); resize: vertical;
+  font-family: inherit;
+}
+.profile-save-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.dirty-hint { font-size: 12px; color: #c2571c; }
+.strategy-card {
+  margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--panel);
+}
+.strategy-title { font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+.strategy-line { font-size: 12.5px; color: var(--text-2); line-height: 1.7; }
+.strategy-line.dim { color: var(--text-3); }
+.signal-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.signal-pill {
+  font-size: 11px; color: var(--text-3); background: var(--card);
+  border: 1px solid var(--border); border-radius: 10px; padding: 2px 9px;
+}
+.signal-pill b { color: var(--accent-deep); }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { toast, toastErr } from './Toast';
 
 const PRESETS: Array<{ name: string; protocol: 'openai' | 'anthropic'; baseUrl: string; model: string }> = [
   { name: 'DeepSeek', protocol: 'openai', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
@@ -12,9 +13,88 @@ const PRESETS: Array<{ name: string; protocol: 'openai' | 'anthropic'; baseUrl: 
 export default function Settings() {
   return (
     <div className="settings-page">
+      <ProfileSection />
       <ProviderSection />
       <RepoSection />
     </div>
+  );
+}
+
+// 读者画像：背景自述 + 提问/反馈信号 + 当前问答策略
+function ProfileSection() {
+  const [bg, setBg] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [profile, setProfile] = useState<any>(null);
+
+  async function load() {
+    try {
+      const p = await window.api.getProfile();
+      setProfile(p);
+      setBg(p.bg ?? '');
+    } catch { /* 静默 */ }
+  }
+  useEffect(() => {
+    load();
+    // 反馈信号变化 → 实时刷新策略卡（阅读页点「太浅/太深」这里立即跟上）
+    const off = (window.api as any).onProfileChanged?.(() => load());
+    return () => { off?.(); };
+  }, []);
+
+  async function save() {
+    try {
+      await window.api.setProfileBg(bg);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      load();
+    } catch (e: any) { toastErr(e); }
+  }
+
+  const s = profile?.strategy;
+  const sig = profile?.signals ?? {};
+  const sigRows: Array<[string, string, number]> = [
+    ['concept', '概念类提问', sig.concept ?? 0],
+    ['method', '方法类提问', sig.method ?? 0],
+    ['result', '结果类提问', sig.result ?? 0],
+    ['tooShallow', '反馈「太浅」', sig.tooShallow ?? 0],
+    ['tooDeep', '反馈「太深」', sig.tooDeep ?? 0],
+    ['justRight', '反馈「刚好」', sig.justRight ?? 0],
+  ];
+  const sigTotal = sigRows.reduce((a, r) => a + r[2], 0);
+
+  return (
+    <section className="settings-section">
+      <h2>读者画像</h2>
+      <p className="section-desc">告诉助手你的背景，它会据此调整回答深度和术语用法；你的提问类型与「太浅/太深」反馈也会持续校准它。</p>
+      <div className="profile-box">
+        <textarea
+          placeholder="例：AI Infra 方向，熟悉 serving 和 KV cache，不熟悉编译优化；中文回答"
+          value={bg}
+          onChange={e => setBg(e.target.value)}
+          rows={3}
+        />
+        <div className="profile-save-row">
+          <button className="primary" onClick={save} disabled={!bg.trim() && !(profile?.bg ?? '').length}>
+            {saved ? '✓ 已保存' : '保存背景'}
+          </button>
+          {bg.trim() !== (profile?.bg ?? '') && bg.trim().length > 0 && <span className="dirty-hint">未保存</span>}
+        </div>
+      </div>
+      {s && (
+        <div className="strategy-card">
+          <div className="strategy-title">当前问答策略（自动派生）</div>
+          <div className="strategy-line">{s.depthRule}</div>
+          <div className="strategy-line">{s.vocabRule}</div>
+          {sigTotal > 0 && (
+            <div className="signal-grid">
+              {sigRows.filter(r => r[2] > 0).map(([k, label, n]) => (
+                <span key={k} className="signal-pill">{label} <b>{n}</b></span>
+              ))}
+            </div>
+          )}
+          {sigTotal === 0 && <div className="strategy-line dim">还没有信号——提问几次、给回答点点反馈，策略会随之进化。</div>}
+        </div>
+      )}
+    </section>
   );
 }
 

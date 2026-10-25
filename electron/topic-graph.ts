@@ -206,7 +206,8 @@ export function stratifyAndOrder(
   // 阅读顺序：foundation 年代升序 → key 引用数降序 → bridge → frontier（新综述最后）
   const rank = { foundation: 0, key: 1, bridge: 2, node: 3, frontier: 4 } as Record<string, number>;
   layered.sort((a, b) => {
-    const ra = rank[a.layer] ?? 3, rb = rank[b.layer] ?? 3;
+    const ra = rank[a.layer] ?? 3;
+    const rb = rank[b.layer] ?? 3;
     if (ra !== rb) return ra - rb;
     if (a.layer === 'foundation') return (a.year ?? 0) - (b.year ?? 0);
     if (a.layer === 'frontier') return (b.year ?? 0) - (a.year ?? 0);

@@ -147,6 +147,12 @@ function migrate(d: Database.Database) {
     dst TEXT NOT NULL,                         -- 被引方 arxiv_id
     PRIMARY KEY (topic_id, src, dst)
   );
+
+  CREATE TABLE IF NOT EXISTS reader_profile (
+    key TEXT PRIMARY KEY,                      -- 'bg' 静态背景 | 'signal:<kind>' 动态信号计数
+    value TEXT,
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
   `);
   migrateColumns(d);
 }
@@ -406,4 +412,35 @@ export function listTopicEdges(topicId: number) {
 
 export function markTopicPaperImported(topicId: number, arxivId: string) {
   getDb().prepare('UPDATE topic_papers SET imported=1 WHERE topic_id=? AND arxiv_id=?').run(topicId, arxivId);
+}
+
+// ---------- 读者画像 ----------
+// 静态背景存 key='bg'（自由文本，如「AI Infra 方向，熟悉 serving，不熟编译」）；
+// 动态信号存 key='signal:<kind>'，value 为累计计数（int as string）
+export type SignalKind = 'concept' | 'method' | 'result' | 'tooShallow' | 'tooDeep' | 'justRight' | 'followup';
+
+export function getReaderProfile(): { bg: string; signals: Record<string, number> } {
+  const d = getDb();
+  const rows = d.prepare('SELECT key, value FROM reader_profile').all() as any[];
+  let bg = '';
+  const signals: Record<string, number> = {};
+  for (const r of rows) {
+    if (r.key === 'bg') bg = r.value ?? '';
+    else if (r.key.startsWith('signal:')) signals[r.key.slice(7)] = Number(r.value) || 0;
+  }
+  return { bg, signals };
+}
+
+export function setReaderBg(bg: string) {
+  getDb().prepare(
+    `INSERT INTO reader_profile (key, value, updated_at) VALUES ('bg', ?, datetime('now','localtime'))
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`
+  ).run(bg.slice(0, 2000));
+}
+
+export function bumpSignal(kind: SignalKind, n = 1) {
+  getDb().prepare(
+    `INSERT INTO reader_profile (key, value, updated_at) VALUES (?, '1', datetime('now','localtime'))
+     ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER) + ? AS TEXT), updated_at=excluded.updated_at`
+  ).run(`signal:${kind}`, n);
 }
