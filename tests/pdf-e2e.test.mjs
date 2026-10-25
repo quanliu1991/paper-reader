@@ -31,9 +31,12 @@ const electronBin = packaged
   ? path.resolve('release/win-unpacked/Paper Reader.exe')
   : path.join('node_modules', '.bin', 'electron.cmd');
 
-const env = packaged
-  ? { ...process.env, PR_PDF_E2E: '1', PR_E2E_LOG: logFile, PR_E2E_DONE: doneFile, PR_E2E_USER_DATA: tmpDir }
-  : { ...process.env, PR_E2E: '1', PR_E2E_LOG: logFile, PR_E2E_DONE: doneFile, PR_E2E_USER_DATA: tmpDir };
+// 防宿主 shell 残留 PR_E2E 等变量误入子进程（曾导致 dev 模式 require 错入口超时）
+const { PR_E2E, PR_PDF_E2E, PR_E2E_LOG, PR_E2E_DONE, PR_E2E_USER_DATA, ...cleanEnv } = process.env;
+const env = {
+  ...cleanEnv,
+  PR_PDF_E2E: '1', PR_E2E_LOG: logFile, PR_E2E_DONE: doneFile, PR_E2E_USER_DATA: tmpDir,
+};
 
 const child = spawn('"' + electronBin + '"', packaged ? [] : ['.'], {
   env, shell: true, stdio: 'ignore',

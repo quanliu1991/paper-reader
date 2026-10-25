@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import katex from 'katex';
 import type { BlockRow } from '../store';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
@@ -13,6 +14,7 @@ export interface TextBlockBox {
   page: number;
   x: number; y: number; w: number; h: number;
   textLen: number;
+  lineH: number;   // 原文行距（PDF 单位）——译文行距跟它走
 }
 
 interface PageState {
@@ -474,11 +476,19 @@ function clusterTextItems(tc: any, vp1: any, page: number, blockNorms: { pid: nu
     const norm = normText(text);
     if (norm.length < 6) continue;
     const pid = matchPid(text, blockNorms);
+    // 原文行距：取簇内相邻行 y 差的中位数（抗单行异常）
+    const ys = [...new Set(c.items.map(i => Math.round(i.transform[5])))].sort((a, b) => b - a);
+    let lineH = 0;
+    if (ys.length >= 2) {
+      const gaps = ys.slice(1).map((y, i) => ys[i] - y).filter(g => g > 2 && g < 40);
+      if (gaps.length) lineH = gaps.sort((a, b) => a - b)[Math.floor(gaps.length / 2)];
+    }
+    if (!lineH) lineH = Math.max(...c.items.map(i => i.height ?? 10));
     const x = Math.min(...c.items.map(i => i.transform[4]));
     const right = Math.max(...c.items.map(i => i.transform[4] + i.width));
     const pdfTop = Math.max(...c.items.map(i => i.transform[5] + (i.height ?? 10)));
     const pdfBottom = Math.min(...c.items.map(i => i.transform[5]));
-    out.push({ pid, page, textLen: norm.length, x, y: vpH - pdfTop, w: right - x, h: Math.max(8, pdfTop - pdfBottom) });
+    out.push({ pid, page, textLen: norm.length, x, y: vpH - pdfTop, w: right - x, h: Math.max(8, pdfTop - pdfBottom), lineH: Math.max(6, lineH) });
   }
   return out;
 }
@@ -506,6 +516,7 @@ function splitZh(zh: string, parts: number[]): string[] {
 
 // ---------- 渲染 ----------
 
+// 中文正文排版：行距锁原文行距、字号从行高推导、公式 KaTeX、两端对齐、首行缩进
 function renderZh(
   layer: HTMLElement, pageBoxes: TextBlockBox[], canvas: HTMLCanvasElement,
   vp1: any, zhParts: Map<number, string[]>, activePid: number, collapsed: Set<number>,
@@ -527,6 +538,11 @@ function renderZh(
     const zhPart = parts[idx];
     const meta = blockMeta.get(box.pid);
     const isHeading = meta?.type === 'heading';
+    // 排版基础：原文行距（屏幕像素）。多块同 pid（跨栏）共享同一 box 行距
+    const srcLineH = box.lineH * eff;
+    const baseFs = srcLineH * 0.78;          // 字号 ≈ 行高 78%（正文舒适比例）
+    const headFs = srcLineH * 0.92;          // 标题字号更大
+    const fs = (isHeading ? Math.max(headFs, baseFs) : baseFs) * zhScale;
     const left = box.x * eff - 3, top = box.y * eff - 3, width = box.w * eff + 6;
     const minH = box.h * eff + 5;
     // 本块可用最大高度：到下一块顶部为止（留 5px 呼吸）
@@ -534,16 +550,17 @@ function renderZh(
     const nextTop = nb ? nb.y * eff - 5 : pageBottom;
     const maxH = Math.max(minH, nextTop - top);
     if (zhPart === undefined || zhPart === '') {
-      // 已匹配未译出：极淡的「翻译中」占位（论文留白感，不是框）
+      // 已匹配未译出：与正文同字号的浅灰占位（不打乱行距节奏）
       const pending = document.createElement('div');
       pending.className = 'dpv-pending';
       pending.style.left = `${left + 2}px`;
       pending.style.top = `${top + 2}px`;
+      pending.style.fontSize = `${fs * 0.82}px`;
+      pending.style.lineHeight = `${srcLineH}px`;
       pending.textContent = '翻译中…';
       layer.appendChild(pending);
       continue;
     }
-    if (!zhPart) continue;
     const cap = document.createElement('div');
     const isTitle = isHeading && (meta?.level ?? 9) <= 1;
     cap.className = 'dpv-zhcap' + (isHeading ? ' heading' : '') + (isTitle ? ' center' : '') + (activePid === box.pid ? ' active' : '');
@@ -552,20 +569,24 @@ function renderZh(
     cap.style.top = `${top}px`;
     cap.style.width = `${width}px`;
     cap.style.minHeight = `${minH}px`;
-    // 中文字号：标题大一级；按用户缩放
-    cap.style.fontSize = `${(isHeading ? 11.5 : 9.8) * zhScale}px`;
-    // 中文论文习惯：长正文段首行缩进两字宽；标题/短行（图注公式）不缩进
-    if (!isHeading && zhPart.length >= 40) cap.style.textIndent = '1.96em';
+    cap.style.fontSize = `${fs}px`;
+    cap.style.lineHeight = `${srcLineH}px`;  // 行距锁原文
+    // 中文论文习惯：长正文段首行缩进两字；标题/短行（图注公式）不缩进
+    if (!isHeading && zhPart.length >= 40) cap.style.textIndent = `${2 * fs}px`;
     else cap.style.textIndent = '0';
-    cap.innerHTML = escapeZh(zhPart);
+    cap.innerHTML = renderZhRich(zhPart, fs);
     cap.onclick = () => onActive(box.pid);
     layer.appendChild(cap);
-    // 自适应：先试缩小字号（最多到 80%），再不行折叠
-    let fs = (isHeading ? 11.5 : 9.8) * zhScale;
+    // 自适应：正文过长先压行距（最低 82%），压不动再缩字号（最低 76%），仍溢出才折叠
+    let curFs = fs, curLH = srcLineH;
     let guard = 0;
-    while (cap.scrollHeight > maxH && guard < 8 && fs > (isHeading ? 9.2 : 7.8)) {
-      fs *= 0.94;
-      cap.style.fontSize = `${fs}px`;
+    while (cap.scrollHeight > maxH && guard < 14) {
+      if (guard < 6 && curLH > srcLineH * 0.82) {
+        curLH *= 0.95; cap.style.lineHeight = `${curLH}px`;
+      } else if (curFs > baseFs * 0.76) {
+        curFs *= 0.94; cap.style.fontSize = `${curFs}px`;
+        cap.style.lineHeight = `${curLH}px`;
+      } else break;
       guard++;
     }
     if (cap.scrollHeight > maxH && zhPart.length > 160) {
@@ -573,11 +594,46 @@ function renderZh(
       cap.style.maxHeight = `${maxH}px`;
       const more = document.createElement('span');
       more.className = 'dpv-more';
+      more.style.fontSize = `${Math.max(9, fs * 0.9)}px`;
       more.textContent = '展开全文';
       more.onclick = (ev) => { ev.stopPropagation(); setCollapsedGlobal(box.pid); };
       cap.appendChild(more);
     }
   }
+}
+
+// 译文富文本：$...$/$$...$$ 用 KaTeX 渲染，其余转义
+function renderZhRich(s: string, fs: number): string {
+  const parts: { t: string; m: boolean; d: boolean }[] = [];
+  let rest = s;
+  const blockRe = /\$\$([\s\S]+?)\$\$/;
+  const inlineRe = /\$([^$\n]+?)\$/;
+  while (rest.length) {
+    const mb = rest.match(blockRe);
+    const mi = rest.match(inlineRe);
+    const bIdx = mb ? rest.indexOf(mb[0]) : -1;
+    const iIdx = mi ? rest.indexOf(mi[0]) : -1;
+    if (bIdx === -1 && iIdx === -1) { parts.push({ t: rest, m: false, d: false }); break; }
+    const useBlock = bIdx !== -1 && (iIdx === -1 || bIdx <= iIdx);
+    const m = useBlock ? mb! : mi!;
+    const idx = useBlock ? bIdx : iIdx;
+    if (idx > 0) parts.push({ t: rest.slice(0, idx), m: false, d: false });
+    parts.push({ t: m[1], m: true, d: useBlock });
+    rest = rest.slice(idx + m[0].length);
+  }
+  let html = '';
+  for (const p of parts) {
+    if (!p.m) { html += escapeZh(p.t); continue; }
+    try {
+      html += katex.renderToString(p.t, {
+        displayMode: p.d, throwOnError: false, strict: false,
+        trust: false, output: 'html',
+      });
+    } catch {
+      html += `<code>${escapeZh(p.t)}</code>`;
+    }
+  }
+  return html;
 }
 
 function setCollapsedGlobal(pid: number) {

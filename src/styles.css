@@ -484,7 +484,8 @@ mark.hl { animation: hl-in 0.3s ease; }
 .dpv-hllayer { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
 .dpv-hlbox { position: absolute; border: 2px solid #4a90d9; background: rgba(74,144,217,0.12); border-radius: 4px; box-shadow: 0 0 0 3px rgba(74,144,217,0.15); transition: opacity 0.2s; }
 
-/* 右：译文层——无缝中文论文排版（无框无阴影，像直接印在纸上） */
+/* 右：译文层——无缝中文论文排版（无框无阴影，像直接印在纸上）
+   字号/行高由 JS 按原文行距内联设置（行距锁原文） */
 .dpv-zhlayer { position: absolute; inset: 0; z-index: 8; }
 .dpv-zhcap {
   position: absolute; box-sizing: border-box;
@@ -492,10 +493,9 @@ mark.hl { animation: hl-in 0.3s ease; }
   border: 1px solid #fff; /* 白描边盖住底下英文，视觉上无边框 */
   border-radius: 0;
   padding: 2px 4px; margin: 0;
-  line-height: 1.6; text-align: justify; text-justify: inter-ideograph;
+  text-align: justify; text-justify: inter-ideograph;
   color: #111; overflow: hidden;
   font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", "Songti SC", "FangSong", serif;
-  font-size: 9.8px;
   cursor: pointer;
   transition: background 0.12s;
 }
@@ -520,6 +520,10 @@ mark.hl { animation: hl-in 0.3s ease; }
   font-family: "Noto Serif SC", "SimSun", serif; letter-spacing: 1px;
   pointer-events: none;
 }
+/* KaTeX 在译文小字号下的适配：随宿主字号缩放、行内公式不撑破行距 */
+.dpv-zhcap .katex { font-size: 1.02em; }
+.dpv-zhcap .katex-display { margin: 0.15em 0; }
+.dpv-zhcap .katex-display > .katex { font-size: 1.08em; }
 .dpv-more {
   position: absolute; right: 4px; bottom: 2px;
   font-size: 10px; color: #4a90d9; cursor: pointer;
