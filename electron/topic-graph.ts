@@ -47,9 +47,7 @@ export async function searchSeeds(query: string, limit = 20): Promise<GraphNode[
     }
   }
   if (!ids.length) return [];
-  // S2 批量补引用数（一次最多 500）
-  const batch = await fetchJson(`${S2}/batch?fields=citationCount,title,year,externalIds`, 30000).catch(() => null) as any;
-  // batch 接口是 POST，上面 GET 会失败——改走逐条 details 批量 POST
+  // S2 批量补引用数（POST batch 接口，一次最多 500）
   const details = await batchDetails(ids);
   return ids.map(id => ({
     arxivId: id,

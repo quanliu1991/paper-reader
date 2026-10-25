@@ -566,7 +566,7 @@ function registerIpc() {
     const id = arxiv.normalizeArxivId(arg.arxivId);
     if (!id) throw new Error('无法识别 arXiv ID');
     const paperId = await importPaperCore(id, 'html');
-    db.markTopicPaperImported(arg.topicId, arg.arxivId);
+    db.markTopicPaperImported(arg.topicId, id); // 用规范化后的 id 匹配（剥掉 v2 等版本后缀）
     return { paperId };
   });
 

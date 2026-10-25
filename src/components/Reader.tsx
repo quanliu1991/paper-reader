@@ -3,7 +3,6 @@ import { useStore } from '../store';
 import RichText from './RichText';
 import AskPanel from './AskPanel';
 import CommandPalette from './CommandPalette';
-import PdfView from './PdfView';
 import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
 import DualPdfView from './DualPdfView';
@@ -40,11 +39,6 @@ export default function Reader() {
   // ---------- PDF 原版模式状态 ----------
   const [pdfReady, setPdfReady] = useState(false);
   const [pageMap, setPageMap] = useState<Record<number, number> | null>(null);
-  const [visiblePage, setVisiblePage] = useState(1);
-  const [jumpReq, setJumpReq] = useState<{ page: number; seq: number } | null>(null);
-  const jumpSeqRef = useRef(0);
-  function requestJump(p: number) { jumpSeqRef.current += 1; setJumpReq({ page: p, seq: jumpSeqRef.current }); }
-  const visiblePageRef = useRef(1);
   // 豆包式段落联动：选中的译文段落（保留给后续联动功能）
   const [, setSelectedPid] = useState<number | null>(null);
   // 翻译版 PDF 导出
@@ -298,21 +292,6 @@ export default function Reader() {
         pdfReady
           ? <DualPdfView paperId={paper.id} blocks={blocks} onMouseUp={onMouseUp} />
           : <div className="reader-scroll"><div className="pdf-loading" style={{ padding: '120px 0', textAlign: 'center' }}>PDF 下载中…（首次导入论文时后台自动下载，稍后重开）</div></div>
-      ) : isPdfLayout ? (
-        <div className="pdf-layout">
-          <div className="pdf-pane">
-            {pdfReady
-              ? <PdfView paperId={paper.id} jumpReq={jumpReq} onVisiblePage={p => setVisiblePage(p)} visiblePageRef={visiblePageRef} />
-              : <div className="pdf-loading">PDF 下载中…（首次导入论文时后台自动下载）</div>}
-          </div>
-          {isPdfLayout && pdfReady && (
-            <div className="pdf-page-badge">
-              <button onClick={() => requestJump(Math.max(1, visiblePage - 1))} title="上一页">‹</button>
-              <span>第 {visiblePage} 页</span>
-              <button onClick={() => requestJump(visiblePage + 1)} title="下一页">›</button>
-            </div>
-          )}
-        </div>
       ) : layout === 'translate' ? (
         <div
           className="reader-scroll translate-host"

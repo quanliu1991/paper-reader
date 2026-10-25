@@ -76,6 +76,7 @@ export default function TopicView() {
 
   async function readNow(p: TopicPaper) {
     if (p.library_paper_id) { useStore.getState().setView('reader'); await openPaper(p.library_paper_id); return; }
+    // imported=1 但 library_paper_id 为空：论文曾被导入但已删除 → 重新导入
     setImporting(p.arxiv_id);
     try {
       const r = await window.api.importTopicPaper({ topicId: openId!, arxivId: p.arxiv_id });
