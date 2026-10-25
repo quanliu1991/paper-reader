@@ -511,3 +511,46 @@ mark.hl { animation: hl-in 0.3s ease; }
   background: rgba(255,253,248,0.9); padding: 1px 6px; border-radius: 3px;
 }
 .dpv-more:hover { text-decoration: underline; }
+
+/* ==================== 双页视图细节打磨 ==================== */
+
+/* 工具栏动作按钮 */
+.dpv-toolbar { gap: 12px; }
+.dpv-page-indicator { color: #ffd479; font-weight: 600; min-width: 90px; text-align: center; }
+.dpv-actions { display: flex; gap: 4px; }
+.dpv-actions button {
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+  color: #ccc; border-radius: 4px; cursor: pointer; padding: 2px 9px; font-size: 12px;
+  transition: all 0.15s;
+}
+.dpv-actions button:hover { background: rgba(255,255,255,0.16); color: #fff; }
+.dpv-actions button.on { background: rgba(232,183,58,0.25); border-color: rgba(232,183,58,0.5); color: #ffd479; }
+
+/* 译文骨架屏：未到译文时显示轻扫描块 */
+.dpv-zhcap.skeleton {
+  background: linear-gradient(100deg, rgba(0,0,0,0.04) 30%, rgba(0,0,0,0.08) 50%, rgba(0,0,0,0.04) 70%);
+  background-size: 200% 100%;
+  animation: dpv-skeleton 1.6s ease infinite;
+  border: 1px dashed rgba(0,0,0,0.08);
+  box-shadow: none;
+}
+@keyframes dpv-skeleton {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* 译文胶囊更精致：微渐变 + 圆角统一 */
+.dpv-zhcap {
+  font-size: 9.8px;
+  border-radius: 5px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.dpv-zhcap.active {
+  border-color: #4a90d9;
+  box-shadow: 0 0 0 3px rgba(74,144,217,0.22), 0 2px 10px rgba(74,144,217,0.15);
+}
+
+/* 页面阴影更柔和（暗背景上的白页） */
+.dpv-wrap .pdf-page {
+  border-radius: 3px;
+}

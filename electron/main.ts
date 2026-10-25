@@ -152,11 +152,11 @@ app.whenReady().then(async () => {
         })()
       `);
       log('dbg: ' + JSON.stringify(dbg, null, 1));
-      // 双页联动验证：点击第一个译文胶囊 → 左侧出现高亮框；左滚 → 右同步
+      // 双页联动验证：点击第一个「真实译文」胶囊（跳过骨架）→ 左侧出现高亮框；左滚 → 右同步
       const link: any = await win.webContents.executeJavaScript(`
         (async () => {
-          const caps = document.querySelectorAll('.dpv-zhcap');
-          if (!caps.length) return { linked: false, reason: 'no caps' };
+          const caps = [...document.querySelectorAll('.dpv-zhcap')].filter(c => c.dataset.pid);
+          if (!caps.length) return { linked: false, reason: 'no real caps' };
           caps[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
           await new Promise(r => setTimeout(r, 500));
           const hl = document.querySelectorAll('.dpv-hlbox');
@@ -169,16 +169,18 @@ app.whenReady().then(async () => {
           }
           const lRatio = panes[0] ? panes[0].scrollTop / Math.max(1, panes[0].scrollHeight - panes[0].clientHeight) : 0;
           const rRatio = panes[1] ? panes[1].scrollTop / Math.max(1, panes[1].scrollHeight - panes[1].clientHeight) : 0;
-          // 匹配率：右侧页里胶囊数 / 左侧同页聚类块数（近似——用全局比值）
-          // 闪烁检测：1.2s 内 canvas 数量必须稳定（重载会导致归零再涨）
+          // 闪烁检测 + 骨架统计
           const c1 = document.querySelectorAll('.dpv-page canvas').length;
           await new Promise(r => setTimeout(r, 1200));
           const c2 = document.querySelectorAll('.dpv-page canvas').length;
+          const capsNow = document.querySelectorAll('.dpv-zhcap');
           return {
             linked: hl.length > 0, hlCount: hl.length,
             scrollSynced: Math.abs(lRatio - rRatio) < 0.05,
             lRatio: Math.round(lRatio * 100) / 100, rRatio: Math.round(rRatio * 100) / 100,
             flicker: c1 !== c2, canvases1: c1, canvases2: c2,
+            capTotal: capsNow.length,
+            skeleton: [...capsNow].filter(c => c.classList.contains('skeleton')).length,
           };
         })()
       `);

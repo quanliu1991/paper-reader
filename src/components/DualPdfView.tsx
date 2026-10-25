@@ -7,7 +7,7 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 // 双页联动视图（对标豆包）：左原文 PDF，右同版式译文页。
-// 双向同步滚动 + 段落点击联动高亮 + 原文划词 + 滚到哪翻到哪。
+// 双向同步滚动 + 段落点击联动高亮（双向）+ 原文划词 + 滚到哪翻到哪 + 页码指示 + 失败退避。
 export interface TextBlockBox {
   pid: number;
   page: number;
@@ -19,6 +19,7 @@ interface PageState {
   canvas: HTMLCanvasElement | null;
   zhLayer: HTMLDivElement | null;
   hlLayer: HTMLDivElement | null;
+  pageEl: HTMLDivElement | null;
 }
 
 const COLLAPSE_LEN = 420;
@@ -42,11 +43,15 @@ export default function DualPdfView({
   const [boxes, setBoxes] = useState<TextBlockBox[]>([]);
   const [activePid, setActivePid] = useState(0);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const [showZh, setShowZh] = useState(true);
+  const [zhScale, setZhScale] = useState(1);
+  const [visiblePage, setVisiblePage] = useState(1);
+  const [failedPages, setFailedPages] = useState<Set<number>>(new Set());
   const renderedL = useRef<Set<number>>(new Set());
   const renderedR = useRef<Set<number>>(new Set());
   const syncLockUntil = useRef(0);
 
-  // 易变引用（避免 effect 因回调/译文更新反复重建）
+  // 易变引用（effect 只依赖 doc，译文/交互更新不重建渲染管线 → 不闪）
   const blocksRef = useRef(blocks);
   blocksRef.current = blocks;
   const boxesRef = useRef(boxes);
@@ -55,19 +60,26 @@ export default function DualPdfView({
   activePidRef.current = activePid;
   const collapsedRef = useRef(collapsed);
   collapsedRef.current = collapsed;
+  const showZhRef = useRef(showZh);
+  showZhRef.current = showZh;
+  const zhScaleRef = useRef(zhScale);
+  zhScaleRef.current = zhScale;
   const onMouseUpRef = useRef(onMouseUp);
   onMouseUpRef.current = onMouseUp;
-  // 已发起翻译的 pid（避免重复请求）
   const requestedTx = useRef<Set<number>>(new Set());
+  const txFailCount = useRef<Map<number, number>>(new Map());   // pid → 连续失败次数（指数退避）
+  const [txPending, setTxPending] = useState(0);                // 本会话按需翻译在途数
+  const txPendingRef = useRef(0);
 
-  // 1) 只在换论文时加载文档（译文更新不再触发重载 → 修闪烁）
+  // 1) 只在换论文时加载文档（译文更新不再触发重载 → 不闪）
   useEffect(() => {
     let cancelled = false;
-    setDoc(null); setError(''); setNumPages(0); setBoxes([]);
+    setDoc(null); setError(''); setNumPages(0); setBoxes([]); setFailedPages(new Set());
     renderedL.current.clear(); renderedR.current.clear();
     leftHosts.current.clear(); rightHosts.current.clear();
     leftStates.current.clear(); rightStates.current.clear();
     requestedTx.current.clear();
+    txFailCount.current.clear();
     (async () => {
       try {
         const d = await (pdfjsLib.getDocument({ url: `local-pdf://p/${paperId}`, useSystemFonts: true })).promise;
@@ -80,13 +92,13 @@ export default function DualPdfView({
     return () => { cancelled = true; };
   }, [paperId]);
 
-  // en 文本指纹（长度+pid）——en 不变则不重新聚类（翻译中 zh 更新不会走到这）
+  // en 文本指纹：en 不变则不重新聚类
   const enKey = useMemo(
     () => blocks.map(b => `${b.pid}.${(b.en ?? '').length}`).join(','),
     [blocks],
   );
 
-  // 2) 文档就绪后聚类 + 匹配（依赖 enKey 而非 blocks）
+  // 2) 文档就绪后聚类 + 匹配
   useEffect(() => {
     if (!doc) return;
     let cancelled = false;
@@ -96,8 +108,7 @@ export default function DualPdfView({
       const all: TextBlockBox[] = [];
       for (let p = 1; p <= Math.min(doc.numPages, 60); p++) {
         const page = await doc.getPage(p);
-        const boxes = clusterTextItems(await page.getTextContent(), page.getViewport({ scale: 1 }), p, blockNorms);
-        all.push(...boxes);
+        all.push(...clusterTextItems(await page.getTextContent(), page.getViewport({ scale: 1 }), p, blockNorms));
         if (cancelled) return;
       }
       if (!cancelled) setBoxes(all);
@@ -105,7 +116,7 @@ export default function DualPdfView({
     return () => { cancelled = true; };
   }, [doc, enKey]);
 
-  // pid → 译文切片
+  // pid → 译文切片（跨栏/跨页按比例句界切分）
   const zhParts = useCallback(() => {
     const byPid = new Map<number, TextBlockBox[]>();
     for (const b of boxesRef.current) {
@@ -120,24 +131,42 @@ export default function DualPdfView({
     return out;
   }, []);
 
-  // 滚到哪翻到哪：页面渲染后，对无译文且未请求过的 pid 发起翻译
+  // 滚到哪翻到哪 + 失败指数退避（1次→8s 屏蔽，2次→40s，3次+→本会话放弃）
   const translatePageIfNeeded = useCallback((page: number) => {
+    const now = Date.now();
     const pageBoxes = boxesRef.current.filter(b => b.page === page && b.pid);
     const zhByPid = new Map(blocksRef.current.map(b => [b.pid, b.zh ?? '']));
     const need = pageBoxes
       .map(b => b.pid)
-      .filter(pid => !(zhByPid.get(pid) ?? '') && !requestedTx.current.has(pid));
+      .filter(pid => {
+        if (zhByPid.get(pid)) return false;
+        if (requestedTx.current.has(pid)) return false;
+        const fails = txFailCount.current.get(pid) ?? 0;
+        if (fails >= 3) return false;
+        const bannedUntil = txFailCount.current.get(-pid) ?? 0;
+        return now >= bannedUntil;
+      });
     if (!need.length) return;
     need.forEach(pid => requestedTx.current.add(pid));
     const items = blocksRef.current.filter(b => need.includes(b.pid)).map(b => ({ pid: b.pid, en: b.en }));
     if (items.length) {
+      txPendingRef.current += items.length;
+      setTxPending(txPendingRef.current);
       window.api.translateAll({ paperId, blocks: items, scope: 'all' }).catch(() => {
-        need.forEach(pid => requestedTx.current.delete(pid));
+        items.forEach(it => requestedTx.current.delete(it.pid));
+        items.forEach(it => {
+          const fails = (txFailCount.current.get(it.pid) ?? 0) + 1;
+          txFailCount.current.set(it.pid, fails);
+          txFailCount.current.set(-it.pid, now + (fails === 1 ? 8000 : fails === 2 ? 40000 : Infinity));
+        });
+      }).finally(() => {
+        txPendingRef.current -= items.length;
+        setTxPending(txPendingRef.current);
       });
     }
   }, [paperId]);
 
-  // 渲染单页（side: 'en' 左 | 'zh' 右）——引用全走 ref，依赖只有 doc
+  // 渲染单页（side: 'en' 左 | 'zh' 右）——DPR 高清渲染
   const renderSide = useCallback(async (d: PDFDocumentProxy, n: number, side: 'en' | 'zh') => {
     const hosts = side === 'en' ? leftHosts : rightHosts;
     const states = side === 'en' ? leftStates : rightStates;
@@ -148,7 +177,8 @@ export default function DualPdfView({
     try {
       const page = await d.getPage(n);
       const vp1 = page.getViewport({ scale: 1 });
-      const rv = page.getViewport({ scale: 2 });
+      const dpr = Math.min(3, window.devicePixelRatio || 1);
+      const rv = page.getViewport({ scale: 2 * dpr });
       const canvas = document.createElement('canvas');
       canvas.width = rv.width; canvas.height = rv.height;
       canvas.style.width = '100%'; canvas.style.display = 'block';
@@ -156,7 +186,7 @@ export default function DualPdfView({
       const loading = host.querySelector('.pdf-loading');
       if (loading) loading.remove();
       host.appendChild(canvas);
-      const ps: PageState = { canvas, zhLayer: null, hlLayer: null };
+      const ps: PageState = { canvas, zhLayer: null, hlLayer: null, pageEl: host };
       const pageBoxes = boxesRef.current.filter(b => b.page === n);
       if (side === 'zh') {
         const zhLayer = document.createElement('div');
@@ -164,13 +194,12 @@ export default function DualPdfView({
         host.appendChild(zhLayer);
         ps.zhLayer = zhLayer;
         renderZh(zhLayer, pageBoxes, canvas, vp1, zhParts(), activePidRef.current, collapsedRef.current,
-          pid => { setActivePid(pid); });
+          pid => { setActivePid(pid); }, zhScaleRef.current, showZhRef.current);
       } else {
-        // 透明划词层
         const tl = document.createElement('div');
         tl.className = 'dpv-textlayer';
         const tc = await page.getTextContent();
-        const hostW = host.getBoundingClientRect().width || rv.width / 2;
+        const hostW = host.getBoundingClientRect().width || rv.width / (2 * dpr);
         const eff = hostW / vp1.width;
         for (const it of tc.items as any[]) {
           if (!it.str || !it.str.trim() || !it.width) continue;
@@ -194,14 +223,20 @@ export default function DualPdfView({
         host.appendChild(hlLayer);
         ps.hlLayer = hlLayer;
         renderHl(hlLayer, pageBoxes, canvas, vp1, activePidRef.current);
-        // 本页可见 → 触发按需翻译
+        // 本页可见 → 按需翻译 + 记录可见页
         translatePageIfNeeded(n);
+        if (n > 0) setVisiblePage(prev => (Math.abs(prev - n) > 2 ? n : prev));
+        // 失败重试：清掉失败标记（渲染成功即恢复）
+        setFailedPages(s => { if (!s.has(n)) return s; const x = new Set(s); x.delete(n); return x; });
       }
       states.current.set(n, ps);
-    } catch { renderedRef.current.delete(n); }
+    } catch {
+      renderedRef.current.delete(n);
+      setFailedPages(s => new Set(s).add(n));
+    }
   }, [doc, zhParts, translatePageIfNeeded]);
 
-  // 懒渲染（renderSide 稳定 → IO 只建一次）
+  // 懒渲染
   useEffect(() => {
     if (!doc || !numPages) return;
     const hostsL = leftRef.current?.querySelectorAll('[data-page]');
@@ -217,33 +252,64 @@ export default function DualPdfView({
     return () => { ioL.disconnect(); ioR.disconnect(); };
   }, [doc, numPages, renderSide]);
 
-  // 3) activePid 变化 → 只切 class（不重建 DOM → 无闪烁）
+  // boxes 聚类完成后：对已渲染页重算胶囊 + 触发按需翻译
+  useEffect(() => {
+    if (!doc || !boxes.length) return;
+    const parts = zhParts();
+    for (const [n, ps] of rightStates.current) {
+      if (ps.zhLayer && ps.canvas) {
+        renderZh(ps.zhLayer, boxes.filter(b => b.page === n), ps.canvas, { width: ps.canvas.width / (2 * Math.min(3, window.devicePixelRatio || 1)) },
+          parts, activePid, collapsed, pid => setActivePid(pid), zhScale, showZh);
+      }
+    }
+    for (const [n, ps] of leftStates.current) {
+      if (ps.canvas) translatePageIfNeeded(n);
+    }
+  }, [boxes, doc, zhParts, activePid, collapsed, zhScale, showZh, translatePageIfNeeded]);
+
+  // activePid 变化 → 切 class + 双向联动（点译文 → 原文高亮+滚动到可见）
   useEffect(() => {
     document.querySelectorAll('.dpv-zhcap').forEach(el => {
       el.classList.toggle('active', Number((el as HTMLElement).dataset.pid) === activePid);
     });
+    if (!activePid) return;
+    // 左侧重画高亮框
     for (const [, ps] of leftStates.current) {
       if (ps.hlLayer && ps.canvas) {
-        const vp1 = { width: ps.canvas.width / 2 };
         const n = Number(ps.canvas.closest('[data-page]')?.getAttribute('data-page'));
-        renderHl(ps.hlLayer, boxes.filter(b => b.page === n), ps.canvas, vp1, activePid);
+        renderHl(ps.hlLayer, boxesRef.current.filter(b => b.page === n), ps.canvas,
+          { width: ps.canvas.width / (2 * Math.min(3, window.devicePixelRatio || 1)) }, activePid);
       }
+    }
+    // 左侧滚动到第一个高亮框（平滑）
+    const first = document.querySelector('.dpv-hlbox');
+    if (first) {
+      const pane = leftRef.current;
+      if (pane) {
+        const top = (first as HTMLElement).getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+        const target = top - pane.clientHeight / 3;
+        if (Math.abs(pane.scrollTop - target) > 60) {
+          syncLockUntil.current = Date.now() + 500;
+          pane.scrollTo({ top: target, behavior: 'smooth' });
+        }
+    }
     }
   }, [activePid, boxes]);
 
-  // 4) 译文/折叠变化 → 重建右侧胶囊层（纯覆盖层，canvas 不动，单帧完成）
+  // 译文/折叠/显隐/字号变化 → 重建胶囊层
   useEffect(() => {
     if (!doc) return;
     const parts = zhParts();
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
     for (const [n, ps] of rightStates.current) {
       if (ps.zhLayer && ps.canvas) {
-        renderZh(ps.zhLayer, boxes.filter(b => b.page === n), ps.canvas, { width: ps.canvas.width / 2 },
-          parts, activePid, collapsed, pid => setActivePid(pid));
+        renderZh(ps.zhLayer, boxes.filter(b => b.page === n), ps.canvas, { width: ps.canvas.width / (2 * dpr) },
+          parts, activePid, collapsed, pid => setActivePid(pid), zhScale, showZh);
       }
     }
-  }, [boxes, collapsed, doc, zhParts]);
+  }, [boxes, collapsed, doc, zhParts, activePid, zhScale, showZh]);
 
-  // 「展开全文」事件 → 加入折叠集合（触发上面的重建 effect）
+  // 「展开全文」事件
   useEffect(() => {
     const fn = (e: Event) => {
       const pid = (e as CustomEvent).detail as number;
@@ -253,17 +319,29 @@ export default function DualPdfView({
     return () => window.removeEventListener('dpv-expand', fn);
   }, []);
 
-  // 滚动同步：程序滚动期间的回声事件全部忽略（超时兜底 → 修乒乓闪烁）
+  // 滚动同步：按页码+页内偏移对齐（抗左右内容高度差），程序滚动回声忽略
   const syncFrom = (src: 'L' | 'R') => {
     const now = Date.now();
     if (now < syncLockUntil.current) return;
     const a = src === 'L' ? leftRef.current : rightRef.current;
     const b = src === 'L' ? rightRef.current : leftRef.current;
-    if (a && b && a.scrollHeight > a.clientHeight) {
-      const ratio = a.scrollTop / (a.scrollHeight - a.clientHeight);
-      syncLockUntil.current = now + 120;
-      b.scrollTop = ratio * (b.scrollHeight - b.clientHeight);
+    const aHosts = src === 'L' ? leftHosts : rightHosts;
+    const bHosts = src === 'L' ? rightHosts : leftHosts;
+    if (!a || !b) return;
+    // 找 a 的视口中心落在第几页 + 页内进度
+    const center = a.scrollTop + a.clientHeight / 2;
+    let page = 0, pageTop = 0, pageH = 0;
+    for (const [n, el] of aHosts.current) {
+      const top = el.offsetTop, h = el.offsetHeight;
+      if (center >= top && center < top + h) { page = n; pageTop = top; pageH = h; break; }
     }
+    if (!page || !pageH) return;
+    const inPage = (center - pageTop) / pageH;   // 0-1
+    const bEl = bHosts.current.get(page);
+    if (!bEl) return;
+    const bCenter = bEl.offsetTop + inPage * bEl.offsetHeight;
+    syncLockUntil.current = now + 120;
+    b.scrollTop = bCenter - b.clientHeight / 2;
   };
 
   if (error) {
@@ -273,8 +351,13 @@ export default function DualPdfView({
   return (
     <div className="dpv-wrap">
       <div className="dpv-toolbar">
-        <span>{numPages ? `${numPages} 页 · 原文/译文对照` : '加载中…'}</span>
-        <span className="dpv-hint">点击译文定位原文 · 滚动自动翻译 · 左右同步</span>
+        <span>{numPages ? `${numPages} 页` : '加载中…'}</span>
+        <span className="dpv-page-indicator">第 {visiblePage} 页{txPending > 0 ? ` · 翻译中 ${txPending} 段` : ''}</span>
+        <div className="dpv-actions">
+          <button className={showZh ? 'on' : ''} onClick={() => setShowZh(v => !v)}>{showZh ? '隐藏译文' : '显示译文'}</button>
+          <button onClick={() => setZhScale(s => Math.max(0.6, Math.round((s - 0.1) * 10) / 10))}>A-</button>
+          <button onClick={() => setZhScale(s => Math.min(1.6, Math.round((s + 0.1) * 10) / 10))}>A+</button>
+        </div>
       </div>
       <div className="dpv-body">
         <div className="dpv-pane" ref={leftRef} onScroll={() => syncFrom('L')} onMouseUp={e => onMouseUpRef.current?.(e)}>
@@ -297,14 +380,13 @@ export default function DualPdfView({
   );
 }
 
-// ---------- 文本归一化 + 最佳匹配（修对照不上）----------
+// ---------- 文本归一化 + 最佳匹配 ----------
 
 function normText(s: string): string {
   return s.replace(/\$\$[^$]*\$\$/g, ' ').replace(/\$[^$]*\$/g, ' ')
     .toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
 }
 
-// 评分制最佳匹配：整段相等 > 双向包含 > 头部窗口模糊；跨页续段（簇=块尾部）靠「簇⊂块」全包含得分
 function matchPid(clusterText: string, blockNorms: { pid: number; norm: string }[]): number {
   const cn = normText(clusterText);
   if (cn.length < 6) return 0;
@@ -313,11 +395,10 @@ function matchPid(clusterText: string, blockNorms: { pid: number; norm: string }
     if (b.norm.length < 8) continue;
     let score = 0;
     if (b.norm === cn) score = 10000 + b.norm.length;
-    else if (cn.length >= 20 && b.norm.includes(cn)) score = 8000 + cn.length * 2;       // 簇⊂块（续段/碎片）
-    else if (b.norm.length >= 20 && cn.includes(b.norm)) score = 9000 + b.norm.length;   // 簇⊃块（聚类合并）
+    else if (cn.length >= 20 && b.norm.includes(cn)) score = 8000 + cn.length * 2;
+    else if (b.norm.length >= 20 && cn.includes(b.norm)) score = 9000 + b.norm.length;
     else if (b.norm.startsWith(cn) || cn.startsWith(b.norm)) score = 7000 + Math.min(cn.length, b.norm.length);
     else {
-      // 头部窗口：块头 60/40/28/20/14 字出现在簇中，或簇头出现在块中
       for (const k of [60, 40, 28, 20, 14]) {
         const bhead = b.norm.slice(0, k);
         if (bhead.length >= 10 && cn.includes(bhead)) { score = 6000 + k * 10; break; }
@@ -419,12 +500,12 @@ function splitZh(zh: string, parts: number[]): string[] {
 function renderZh(
   layer: HTMLElement, pageBoxes: TextBlockBox[], canvas: HTMLCanvasElement,
   vp1: any, zhParts: Map<number, string[]>, activePid: number, collapsed: Set<number>,
-  onActive: (pid: number) => void,
+  onActive: (pid: number) => void, zhScale: number, visible: boolean,
 ) {
   layer.innerHTML = '';
+  if (!visible) return;
   const eff = canvas.getBoundingClientRect().width / vp1.width;
   const idxMap = new Map<number, number>();
-  // 先按视觉位置排序，再做碰撞下移（译文比原文长时不遮下一块）
   const sorted = pageBoxes.slice().sort((a, b) => a.y - b.y);
   let maxBottom = 0;
   for (const box of sorted) {
@@ -434,14 +515,25 @@ function renderZh(
     const idx = Math.min(idxMap.get(box.pid) ?? 0, parts.length - 1);
     idxMap.set(box.pid, idx + 1);
     const zhPart = parts[idx];
-    if (!zhPart) continue;
+    if (!zhPart) {
+      // 译文未到：占位骨架（轻扫描线动画）
+      const sk = document.createElement('div');
+      sk.className = 'dpv-zhcap skeleton';
+      sk.style.left = `${box.x * eff - 2}px`;
+      sk.style.top = `${box.y * eff - 2}px`;
+      sk.style.width = `${box.w * eff + 4}px`;
+      sk.style.minHeight = `${box.h * eff}px`;
+      layer.appendChild(sk);
+      continue;
+    }
     const cap = document.createElement('div');
     const isLong = zhPart.length > COLLAPSE_LEN;
     const isCollapsed = isLong && !collapsed.has(box.pid);
     cap.className = 'dpv-zhcap' + (activePid === box.pid ? ' active' : '') + (isCollapsed ? ' collapsed' : '');
     cap.dataset.pid = String(box.pid);
+    cap.style.fontSize = `${9.8 * zhScale}px`;
     let top = box.y * eff - 2;
-    if (top < maxBottom - 2) top = maxBottom + 2;   // 碰撞下移
+    if (top < maxBottom - 2) top = maxBottom + 2;
     cap.style.left = `${box.x * eff - 2}px`;
     cap.style.top = `${top}px`;
     cap.style.width = `${box.w * eff + 4}px`;
@@ -452,10 +544,7 @@ function renderZh(
       const more = document.createElement('div');
       more.className = 'dpv-more';
       more.textContent = '展开全文';
-      more.onclick = (ev) => {
-        ev.stopPropagation();
-        setCollapsedGlobal(box.pid);
-      };
+      more.onclick = (ev) => { ev.stopPropagation(); setCollapsedGlobal(box.pid); };
       cap.appendChild(more);
     }
     layer.appendChild(cap);
@@ -463,7 +552,6 @@ function renderZh(
   }
 }
 
-// 折叠集合由组件 useEffect 依赖 collapsed 重建，这里通过自定义事件通知
 function setCollapsedGlobal(pid: number) {
   window.dispatchEvent(new CustomEvent('dpv-expand', { detail: pid }));
 }
