@@ -6,7 +6,6 @@ import CommandPalette from './CommandPalette';
 import PdfView from './PdfView';
 import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
-import PdfLayoutView from './PdfLayoutView';
 import DualPdfView from './DualPdfView';
 
 const HL_COLORS = [
@@ -45,11 +44,11 @@ export default function Reader() {
   const jumpSeqRef = useRef(0);
   function requestJump(p: number) { jumpSeqRef.current += 1; setJumpReq({ page: p, seq: jumpSeqRef.current }); }
   const visiblePageRef = useRef(1);
-  // 豆包式段落联动：选中的译文段落
-  const [selectedPid, setSelectedPid] = useState<number | null>(null);
+  // 豆包式段落联动：选中的译文段落（保留给后续联动功能）
+  const [, setSelectedPid] = useState<number | null>(null);
   // 翻译版 PDF 导出
   const [exporting, setExporting] = useState(false);
-  const isPdfLayout = layout === 'pdf-dual' || layout === 'pdf' || layout === 'pdf-layout';
+  const isPdfLayout = layout === 'pdf-layout';
 
   // 打开论文时探测 PDF + 构建 pageMap
   useEffect(() => {
@@ -270,11 +269,9 @@ export default function Reader() {
           <button className="icon-btn" onClick={() => useStore.getState().setView('list')} title="返回列表">←</button>
           <span className="title">{paper.title}</span>
           <div className="toolbar-group">
-            <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="翻译全文：左英文右中文，段落逐行对照（豆包式）">对照</button>
-            <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="双页对照：左原文 PDF，右译文原位替换，同步滚动+段落联动">双页对照</button>
-            <button onClick={() => setLayout('pdf-dual')} className={layout === 'pdf-dual' ? 'active' : ''} title="PDF 原版 + 译文分页对照">原版</button>
-            <button onClick={() => setLayout('en')} className={layout === 'en' ? 'active' : ''}>原文</button>
-            <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''}>译文</button>
+            <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="翻译全文：左英文右中文，段落逐行对照">对照</button>
+            <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="PDF 阅读：原版排版，译文原位覆盖，一键切换中英文">PDF 阅读</button>
+            <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''} title="纯中文译文流式阅读">译文</button>
           </div>
           <div className="toolbar-group">
             <button onClick={() => useStore.getState().setFontSize(fontSize - 1)} title="缩小字号">A-</button>
@@ -303,21 +300,6 @@ export default function Reader() {
               ? <PdfView paperId={paper.id} jumpReq={jumpReq} onVisiblePage={p => setVisiblePage(p)} visiblePageRef={visiblePageRef} />
               : <div className="pdf-loading">PDF 下载中…（首次导入论文时后台自动下载）</div>}
           </div>
-          {layout === 'pdf-dual' && (
-            <div className="tp-pane">
-              <TranslatedPanel
-                blocks={blocks}
-                pageMap={pageMap}
-                visiblePage={visiblePage}
-                onJumpPage={p => requestJump(p)}
-                activePid={selectedPid}
-                onSelectPid={(pid, page) => {
-                  setSelectedPid(pid);
-                  if (page && page !== visiblePageRef.current) requestJump(page);
-                }}
-              />
-            </div>
-          )}
           {isPdfLayout && pdfReady && (
             <div className="pdf-page-badge">
               <button onClick={() => requestJump(Math.max(1, visiblePage - 1))} title="上一页">‹</button>

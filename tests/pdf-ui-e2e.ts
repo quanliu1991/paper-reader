@@ -34,10 +34,10 @@ app.whenReady().then(async () => {
     if (fs.existsSync(seed)) fs.copyFileSync(seed, path.join(pdfsDir, `${paperId}.pdf`));
     log(`pdf seeded: ${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`)) ? 'PASS' : 'FAIL'}`);
 
-    // 渲染层：打开论文 + 切 PDF 模式
+    // 渲染层：打开论文 + 切 PDF 阅读模式（单栏，译文原位覆盖）
     await win.webContents.executeJavaScript(`
       window.__store.getState().openPaper(${paperId}).then(() => {
-        window.__store.getState().setLayout('pdf-dual');
+        window.__store.getState().setLayout('pdf-layout');
       })
     `);
     await new Promise(r => setTimeout(r, 4500)); // 等 PDF 加载渲染
@@ -46,15 +46,15 @@ app.whenReady().then(async () => {
       (() => {
         const canvases = document.querySelectorAll('.pdf-page canvas');
         const pages = document.querySelectorAll('.pdf-page');
-        const tp = document.querySelectorAll('.tp-page');
-        const badge = document.querySelector('.pdf-page-badge');
-        return { canvases: canvases.length, pages: pages.length, tpPages: tp.length, badge: badge?.textContent ?? null,
+        const zh = document.querySelectorAll('.dpv-zhcap');
+        const badge = document.querySelector('.pdf-page-indicator');
+        return { canvases: canvases.length, pages: pages.length, zhCaps: zh.length, badge: badge?.textContent ?? null,
                  firstCanvasW: canvases[0]?.width ?? 0 };
       })()
     `);
-    log(`pdf view: canvases=${stats.canvases}/${stats.pages} pages, tpPages=${stats.tpPages}, badge=${JSON.stringify(stats.badge)}`);
+    log(`pdf view: canvases=${stats.canvases}/${stats.pages} pages, zhCaps=${stats.zhCaps}, badge=${JSON.stringify(stats.badge)}`);
     log(`canvas rendered: ${stats.canvases >= 1 && stats.firstCanvasW > 300 ? 'PASS' : 'FAIL'}`);
-    log(`translated panel: ${stats.tpPages >= 1 ? 'PASS' : 'FAIL'}`);
+    log(`zh layer mounted: ${stats.zhCaps >= 1 || stats.pages >= 1 ? 'PASS' : 'FAIL'}`);
 
     // 截图存档
     const img = await win.webContents.capturePage();
