@@ -428,3 +428,31 @@ mark.hl { animation: hl-in 0.3s ease; }
   .tv-fig figcaption { color: #aaa; }
   .tv-collapsed::after { background: linear-gradient(transparent, var(--panel)); }
 }
+
+/* ==================== 原版式对照视图（PDF 底 + 可划词文本层 + 原位译文胶囊） ==================== */
+
+.plv-wrap { display: flex; flex-direction: column; flex: 1; overflow-y: auto; background: #3a3d42; padding: 14px 12px 70px; }
+.plv-toolbar { position: sticky; top: 0; z-index: 20; display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; background: rgba(0,0,0,0.55); border-radius: 8px; color: #ddd; font-size: 12px; margin-bottom: 10px; backdrop-filter: blur(4px); }
+.plv-toolbar .plv-zoom button { background: none; border: 1px solid #777; color: #ddd; border-radius: 4px; cursor: pointer; padding: 1px 8px; margin-left: 4px; font-size: 12px; }
+.plv-wrap .pdf-page { position: relative; }
+.plv-wrap .pdf-page .pdf-loading { color: #aaa; padding: 200px 0; text-align: center; }
+
+/* 透明可划词文本层 */
+.plv-textlayer { position: absolute; inset: 0; z-index: 5; overflow: hidden; }
+.plv-textlayer span { position: absolute; color: transparent; white-space: pre; cursor: text; user-select: text; }
+.plv-textlayer ::selection { background: rgba(59, 130, 246, 0.35); }
+
+/* 译文胶囊层（原位替换） */
+.plv-zhlayer { position: absolute; inset: 0; z-index: 8; pointer-events: none; }
+.plv-zhcap {
+  position: absolute; box-sizing: border-box;
+  background: rgba(255, 250, 240, 0.96);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: 4px; padding: 3px 5px;
+  line-height: 1.5; text-align: justify;
+  color: #222; overflow: hidden;
+  font-family: "Georgia", "Noto Serif SC", "SimSun", serif;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  pointer-events: auto;
+}
+.plv-zhcap:hover { border-color: #d4af37; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }

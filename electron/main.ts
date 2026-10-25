@@ -122,37 +122,91 @@ app.whenReady().then(async () => {
       log(`opening paper ${target.id}: ${target.title.slice(0, 50)} (import=${target.import_type})`);
       await win.webContents.executeJavaScript(`
         window.__store.getState().openPaper(${target.id}).then(() => {
-          window.__store.getState().setLayout('translate');
+          window.__store.getState().setLayout('pdf-layout');
         })
       `);
-      await new Promise(r => setTimeout(r, 2500));
+      await new Promise(r => setTimeout(r, 6000));
+      // 匹配调试：从 DOM 文本层取簇文本对比 blocks
+      const dbg: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const spans = [...document.querySelectorAll('.plv-textlayer span')].slice(0, 40);
+          const lines = [];
+          let cur = null;
+          for (const sp of spans) {
+            const y = Math.round(parseFloat(sp.style.top));
+            if (cur && Math.abs(cur.y - y) <= 4) cur.t += sp.textContent + ' ';
+            else { cur = { y, t: sp.textContent + ' ' }; lines.push(cur); }
+          }
+          const st = window.__store.getState();
+          return {
+            line0: lines[0]?.t.slice(0, 120),
+            line1: lines[1]?.t.slice(0, 120),
+            line2: lines[2]?.t.slice(0, 120),
+            nLines: lines.length,
+            block0en: st.blocks[0]?.en?.slice(0, 120),
+            block1en: st.blocks[1]?.en?.slice(0, 120),
+            block2en: st.blocks[2]?.en?.slice(0, 120),
+            nZh: st.blocks.filter(b => b.zh).length,
+            zh2: st.blocks[2]?.zh?.slice(0, 60) ?? null,
+          };
+        })()
+      `);
+      log('dbg: ' + JSON.stringify(dbg, null, 1));
+      // 触发前 3 个 para block 翻译（主进程直接构造参数），验证胶囊链路
+      const firstParas: any[] = await win.webContents.executeJavaScript(`
+        window.__store.getState().blocks.filter(b => b.type === 'para').slice(0, 3).map(b => ({ pid: b.pid, en: b.en }))
+      `);
+      if (firstParas.length) {
+        await win.webContents.executeJavaScript(`
+          window.api.translateAll({
+            paperId: ${target.id},
+            blocks: ${JSON.stringify(firstParas)},
+            scope: 'all',
+          })
+        `);
+        await new Promise(r => setTimeout(r, 25000));
+      }
       const diag: any = await win.webContents.executeJavaScript(`
         (() => {
           const st = window.__store.getState();
-          const tv = document.querySelector('.translate-view');
-          const rows = document.querySelectorAll('.tv-row');
-          const tvStyle = tv ? getComputedStyle(tv) : null;
-          const firstRow = document.querySelector('.tv-para-row');
-          const rowStyle = firstRow ? getComputedStyle(firstRow) : null;
-          const enCell = firstRow?.querySelector('.tv-cell.en');
-          const zhCell = firstRow?.querySelector('.tv-cell.zh');
-          // 宽度链路排查：translate-view → tv-row → cell
-          const chain = [];
-          let el = tv;
-          while (el && el !== document.body) {
-            const r = el.getBoundingClientRect();
-            const cs = getComputedStyle(el);
-            chain.push(\`\${el.className?.toString().slice(0,40) || el.tagName}: w=\${Math.round(r.width)} maxw=\${cs.maxWidth} flex=\${cs.flex} grid-cols=\${cs.gridTemplateColumns?.slice(0,40)}\`);
-            el = el.parentElement;
-          }
+          const pages = document.querySelectorAll('.plv-page');
+          const textSpans = document.querySelectorAll('.plv-textlayer span');
+          const caps = document.querySelectorAll('.plv-zhcap');
+          const canvases = document.querySelectorAll('.plv-page canvas');
+          // 首个胶囊与所在页的位置关系
+          const firstCap = caps[0];
+          const capInfo = firstCap ? {
+            left: Math.round(firstCap.getBoundingClientRect().left),
+            top: Math.round(firstCap.getBoundingClientRect().top),
+            w: Math.round(firstCap.getBoundingClientRect().width),
+            textLen: (firstCap.textContent ?? '').length,
+          } : null;
+          // 几何对齐诊断：每胶囊内文本层 span 数（原位替换应覆盖其原文 span）+ 溢出检测
+          const capsGeom = [...caps].slice(0, 6).map(c => {
+            const r = c.getBoundingClientRect();
+            const host = c.closest('.plv-page');
+            const pageEl = host ? host.getBoundingClientRect() : null;
+            const spans = host ? [...host.querySelectorAll('.plv-textlayer span')] : [];
+            let inside = 0;
+            for (const sp of spans) {
+              const sr = sp.getBoundingClientRect();
+              const cx = sr.left + sr.width / 2, cy = sr.top + sr.height / 2;
+              if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) inside++;
+            }
+            return {
+              pid: c.dataset.pid, page: host?.dataset.page, insideSpans: inside,
+              overflow: c.scrollHeight > c.clientHeight + 2,
+              leftInPage: pageEl ? Math.round(r.left - pageEl.left) : null,
+              pageW: pageEl ? Math.round(pageEl.width) : null,
+              w: Math.round(r.width), h: Math.round(r.height),
+              scrollH: c.scrollHeight,
+            };
+          });
           return {
             layout: st.layout, blocks: st.blocks.length,
-            viewMounted: !!tv, rows: rows.length,
-            tvW: tv ? Math.round(tv.getBoundingClientRect().width) : 0,
-            chain,
-            pendingBars: document.querySelectorAll('.tv-pending-bar').length,
-            collapsed: document.querySelectorAll('.tv-collapsed').length,
-            hasKaTeX: !!document.querySelector('.katex'),
+            pages: pages.length, canvases: canvases.length,
+            textSpans: textSpans.length,
+            capsules: caps.length, capInfo, capsGeom,
           };
         })()
       `);

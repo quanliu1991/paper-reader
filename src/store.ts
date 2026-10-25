@@ -40,7 +40,7 @@ interface Store {
   highlights: HighlightRow[];
   qaList: QaRow[];
   // 阅读状态
-  layout: 'translate' | 'dual' | 'en' | 'zh' | 'pdf-dual' | 'pdf';
+  layout: 'translate' | 'dual' | 'en' | 'zh' | 'pdf-dual' | 'pdf' | 'pdf-layout';
   translating: boolean;
   translateProgress: { done: number; total: number } | null;
   fontSize: number;

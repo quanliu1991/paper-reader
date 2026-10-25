@@ -99,14 +99,7 @@ async function streamOpenAI(
   if (!resp.ok || !resp.body) {
     throw new Error(`${resp.status} ${await resp.text().catch(() => '')}`.slice(0, 300));
   }
-  await readSse(resp.body, (data) => {
-    // data: {"choices":[{"delta":{"content":"..."}}]}
-    try {
-      const j = JSON.parse(data);
-      const delta = j.choices?.[0]?.delta?.content;
-      if (delta) { full += delta; h.onDelta(delta); }
-    } catch { /* keep-alive 注释行等 */ }
-  });
+  const full = await readSse(resp.body, h.onDelta);
   h.onDone(full);
 }
 
@@ -134,21 +127,12 @@ async function streamAnthropic(
   if (!resp.ok || !resp.body) {
     throw new Error(`${resp.status} ${await resp.text().catch(() => '')}`.slice(0, 300));
   }
-  await readSse(resp.body, (data) => {
-    try {
-      const j = JSON.parse(data);
-      if (j.type === 'content_block_delta' && j.delta?.text) {
-        full += j.delta.text; h.onDelta(j.delta.text);
-      }
-    } catch { /* ignore */ }
-  });
+  const full = await readSse(resp.body, h.onDelta);
   h.onDone(full);
 }
 
-let full = '';
-
-async function readSse(body: ReadableStream<Uint8Array>, onData: (dataStr: string) => void) {
-  full = '';
+async function readSse(body: ReadableStream<Uint8Array>, onDelta: (text: string) => void): Promise<string> {
+  let full = '';
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -162,11 +146,21 @@ async function readSse(body: ReadableStream<Uint8Array>, onData: (dataStr: strin
       const t = line.trim();
       if (t.startsWith('data:')) {
         const data = t.slice(5).trim();
-        if (data === '[DONE]') return;
-        onData(data);
+        if (data === '[DONE]') return full;
+        const delta = extractDelta(data);
+        if (delta) { full += delta; onDelta(delta); }
       }
     }
   }
+  return full;
+}
+
+// 从 SSE data 行提取文本增量（OpenAI 兼容 + Anthropic 两种格式）
+function extractDelta(data: string): string {
+  try {
+    const j = JSON.parse(data);
+    return j.choices?.[0]?.delta?.content ?? j.delta?.text ?? '';
+  } catch { return ''; /* keep-alive 注释行等 */ }
 }
 
 function joinUrl(base: string, suffix: string): string {
