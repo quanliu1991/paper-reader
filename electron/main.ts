@@ -5,6 +5,7 @@ import * as arxiv from './arxiv';
 import * as llm from './llm';
 import * as gh from './github-bridge';
 import * as insights from './insights';
+import * as tr from './translate';
 import fs from 'fs';
 
 let win: BrowserWindow | null = null;
@@ -64,6 +65,13 @@ app.whenReady().then(async () => {
   // 入口文件不存在（打包版 asar 里没有）时直接落到正常启动，不再静默挂死。
   if (process.env.PR_E2E) {
     const entry = path.join(__dirname, 'e2e-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
+  }
+  if (process.env.PR_TR_QUALITY_E2E) {
+    const entry = path.join(__dirname, 'translate-quality-entry.js');
     if (fs.existsSync(entry)) {
       require(entry);
       return;
@@ -639,7 +647,7 @@ function registerIpc() {
     return true;
   });
 
-  // 批量翻译（带取消）
+  // 批量翻译（带取消）——上下文感知 + QC 守卫 + 自动重译
   const trAbort = new Map<number, AbortController>(); // paperId → ctl
   wrap('tr:translateAll', async (e, arg: {
     paperId: number; blocks: Array<{ pid: number; en: string }>; scope: 'untranslated' | 'all';
@@ -649,19 +657,44 @@ function registerIpc() {
     const ctl = new AbortController();
     trAbort.set(arg.paperId, ctl);
     activeAbort.add(ctl);
-    const glossary = loadGlossaryForTranslation();
+    const repoGlossary = loadGlossaryForTranslation();
     const concurrency = 3;
     let done = 0;
     let cancelled = false;
     const queue = [...arg.blocks];
     const providerCfg = provider;
+    // 上下文快照：本批开始时的全篇状态（含已译段落，供术语一致性）
+    const allBlocks = (db.getBlocks(arg.paperId) as any[]).map((b: any) => ({
+      pid: b.pid, seq: b.seq, type: b.type, level: b.level, en: b.en, zh: b.zh,
+    }));
+    const paper = db.getPaper(arg.paperId) as any;
+    const paperMeta: tr.PaperMeta = {
+      title: paper?.title ?? '', authors: paper?.authors ?? '', arxivId: paper?.arxiv_id ?? '',
+    };
 
     async function worker() {
       for (;;) {
         if (cancelled || ctl.signal.aborted) return;
         const item = queue.shift();
         if (!item) return;
-        const zh = await translateBlock(providerCfg, item.en, glossary, ctl.signal);
+        // 拿最新全篇状态（含本批刚译完的段落 → 术语承接）
+        const blocksNow = (db.getBlocks(arg.paperId) as any[]).map((b: any) => ({
+          pid: b.pid, seq: b.seq, type: b.type, level: b.level, en: b.en, zh: b.zh,
+        }));
+        const settled = tr.extractSettledTerms(blocksNow);
+        const glossaryLines = [...(repoGlossary ? repoGlossary.trim().split('\n') : []), ...settled];
+        let zh = await translateBlockCtx(providerCfg, item.en, paperMeta, blocksNow, item.pid, glossaryLines, ctl.signal);
+        // QC 守卫：不达标 → 修正提示重译一次；仍不达标 → 用分数高的
+        if (zh.ok && zh.text) {
+          const qc1 = tr.qcTranslation(item.en, zh.text);
+          if (!qc1.ok) {
+            const zh2 = await translateBlockCtx(providerCfg, item.en, paperMeta, blocksNow, item.pid, glossaryLines, ctl.signal, qc1.issues);
+            if (zh2.ok && zh2.text) {
+              const qc2 = tr.qcTranslation(item.en, zh2.text);
+              zh = qc2.score >= qc1.score ? zh2 : zh;
+            }
+          }
+        }
         done++;
         if (zh.ok) {
           db.saveTranslation(arg.paperId, item.pid, zh.text!, providerCfg.name, providerCfg.model);
@@ -685,25 +718,39 @@ function registerIpc() {
     return true;
   });
 
-  function translateBlock(
-    provider: llm.ProviderConfig, en: string, glossary: string, signal?: AbortSignal
+  // 上下文感知翻译：论文元信息 + 章节链 + 摘要 + 前文译文 + 后文原文 + 术语表
+  function translateBlockCtx(
+    provider: llm.ProviderConfig, en: string, paperMeta: tr.PaperMeta,
+    blocks: tr.BlockLite[], pid: number, glossaryLines: string[],
+    signal?: AbortSignal, qcIssues?: string[],
   ): Promise<{ ok: boolean; text?: string; err?: string }> {
+    const sys = tr.buildSystemPrompt(glossaryLines);
+    let ctx = tr.extractContext(blocks, pid) ?? { paperLine: '', sectionLine: '', abstractHint: '', prevZh: '', nextEn: '' };
+    ctx = { ...ctx, paperLine: `${paperMeta.title}${paperMeta.authors ? ` · ${paperMeta.authors.split(/[;,]/).slice(0, 3).join(', ')}` : ''}${paperMeta.arxivId ? ` (arXiv:${paperMeta.arxivId})` : ''}` };
+    let userContent = tr.buildContextBlock(ctx) + en;
+    if (qcIssues?.length) {
+      userContent += `\n\n【上一版译文的质检问题（必须全部修正后重新输出完整译文）】\n${qcIssues.map(s => '- ' + s).join('\n')}`;
+    }
     return new Promise((resolve) => {
       let acc = '';
       llm.chatStream(provider, [
-        { role: 'system', content: `你是专业的 AI/ML 论文翻译。把英文段落翻译成流畅的中文，要求：
-1. 术语保留英文（如 KV cache、prefill、speculative decoding）
-2. 数学公式（$...$ 或 $$...$$）原样保留，绝对不要改动公式内容
-3. 只输出译文，不要任何解释或前缀
-4. 严格保持原文的段落结构：一段对一段，不要合并或拆分段落；图表标题（Table/Figure caption）译为「表 N：…」「图 N：…」保持编号
-${glossary}` },
-        { role: 'user', content: en },
+        { role: 'system', content: sys },
+        { role: 'user', content: userContent },
       ], {
         onDelta: (d) => { acc += d; },
-        onDone: (full) => resolve({ ok: true, text: (full || acc).trim() }),
+        onDone: (full) => resolve({ ok: true, text: cleanZh((full || acc).trim()) }),
         onError: (err) => resolve({ ok: false, err }),
-      }, { temperature: 0.2, maxTokens: 2048, signal });
+      }, { temperature: 0.15, maxTokens: 4096, signal });
     });
+  }
+
+  // 输出清洗：去掉 LLM 偶发的包裹标记
+  function cleanZh(s: string): string {
+    return s
+      .replace(/^```(?: chinese|zh|markdown)?\s*\n?/i, '')
+      .replace(/\n?```\s*$/i, '')
+      .replace(/^(?:译文|翻译)\s*[：:]\s*\n?/i, '')
+      .trim();
   }
 
   function loadGlossaryForTranslation(): string {
