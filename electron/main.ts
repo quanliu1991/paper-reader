@@ -59,10 +59,15 @@ app.whenReady().then(async () => {
     const filePath = path.join(app.getPath('userData'), 'pdfs', `${safe}.pdf`);
     return net.fetch('file:///' + filePath.replace(/\\/g, '/'));
   });
-  // E2E 模式：加载测试脚本不创建窗口
+  // E2E 模式：加载测试脚本不创建窗口。
+  // 防护：用户 shell 可能残留 PR_E2E/PR_PDF_E2E 变量（实测案例），
+  // 入口文件不存在（打包版 asar 里没有）时直接落到正常启动，不再静默挂死。
   if (process.env.PR_E2E) {
-    require(path.join(__dirname, 'e2e-entry.js'));
-    return;
+    const entry = path.join(__dirname, 'e2e-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
   }
   if (process.env.PR_PDF_E2E) {
     // 完整链路（dev 有 dist-electron/pdf-e2e-entry.js）；打包版走内联冒烟
