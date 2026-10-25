@@ -484,73 +484,45 @@ mark.hl { animation: hl-in 0.3s ease; }
 .dpv-hllayer { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
 .dpv-hlbox { position: absolute; border: 2px solid #4a90d9; background: rgba(74,144,217,0.12); border-radius: 4px; box-shadow: 0 0 0 3px rgba(74,144,217,0.15); transition: opacity 0.2s; }
 
-/* 右：译文层（原位替换，豆包式暖白卡片） */
+/* 右：译文层——无缝中文论文排版（无框无阴影，像直接印在纸上） */
 .dpv-zhlayer { position: absolute; inset: 0; z-index: 8; }
 .dpv-zhcap {
   position: absolute; box-sizing: border-box;
-  background: rgba(255, 253, 248, 0.97);
-  border: 1px solid rgba(0,0,0,0.06);
-  border-radius: 4px; padding: 4px 6px;
-  line-height: 1.55; text-align: justify;
-  color: #1f1f1f; overflow: hidden;
-  font-family: "Georgia", "Noto Serif SC", "SimSun", serif;
+  background: #fff;
+  border: 1px solid #fff; /* 白描边盖住底下英文，视觉上无边框 */
+  border-radius: 0;
+  padding: 2px 4px; margin: 0;
+  line-height: 1.6; text-align: justify; text-justify: inter-ideograph;
+  color: #111; overflow: hidden;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", "Songti SC", "FangSong", serif;
   font-size: 9.8px;
   cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  transition: background 0.12s;
 }
-.dpv-zhcap:hover { border-color: #c9a84c; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
-.dpv-zhcap.active { border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,0.2); }
-.dpv-zhcap.collapsed { max-height: 120px; }
-.dpv-zhcap.collapsed::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 56px;
-  background: linear-gradient(transparent, rgba(255,253,248,0.95));
+.dpv-zhcap.heading {
+  font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-weight: 600; color: #000;
 }
-.dpv-more {
-  position: absolute; right: 8px; bottom: 4px;
-  font-size: 11px; color: #4a90d9; cursor: pointer;
-  background: rgba(255,253,248,0.9); padding: 1px 6px; border-radius: 3px;
-}
-.dpv-more:hover { text-decoration: underline; }
-
-/* ==================== 双页视图细节打磨 ==================== */
-
-/* 工具栏动作按钮 */
-.dpv-toolbar { gap: 12px; }
-.dpv-page-indicator { color: #ffd479; font-weight: 600; min-width: 90px; text-align: center; }
-.dpv-actions { display: flex; gap: 4px; }
-.dpv-actions button {
-  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
-  color: #ccc; border-radius: 4px; cursor: pointer; padding: 2px 9px; font-size: 12px;
-  transition: all 0.15s;
-}
-.dpv-actions button:hover { background: rgba(255,255,255,0.16); color: #fff; }
-.dpv-actions button.on { background: rgba(232,183,58,0.25); border-color: rgba(232,183,58,0.5); color: #ffd479; }
-
-/* 译文骨架屏：未到译文时显示轻扫描块 */
-.dpv-zhcap.skeleton {
-  background: linear-gradient(100deg, rgba(0,0,0,0.04) 30%, rgba(0,0,0,0.08) 50%, rgba(0,0,0,0.04) 70%);
-  background-size: 200% 100%;
-  animation: dpv-skeleton 1.6s ease infinite;
-  border: 1px dashed rgba(0,0,0,0.08);
+.dpv-zhcap.center { text-align: center; text-indent: 0 !important; }
+/* 正文段首行缩进由 JS 按内容长度加 text-indent（短行不缩进） */
+.dpv-zhcap:hover { background: rgba(201,168,76,0.07); border-color: rgba(201,168,76,0.35); }
+.dpv-zhcap.active {
+  background: rgba(74,144,217,0.08);
+  border-color: rgba(74,144,217,0.4);
   box-shadow: none;
 }
-@keyframes dpv-skeleton {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+.dpv-zhcap.collapsed::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 30px;
+  background: linear-gradient(transparent, rgba(255,255,255,0.96));
 }
-
-/* 译文胶囊更精致：微渐变 + 圆角统一 */
-.dpv-zhcap {
-  font-size: 9.8px;
-  border-radius: 5px;
-  transition: border-color 0.15s, box-shadow 0.15s;
+.dpv-pending {
+  position: absolute; font-size: 8.5px; color: rgba(0,0,0,0.28);
+  font-family: "Noto Serif SC", "SimSun", serif; letter-spacing: 1px;
+  pointer-events: none;
 }
-.dpv-zhcap.active {
-  border-color: #4a90d9;
-  box-shadow: 0 0 0 3px rgba(74,144,217,0.22), 0 2px 10px rgba(74,144,217,0.15);
+.dpv-more {
+  position: absolute; right: 4px; bottom: 2px;
+  font-size: 10px; color: #4a90d9; cursor: pointer;
+  background: #fff; padding: 0 4px;
 }
-
-/* 页面阴影更柔和（暗背景上的白页） */
-.dpv-wrap .pdf-page {
-  border-radius: 3px;
-}
+.dpv-more:hover { text-decoration: underline; }

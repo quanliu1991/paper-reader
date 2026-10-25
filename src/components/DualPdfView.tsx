@@ -98,6 +98,15 @@ export default function DualPdfView({
     [blocks],
   );
 
+  // block 元信息（标题/正文区分排版）
+  const blockMeta = useMemo(() => {
+    const m = new Map<number, { type: string; level: number }>();
+    for (const b of blocks) m.set(b.pid, { type: b.type, level: b.level ?? 9 });
+    return m;
+  }, [blocks.map(b => b.pid).join(','), enKey]);
+  const blockMetaRef = useRef(blockMeta);
+  blockMetaRef.current = blockMeta;
+
   // 2) 文档就绪后聚类 + 匹配
   useEffect(() => {
     if (!doc) return;
@@ -194,7 +203,7 @@ export default function DualPdfView({
         host.appendChild(zhLayer);
         ps.zhLayer = zhLayer;
         renderZh(zhLayer, pageBoxes, canvas, vp1, zhParts(), activePidRef.current, collapsedRef.current,
-          pid => { setActivePid(pid); }, zhScaleRef.current, showZhRef.current);
+          pid => { setActivePid(pid); }, zhScaleRef.current, showZhRef.current, blockMetaRef.current);
       } else {
         const tl = document.createElement('div');
         tl.className = 'dpv-textlayer';
@@ -259,7 +268,7 @@ export default function DualPdfView({
     for (const [n, ps] of rightStates.current) {
       if (ps.zhLayer && ps.canvas) {
         renderZh(ps.zhLayer, boxes.filter(b => b.page === n), ps.canvas, { width: ps.canvas.width / (2 * Math.min(3, window.devicePixelRatio || 1)) },
-          parts, activePid, collapsed, pid => setActivePid(pid), zhScale, showZh);
+          parts, activePid, collapsed, pid => setActivePid(pid), zhScale, showZh, blockMetaRef.current);
       }
     }
     for (const [n, ps] of leftStates.current) {
@@ -304,7 +313,7 @@ export default function DualPdfView({
     for (const [n, ps] of rightStates.current) {
       if (ps.zhLayer && ps.canvas) {
         renderZh(ps.zhLayer, boxes.filter(b => b.page === n), ps.canvas, { width: ps.canvas.width / (2 * dpr) },
-          parts, activePid, collapsed, pid => setActivePid(pid), zhScale, showZh);
+          parts, activePid, collapsed, pid => setActivePid(pid), zhScale, showZh, blockMetaRef.current);
       }
     }
   }, [boxes, collapsed, doc, zhParts, activePid, zhScale, showZh]);
@@ -501,54 +510,73 @@ function renderZh(
   layer: HTMLElement, pageBoxes: TextBlockBox[], canvas: HTMLCanvasElement,
   vp1: any, zhParts: Map<number, string[]>, activePid: number, collapsed: Set<number>,
   onActive: (pid: number) => void, zhScale: number, visible: boolean,
+  blockMeta: Map<number, { type: string; level: number }>,
 ) {
   layer.innerHTML = '';
   if (!visible) return;
   const eff = canvas.getBoundingClientRect().width / vp1.width;
+  const pageBottom = canvas.getBoundingClientRect().height / eff;
   const idxMap = new Map<number, number>();
-  const sorted = pageBoxes.slice().sort((a, b) => a.y - b.y);
-  let maxBottom = 0;
-  for (const box of sorted) {
-    if (!box.pid) continue;
+  const sorted = pageBoxes.filter(b => b.pid).sort((a, b) => a.y - b.y || a.x - b.x);
+  for (let i = 0; i < sorted.length; i++) {
+    const box = sorted[i];
     const parts = zhParts.get(box.pid);
-    if (!parts?.length) continue;
+    if (!parts) continue;
     const idx = Math.min(idxMap.get(box.pid) ?? 0, parts.length - 1);
     idxMap.set(box.pid, idx + 1);
     const zhPart = parts[idx];
-    if (!zhPart) {
-      // 译文未到：占位骨架（轻扫描线动画）
-      const sk = document.createElement('div');
-      sk.className = 'dpv-zhcap skeleton';
-      sk.style.left = `${box.x * eff - 2}px`;
-      sk.style.top = `${box.y * eff - 2}px`;
-      sk.style.width = `${box.w * eff + 4}px`;
-      sk.style.minHeight = `${box.h * eff}px`;
-      layer.appendChild(sk);
+    const meta = blockMeta.get(box.pid);
+    const isHeading = meta?.type === 'heading';
+    const left = box.x * eff - 3, top = box.y * eff - 3, width = box.w * eff + 6;
+    const minH = box.h * eff + 5;
+    // 本块可用最大高度：到下一块顶部为止（留 5px 呼吸）
+    const nb = sorted[i + 1];
+    const nextTop = nb ? nb.y * eff - 5 : pageBottom;
+    const maxH = Math.max(minH, nextTop - top);
+    if (zhPart === undefined || zhPart === '') {
+      // 已匹配未译出：极淡的「翻译中」占位（论文留白感，不是框）
+      const pending = document.createElement('div');
+      pending.className = 'dpv-pending';
+      pending.style.left = `${left + 2}px`;
+      pending.style.top = `${top + 2}px`;
+      pending.textContent = '翻译中…';
+      layer.appendChild(pending);
       continue;
     }
+    if (!zhPart) continue;
     const cap = document.createElement('div');
-    const isLong = zhPart.length > COLLAPSE_LEN;
-    const isCollapsed = isLong && !collapsed.has(box.pid);
-    cap.className = 'dpv-zhcap' + (activePid === box.pid ? ' active' : '') + (isCollapsed ? ' collapsed' : '');
+    const isTitle = isHeading && (meta?.level ?? 9) <= 1;
+    cap.className = 'dpv-zhcap' + (isHeading ? ' heading' : '') + (isTitle ? ' center' : '') + (activePid === box.pid ? ' active' : '');
     cap.dataset.pid = String(box.pid);
-    cap.style.fontSize = `${9.8 * zhScale}px`;
-    let top = box.y * eff - 2;
-    if (top < maxBottom - 2) top = maxBottom + 2;
-    cap.style.left = `${box.x * eff - 2}px`;
+    cap.style.left = `${left}px`;
     cap.style.top = `${top}px`;
-    cap.style.width = `${box.w * eff + 4}px`;
-    cap.style.minHeight = `${box.h * eff}px`;
+    cap.style.width = `${width}px`;
+    cap.style.minHeight = `${minH}px`;
+    // 中文字号：标题大一级；按用户缩放
+    cap.style.fontSize = `${(isHeading ? 11.5 : 9.8) * zhScale}px`;
+    // 中文论文习惯：长正文段首行缩进两字宽；标题/短行（图注公式）不缩进
+    if (!isHeading && zhPart.length >= 40) cap.style.textIndent = '1.96em';
+    else cap.style.textIndent = '0';
     cap.innerHTML = escapeZh(zhPart);
     cap.onclick = () => onActive(box.pid);
-    if (isCollapsed) {
-      const more = document.createElement('div');
+    layer.appendChild(cap);
+    // 自适应：先试缩小字号（最多到 80%），再不行折叠
+    let fs = (isHeading ? 11.5 : 9.8) * zhScale;
+    let guard = 0;
+    while (cap.scrollHeight > maxH && guard < 8 && fs > (isHeading ? 9.2 : 7.8)) {
+      fs *= 0.94;
+      cap.style.fontSize = `${fs}px`;
+      guard++;
+    }
+    if (cap.scrollHeight > maxH && zhPart.length > 160) {
+      cap.classList.add('collapsed');
+      cap.style.maxHeight = `${maxH}px`;
+      const more = document.createElement('span');
       more.className = 'dpv-more';
       more.textContent = '展开全文';
       more.onclick = (ev) => { ev.stopPropagation(); setCollapsedGlobal(box.pid); };
       cap.appendChild(more);
     }
-    layer.appendChild(cap);
-    maxBottom = top + cap.offsetHeight + 4;
   }
 }
 
