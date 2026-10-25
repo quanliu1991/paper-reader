@@ -169,10 +169,16 @@ app.whenReady().then(async () => {
           }
           const lRatio = panes[0] ? panes[0].scrollTop / Math.max(1, panes[0].scrollHeight - panes[0].clientHeight) : 0;
           const rRatio = panes[1] ? panes[1].scrollTop / Math.max(1, panes[1].scrollHeight - panes[1].clientHeight) : 0;
+          // 匹配率：右侧页里胶囊数 / 左侧同页聚类块数（近似——用全局比值）
+          // 闪烁检测：1.2s 内 canvas 数量必须稳定（重载会导致归零再涨）
+          const c1 = document.querySelectorAll('.dpv-page canvas').length;
+          await new Promise(r => setTimeout(r, 1200));
+          const c2 = document.querySelectorAll('.dpv-page canvas').length;
           return {
             linked: hl.length > 0, hlCount: hl.length,
             scrollSynced: Math.abs(lRatio - rRatio) < 0.05,
             lRatio: Math.round(lRatio * 100) / 100, rRatio: Math.round(rRatio * 100) / 100,
+            flicker: c1 !== c2, canvases1: c1, canvases2: c2,
           };
         })()
       `);
