@@ -56,13 +56,37 @@ app.whenReady().then(async () => {
     log(`canvas rendered: ${stats.canvases >= 1 && stats.firstCanvasW > 300 ? 'PASS' : 'FAIL'}`);
     log(`zh layer mounted: ${stats.zhCaps >= 1 || stats.pages >= 1 ? 'PASS' : 'FAIL'}`);
 
+    // 字体一致性：打包 Noto Serif SC 必须已加载；有译文胶囊时所有正文 computed family 必须唯一
+    const fontStats = await win.webContents.executeJavaScript(`
+      (async () => {
+        await document.fonts.ready;
+        const loaded400 = document.fonts.check('400 14px "Noto Serif SC"', '译文测试一致性');
+        const loaded700 = document.fonts.check('700 14px "Noto Serif SC"', '译');
+        const loadedSans = document.fonts.check('600 14px "Noto Sans SC"', '标题');
+        const caps = [...document.querySelectorAll('.dpv-zhcap')];
+        const fams = new Set(), weights = new Set();
+        for (const c of caps) {
+          const cs = getComputedStyle(c);
+          fams.add(cs.fontFamily.split(',')[0].replace(/"/g, ''));
+          weights.add(c.classList.contains('heading') ? 'heading-600' : cs.fontWeight);
+        }
+        return { loaded400, loaded700, loadedSans, n: caps.length, fams: [...fams], weights: [...weights] };
+      })()
+    `);
+    log(`fonts: serif400=${fontStats.loaded400}, serif700=${fontStats.loaded700}, sans600=${fontStats.loadedSans}`);
+    log(`zh caps font check: n=${fontStats.n}, families=${JSON.stringify(fontStats.fams)}, weights=${JSON.stringify(fontStats.weights)}`);
+    const fontOk = fontStats.loaded400 && fontStats.loaded700 && fontStats.loadedSans
+      && (fontStats.n === 0 || (fontStats.fams.length === 1 && fontStats.fams[0] === 'Noto Serif SC'));
+    log(`font consistency: ${fontOk ? 'PASS' : 'FAIL'}`);
+
     // 截图存档
     const img = await win.webContents.capturePage();
     fs.mkdirSync(path.resolve('build'), { recursive: true });
     fs.writeFileSync(path.resolve('build/pdf-ui-e2e.png'), img.toPNG());
     log('screenshot saved');
 
-    log('E2E ALL PASS');
+    if (stats.canvases >= 1 && stats.firstCanvasW > 300 && fontOk) log('E2E ALL PASS');
+    else log('E2E FAIL');
   } catch (e: any) {
     log(`FATAL: ${e?.stack ?? e}`);
   } finally {

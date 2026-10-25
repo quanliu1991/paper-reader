@@ -395,7 +395,7 @@ mark.hl { animation: hl-in 0.3s ease; }
 .pdf-page-badge button { background: none; border: none; color: #fff; font-size: 15px; cursor: pointer; padding: 0 4px; line-height: 1; }
 
 /* 学术样式译文面板 */
-.translated-panel.academic { padding: 28px 34px 80px; max-width: 860px; margin: 0 auto; font-family: "Georgia", "Times New Roman", "Noto Serif SC", "SimSun", serif; }
+.translated-panel.academic { padding: 28px 34px 80px; max-width: 860px; margin: 0 auto; font-family: "Noto Serif SC", "Georgia", "Times New Roman", "SimSun", serif; font-synthesis: none; }
 .tp-page { margin-bottom: 8px; }
 .tp-page.active .tp-page-header { color: var(--accent); font-weight: 700; }
 .tp-page-header { text-align: center; color: var(--muted); font-size: 12px; margin: 18px 0 12px; cursor: pointer; letter-spacing: 2px; font-family: "Segoe UI", sans-serif; }
@@ -453,7 +453,8 @@ mark.hl { animation: hl-in 0.3s ease; }
 .reader-scroll.translate-host { padding: 0; background: var(--panel); }
 .translate-view {
   max-width: 1280px; margin: 0 auto; padding: 28px 20px 80px;
-  font-family: "Georgia", "Times New Roman", "Noto Serif SC", "SimSun", serif;
+  font-family: "Noto Serif SC", "Georgia", "Times New Roman", "SimSun", serif;
+  font-synthesis: none;
   display: flex; flex-direction: column; gap: 2px;
 }
 
@@ -557,7 +558,8 @@ mark.hl { animation: hl-in 0.3s ease; }
   border-radius: 4px; padding: 3px 5px;
   line-height: 1.5; text-align: justify;
   color: #222; overflow: hidden;
-  font-family: "Georgia", "Noto Serif SC", "SimSun", serif;
+  font-family: "Noto Serif SC", "Georgia", "SimSun", serif;
+  font-synthesis: none;
   box-shadow: 0 1px 4px rgba(0,0,0,0.25);
   pointer-events: auto;
 }
@@ -604,6 +606,7 @@ mark.hl { animation: hl-in 0.3s ease; }
   text-align: justify; text-justify: inter-ideograph;
   color: #111; overflow: hidden;
   font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", "Songti SC", "FangSong", serif;
+  font-synthesis: none;
   cursor: pointer;
   transition: background 0.12s;
 }
@@ -627,8 +630,7 @@ mark.hl { animation: hl-in 0.3s ease; }
   position: absolute; font-size: 8.5px; color: rgba(0,0,0,0.28);
   font-family: "Noto Serif SC", "SimSun", serif; letter-spacing: 1px;
   pointer-events: none;
-}
-/* KaTeX 在译文小字号下的适配：随宿主字号缩放、行内公式不撑破行距 */
+}/* KaTeX 在译文小字号下的适配：随宿主字号缩放、行内公式不撑破行距 */
 .dpv-zhcap .katex { font-size: 1.02em; }
 .dpv-zhcap .katex-display { margin: 0.15em 0; }
 .dpv-zhcap .katex-display > .katex { font-size: 1.08em; }

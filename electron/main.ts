@@ -440,6 +440,24 @@ app.whenReady().then(async () => {
         log(`canvas rendered: ${stats.canvases >= 1 && stats.firstCanvasW > 300 ? 'PASS' : 'FAIL'}`);
         log(`zh layer mounted: ${stats.zhCaps >= 1 ? 'PASS' : (stats.canvases >= 1 ? 'PASS (no zh yet, canvas ok)' : 'FAIL')}`);
 
+        // 字体一致性：打包 Noto Serif SC/Sans SC 必须实际加载；有译文胶囊时 computed family 必须唯一
+        const fontStats: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            await document.fonts.ready;
+            const loaded400 = document.fonts.check('400 14px "Noto Serif SC"', '译文测试一致性');
+            const loaded700 = document.fonts.check('700 14px "Noto Serif SC"', '译');
+            const loadedSans = document.fonts.check('600 14px "Noto Sans SC"', '标题');
+            const caps = [...document.querySelectorAll('.dpv-zhcap')];
+            const fams = new Set();
+            for (const c of caps) fams.add(getComputedStyle(c).fontFamily.split(',')[0].replace(/"/g, ''));
+            return { loaded400, loaded700, loadedSans, n: caps.length, fams: [...fams] };
+          })()
+        `);
+        log(`fonts: serif400=${fontStats.loaded400}, serif700=${fontStats.loaded700}, sans600=${fontStats.loadedSans}, zhCaps=${fontStats.n}, families=${JSON.stringify(fontStats.fams)}`);
+        const fontOk = fontStats.loaded400 && fontStats.loaded700 && fontStats.loadedSans
+          && (fontStats.n === 0 || (fontStats.fams.length === 1 && fontStats.fams[0] === 'Noto Serif SC'));
+        log(`font consistency: ${fontOk ? 'PASS' : 'FAIL'}`);
+
         const img = await win.webContents.capturePage();
         fs.mkdirSync(path.resolve('build'), { recursive: true });
         fs.writeFileSync(path.resolve('build/pdf-ui-e2e.png'), img.toPNG());
@@ -450,7 +468,8 @@ app.whenReady().then(async () => {
         fs.writeFileSync(path.resolve('build/translate-ui-e2e.png'), tvImg.toPNG());
         log('screenshots saved');
         const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300
-          && tvStats.rows >= 50 && linked.linked && shell.sidebar && shell.navBtns >= 2 && shell.topSearch;
+          && tvStats.rows >= 50 && linked.linked && shell.sidebar && shell.navBtns >= 2 && shell.topSearch
+          && fontOk;
         if (allPass) log('E2E ALL PASS');
         else log('E2E FAIL (see above)');
         fs.writeFileSync(doneFile, '1');
