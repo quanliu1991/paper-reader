@@ -7,6 +7,7 @@ import PdfView from './PdfView';
 import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
 import DualPdfView from './DualPdfView';
+import { IconBack, IconExport, IconImmersive } from './icons';
 
 const HL_COLORS = [
   { id: 'yellow', label: '黄', bg: '#fff3b0' },
@@ -118,7 +119,7 @@ export default function Reader() {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
         e.preventDefault();
-        const cycle = ['translate', 'pdf-dual', 'en', 'zh'] as const;
+        const cycle = ['translate', 'pdf-layout', 'zh'] as const;
         const cur = useStore.getState().layout;
         const idx = cycle.indexOf(cur as any);
         useStore.getState().setLayout(cycle[(idx + 1) % cycle.length] as any);
@@ -266,27 +267,31 @@ export default function Reader() {
       )}
       {!immersive && (
         <div className="reader-toolbar">
-          <button className="icon-btn" onClick={() => useStore.getState().setView('list')} title="返回列表">←</button>
+          <button className="icon-btn" onClick={() => useStore.getState().setView('list')} title="返回论文库"><IconBack /></button>
           <span className="title">{paper.title}</span>
-          <div className="toolbar-group">
-            <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="翻译全文：左英文右中文，段落逐行对照">对照</button>
-            <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="PDF 阅读：原版排版，译文原位覆盖，一键切换中英文">PDF 阅读</button>
-            <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''} title="纯中文译文流式阅读">译文</button>
+          <div className="mode-switch">
+            <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="左右对照：段落逐行双语">对照</button>
+            <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="PDF 阅读：原版排版，译文原位覆盖">PDF 阅读</button>
+            <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''} title="纯中文译文">译文</button>
           </div>
-          <div className="toolbar-group">
-            <button onClick={() => useStore.getState().setFontSize(fontSize - 1)} title="缩小字号">A-</button>
-            <button onClick={() => useStore.getState().setFontSize(fontSize + 1)} title="放大字号">A+</button>
-            <button onClick={() => useStore.getState().setColumnWidth(columnWidth === 'wide' ? 'standard' : 'wide')} title="切换栏宽">
-              {columnWidth === 'wide' ? '⇤⇥' : '⇤ ⇥'}
+          <div className="toolbar-actions">
+            {layout !== 'pdf-layout' && (
+              <>
+                <button onClick={() => useStore.getState().setFontSize(fontSize - 1)} title="缩小字号">A-</button>
+                <button onClick={() => useStore.getState().setFontSize(fontSize + 1)} title="放大字号">A+</button>
+                <button onClick={() => useStore.getState().setColumnWidth(columnWidth === 'wide' ? 'standard' : 'wide')} title="切换栏宽">
+                  {columnWidth === 'wide' ? '⇤⇥' : '⇤ ⇥'}
+                </button>
+              </>
+            )}
+            <button className="icon-btn" onClick={() => useStore.getState().setImmersive(true)} title="沉浸模式 Ctrl+Shift+F"><IconImmersive /></button>
+            <button className="icon-btn" onClick={exportTranslatedPdf} title="导出翻译版 PDF" disabled={exporting}>
+              {exporting ? '…' : <IconExport />}
+            </button>
+            <button className="primary" onClick={translateAll} disabled={translating}>
+              {translating ? `翻译中 ${progress?.done ?? 0}/${progress?.total ?? 0}` : '翻译全文'}
             </button>
           </div>
-          <button onClick={() => useStore.getState().setImmersive(true)} title="沉浸模式 (Ctrl+Shift+F)">⛶</button>
-          <button onClick={exportTranslatedPdf} title="导出翻译版 PDF（学术排版）" disabled={exporting}>
-            {exporting ? '导出中…' : '⇩ PDF'}
-          </button>
-          <button className="primary" onClick={translateAll} disabled={translating}>
-            {translating ? `翻译中 ${progress?.done ?? 0}/${progress?.total ?? 0}` : '翻译全文'}
-          </button>
         </div>
       )}
       {layout === 'pdf-layout' ? (

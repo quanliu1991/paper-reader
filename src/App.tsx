@@ -6,6 +6,7 @@ import Settings from './components/Settings';
 import Review from './components/Review';
 import CommandPalette from './components/CommandPalette';
 import ToastHost from './components/Toast';
+import { IconLibrary, IconReview, IconSettings, IconSearch } from './components/icons';
 
 export default function App() {
   const view = useStore(s => s.view);
@@ -25,25 +26,65 @@ export default function App() {
     });
   }, [loadPapers]);
 
+  const inReader = view === 'reader';
+
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand" onClick={() => useStore.getState().setView('list')}>
-          Paper Reader <span className="sub">中英对照 · 划线提问</span>
+    <div className={`app ${inReader ? 'in-reader' : ''}`}>
+      {/* 左侧图标导航栏 */}
+      <aside className="sidebar">
+        <div className="brand" onClick={() => useStore.getState().setView('list')} title="Paper Reader">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2 3 7v10l9 5 9-5V7l-9-5z" fill="var(--accent)" opacity="0.9"/>
+            <path d="M12 2 3 7l9 5 9-5-9-5z" fill="var(--accent-deep)"/>
+            <path d="M3 17l9-5v10l-9-5z" fill="var(--accent-deep)" opacity="0.75"/>
+          </svg>
         </div>
         <nav>
-          <button onClick={() => useStore.setState({ paletteOpen: true })} title="命令面板 Ctrl+K">⌘K</button>
-          <button onClick={() => useStore.getState().setView('review')}>复习</button>
-          <button onClick={() => useStore.getState().setView('list')}>论文库</button>
-          <button onClick={() => useStore.getState().setView('settings')}>设置</button>
+          <button
+            className={`nav-btn ${view === 'list' ? 'on' : ''}`}
+            onClick={() => useStore.getState().setView('list')}
+            title="论文库"
+          >
+            <IconLibrary />
+          </button>
+          <button
+            className={`nav-btn ${view === 'review' ? 'on' : ''}`}
+            onClick={() => useStore.getState().setView('review')}
+            title="闪卡复习"
+          >
+            <IconReview />
+          </button>
         </nav>
-      </header>
-      <main className="content">
-        {view === 'list' && <PaperList />}
-        {view === 'reader' && <Reader />}
-        {view === 'settings' && <Settings />}
-        {view === 'review' && <Review />}
-      </main>
+        <div className="sidebar-bottom">
+          <button
+            className={`nav-btn ${view === 'settings' ? 'on' : ''}`}
+            onClick={() => useStore.getState().setView('settings')}
+            title="设置"
+          >
+            <IconSettings />
+          </button>
+        </div>
+      </aside>
+
+      <div className="main-col">
+        {/* 顶栏：全局搜索入口 + 阅读时隐藏（沉浸） */}
+        {!inReader && (
+          <header className="topbar">
+            <div className="topbar-search" onClick={() => useStore.setState({ paletteOpen: true })}>
+              <IconSearch s={15} />
+              <span>搜索论文、执行命令…</span>
+              <kbd>Ctrl K</kbd>
+            </div>
+          </header>
+        )}
+        <main className="content">
+          {view === 'list' && <PaperList />}
+          {view === 'reader' && <Reader />}
+          {view === 'settings' && <Settings />}
+          {view === 'review' && <Review />}
+        </main>
+      </div>
+
       <CommandPalette />
       <ToastHost />
     </div>

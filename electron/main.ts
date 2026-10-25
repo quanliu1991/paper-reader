@@ -265,6 +265,17 @@ app.whenReady().then(async () => {
         if (fs.existsSync(seed)) fs.copyFileSync(seed, path.join(pdfsDir, `${paperId}.pdf`));
         log(`pdf seeded: ${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`)) ? 'PASS' : 'FAIL'}`);
 
+        // 阶段 0：应用壳层（侧栏导航 + 顶栏搜索）
+        const shell: any = await win.webContents.executeJavaScript(`
+          (() => ({
+            sidebar: !!document.querySelector('.sidebar'),
+            navBtns: document.querySelectorAll('.nav-btn').length,
+            topSearch: !!document.querySelector('.topbar-search'),
+            inReaderHidden: !!document.querySelector('.app.in-reader'),
+          }))()
+        `);
+        log(`shell: sidebar=${shell.sidebar}, navBtns=${shell.navBtns}, topSearch=${shell.topSearch}`);
+
         await win.webContents.executeJavaScript(`
           window.__store.getState().openPaper(${paperId}).then(() => {
             window.__store.getState().setLayout('translate');
@@ -341,7 +352,7 @@ app.whenReady().then(async () => {
         fs.writeFileSync(path.resolve('build/translate-ui-e2e.png'), tvImg.toPNG());
         log('screenshots saved');
         const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300
-          && tvStats.rows >= 50 && linked.linked;
+          && tvStats.rows >= 50 && linked.linked && shell.sidebar && shell.navBtns >= 2 && shell.topSearch;
         if (allPass) log('E2E ALL PASS');
         else log('E2E FAIL (see above)');
         fs.writeFileSync(doneFile, '1');

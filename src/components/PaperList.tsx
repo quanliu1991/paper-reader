@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { toast, toastErr } from './Toast';
+import { IconPlus, IconTrash, IconBib } from './icons';
 
 export default function PaperList() {
   const papers = useStore(s => s.papers);
@@ -51,10 +52,21 @@ export default function PaperList() {
 
   return (
     <div className="list-page">
-      <div className="import-row">
+      <div className="list-head">
+        <h1>论文库</h1>
+        <span className="count">{papers.length} 篇</span>
+        {papers.length > 0 && (
+          <button className="ghost-btn" onClick={exportBibtex} title="导出全部 BibTeX">
+            <IconBib /> BibTeX
+          </button>
+        )}
+      </div>
+
+      <div className="import-box">
+        <IconPlus s={16} />
         <input
           type="text"
-          placeholder="输入 arXiv ID 或 URL（如 2609.34683），回车导入"
+          placeholder="输入 arXiv ID 或链接，回车导入（如 2609.34683）"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && importArxiv()}
@@ -65,48 +77,49 @@ export default function PaperList() {
         </button>
       </div>
 
-      {papers.length > 0 && (
-        <div className="list-actions">
-          <span className="hint">{papers.length} 篇</span>
-          <button onClick={exportBibtex}>导出 BibTeX</button>
-        </div>
-      )}
-
       {busy && <div className="skeleton-card" />}
 
       {papers.length === 0 && !busy && (
         <div className="empty-hint">
+          <div className="empty-icon">📄</div>
           还没有论文。输入上方 arXiv ID 导入第一篇；
           <br />或在「设置 → 仓库连接」从知识库 .fulltext 缓存导入。
         </div>
       )}
 
-      {papers.map(p => {
-        let triage: any = null;
-        try { triage = p.summary ? JSON.parse(p.summary) : null; } catch {}
-        return (
-          <div key={p.id} className="paper-card" onClick={() => openPaper(p.id)}>
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div className="t">{p.title}</div>
-              {triage
-                ? <div className="triage-line">{triage.oneLiner}</div>
-                : <div className="triage-line pending">{p.arxiv_id ? `arXiv:${p.arxiv_id}` : ''}{triage === null && p.summary === null ? ' · AI 摘要待生成（需配置 Provider）' : ''}</div>}
-              <div className="m">
-                {p.import_type === 'text' && <span className="badge">文本模式</span>}
-                {p.translated_count > 0 && <span className="badge ok">已译 {p.translated_count}</span>}
-                {p.highlight_count > 0 && <span className="badge ok">划线 {p.highlight_count}</span>}
-                {p.read_pct ? <span className="badge">读至 {p.read_pct}%</span> : null}
+      <div className="paper-grid">
+        {papers.map(p => {
+          let triage: any = null;
+          try { triage = p.summary ? JSON.parse(p.summary) : null; } catch {}
+          return (
+            <div key={p.id} className="paper-card" onClick={() => openPaper(p.id)}>
+              <div className="card-top">
+                {p.arxiv_id && <span className="arxiv-id">arXiv:{p.arxiv_id}</span>}
+                {p.import_type === 'text' && <span className="chip-plain">文本模式</span>}
               </div>
-            </div>
-            <div className="card-actions">
+              <div className="t">{p.title}</div>
+              <div className={`triage-line ${triage ? '' : 'pending'}`}>
+                {triage
+                  ? triage.oneLiner
+                  : (p.summary === null ? 'AI 摘要待生成（需配置 Provider）' : (p.arxiv_id ? '' : ''))}
+              </div>
+              <div className="card-bottom">
+                <div className="m">
+                  {p.translated_count > 0 && <span>已译 {p.translated_count}</span>}
+                  {p.highlight_count > 0 && <span>划线 {p.highlight_count}</span>}
+                  {p.read_pct ? <span>读至 {p.read_pct}%</span> : null}
+                </div>
+                <button className="icon-danger" onClick={e => removePaper(e, p.id, p.title)} title="删除">
+                  <IconTrash s={15} />
+                </button>
+              </div>
               {p.read_pct ? (
-                <div className="mini-progress"><div style={{ width: `${p.read_pct}%` }} /></div>
+                <div className="read-progress"><div style={{ width: `${p.read_pct}%` }} /></div>
               ) : null}
-              <button className="danger" onClick={e => removePaper(e, p.id, p.title)}>删除</button>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
