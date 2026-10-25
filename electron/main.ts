@@ -152,6 +152,31 @@ app.whenReady().then(async () => {
         })()
       `);
       log('dbg: ' + JSON.stringify(dbg, null, 1));
+      // 双页联动验证：点击第一个译文胶囊 → 左侧出现高亮框；左滚 → 右同步
+      const link: any = await win.webContents.executeJavaScript(`
+        (async () => {
+          const caps = document.querySelectorAll('.dpv-zhcap');
+          if (!caps.length) return { linked: false, reason: 'no caps' };
+          caps[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise(r => setTimeout(r, 500));
+          const hl = document.querySelectorAll('.dpv-hlbox');
+          // 滚动同步
+          const panes = document.querySelectorAll('.dpv-pane');
+          if (panes.length === 2) {
+            panes[0].scrollTop = Math.round(panes[0].scrollHeight * 0.4);
+            panes[0].dispatchEvent(new Event('scroll'));
+            await new Promise(r => setTimeout(r, 400));
+          }
+          const lRatio = panes[0] ? panes[0].scrollTop / Math.max(1, panes[0].scrollHeight - panes[0].clientHeight) : 0;
+          const rRatio = panes[1] ? panes[1].scrollTop / Math.max(1, panes[1].scrollHeight - panes[1].clientHeight) : 0;
+          return {
+            linked: hl.length > 0, hlCount: hl.length,
+            scrollSynced: Math.abs(lRatio - rRatio) < 0.05,
+            lRatio: Math.round(lRatio * 100) / 100, rRatio: Math.round(rRatio * 100) / 100,
+          };
+        })()
+      `);
+      log('link: ' + JSON.stringify(link, null, 1));
       // 触发前 3 个 para block 翻译（主进程直接构造参数），验证胶囊链路
       const firstParas: any[] = await win.webContents.executeJavaScript(`
         window.__store.getState().blocks.filter(b => b.type === 'para').slice(0, 3).map(b => ({ pid: b.pid, en: b.en }))
@@ -169,11 +194,10 @@ app.whenReady().then(async () => {
       const diag: any = await win.webContents.executeJavaScript(`
         (() => {
           const st = window.__store.getState();
-          const pages = document.querySelectorAll('.plv-page');
-          const textSpans = document.querySelectorAll('.plv-textlayer span');
-          const caps = document.querySelectorAll('.plv-zhcap');
-          const canvases = document.querySelectorAll('.plv-page canvas');
-          // 首个胶囊与所在页的位置关系
+          const pages = document.querySelectorAll('.plv-page, .dpv-page');
+          const textSpans = document.querySelectorAll('.dpv-textlayer span');
+          const caps = document.querySelectorAll('.dpv-zhcap');
+          const canvases = document.querySelectorAll('.dpv-page canvas');
           const firstCap = caps[0];
           const capInfo = firstCap ? {
             left: Math.round(firstCap.getBoundingClientRect().left),
@@ -181,32 +205,11 @@ app.whenReady().then(async () => {
             w: Math.round(firstCap.getBoundingClientRect().width),
             textLen: (firstCap.textContent ?? '').length,
           } : null;
-          // 几何对齐诊断：每胶囊内文本层 span 数（原位替换应覆盖其原文 span）+ 溢出检测
-          const capsGeom = [...caps].slice(0, 6).map(c => {
-            const r = c.getBoundingClientRect();
-            const host = c.closest('.plv-page');
-            const pageEl = host ? host.getBoundingClientRect() : null;
-            const spans = host ? [...host.querySelectorAll('.plv-textlayer span')] : [];
-            let inside = 0;
-            for (const sp of spans) {
-              const sr = sp.getBoundingClientRect();
-              const cx = sr.left + sr.width / 2, cy = sr.top + sr.height / 2;
-              if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) inside++;
-            }
-            return {
-              pid: c.dataset.pid, page: host?.dataset.page, insideSpans: inside,
-              overflow: c.scrollHeight > c.clientHeight + 2,
-              leftInPage: pageEl ? Math.round(r.left - pageEl.left) : null,
-              pageW: pageEl ? Math.round(pageEl.width) : null,
-              w: Math.round(r.width), h: Math.round(r.height),
-              scrollH: c.scrollHeight,
-            };
-          });
           return {
             layout: st.layout, blocks: st.blocks.length,
             pages: pages.length, canvases: canvases.length,
             textSpans: textSpans.length,
-            capsules: caps.length, capInfo, capsGeom,
+            capsules: caps.length, capInfo,
           };
         })()
       `);

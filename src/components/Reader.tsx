@@ -7,6 +7,7 @@ import PdfView from './PdfView';
 import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
 import PdfLayoutView from './PdfLayoutView';
+import DualPdfView from './DualPdfView';
 
 const HL_COLORS = [
   { id: 'yellow', label: '黄', bg: '#fff3b0' },
@@ -270,7 +271,7 @@ export default function Reader() {
           <span className="title">{paper.title}</span>
           <div className="toolbar-group">
             <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="翻译全文：左英文右中文，段落逐行对照（豆包式）">对照</button>
-            <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="原版式对照：PDF 版式原样，译文原位替换，支持划词">原位对照</button>
+            <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="双页对照：左原文 PDF，右译文原位替换，同步滚动+段落联动">双页对照</button>
             <button onClick={() => setLayout('pdf-dual')} className={layout === 'pdf-dual' ? 'active' : ''} title="PDF 原版 + 译文分页对照">原版</button>
             <button onClick={() => setLayout('en')} className={layout === 'en' ? 'active' : ''}>原文</button>
             <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''}>译文</button>
@@ -293,7 +294,7 @@ export default function Reader() {
       )}
       {layout === 'pdf-layout' ? (
         pdfReady
-          ? <PdfLayoutView paperId={paper.id} blocks={blocks} mode="dual" onMouseUp={onMouseUp} />
+          ? <DualPdfView paperId={paper.id} blocks={blocks} onMouseUp={onMouseUp} />
           : <div className="reader-scroll"><div className="pdf-loading" style={{ padding: '120px 0', textAlign: 'center' }}>PDF 下载中…（首次导入论文时后台自动下载，稍后重开）</div></div>
       ) : isPdfLayout ? (
         <div className="pdf-layout">
