@@ -41,21 +41,24 @@ run(`git tag v${version}`);
 run('git push');
 run(`git push origin v${version}`);
 
-// 5. GitHub Release（有 gh 且已登录才发；否则留待手动）
+// 5. GitHub Release（REST API + git 凭据管理器 token；gh CLI 未登录也能发）
 console.log(`[release] step 5/5: GitHub Release`);
 const releaseDir = path.join(root, 'release');
-const asset = fs.readdirSync(releaseDir).find(f => /^Paper Reader Setup .*\.exe$/i.test(f));
-if (hasGh()) {
-  const notes = `## v${version}\n\n- 安装包：${asset ?? '（见 release/ 目录）'}\n- 上一版本以来的变更见 [commits](https://github.com/quanliu1991/paper-reader/compare/v0.2.0...v${version})\n- 交付前已通过 guard 门禁（物理重叠/内容去重/滚动锁定/三态截图/图表原位断言 ALL PASS）\n`;
-  fs.writeFileSync(path.join(releaseDir, 'NOTES.md'), notes);
-  try {
-    run(`gh release create v${version} "${path.join(releaseDir, asset)}" --title "Paper Reader v${version}" --notes-file "${path.join(releaseDir, 'NOTES.md')}"`);
-    console.log(`[release] v${version} 已发布到 GitHub Releases`);
-  } catch (e) {
-    console.error(`[release] gh release 失败（可手动发布）：${e.message}`);
-    process.exit(1);
+// 资产必须匹配本次版本号（排除历史残留安装包）
+const asset = fs.readdirSync(releaseDir).find(f => new RegExp(`^Paper Reader Setup ${version.replace(/\./g, '\\.')}\\.exe$`, 'i').test(f));
+if (!asset) { console.error(`[release] FATAL: release/ 下没找到 v${version} 安装包`); process.exit(1); }
+try {
+  run(`node scripts/gh-release.mjs v${version} "${path.join(releaseDir, asset)}"`);
+  console.log(`[release] v${version} 已发布到 GitHub Releases`);
+} catch (e) {
+  console.error(`[release] GitHub Release 失败（tag 已推送）：${e.message}`);
+  console.error(`[release] 手动补发: node scripts/gh-release.mjs v${version} "${path.join(releaseDir, asset)}"`);
+}
+// 收尾：清理历史残留安装包（保留本次版本）
+for (const f of fs.readdirSync(releaseDir)) {
+  if (/^Paper Reader Setup .+\.exe(\.blockmap)?$/.test(f) && !f.includes(`Setup ${version}`)) {
+    fs.rmSync(path.join(releaseDir, f));
+    console.log(`[release] 清理残留: ${f}`);
   }
-} else {
-  console.log(`[release] gh CLI 未安装/未登录——tag v${version} 已推送，请在 GitHub 手动创建 Release 并上传 ${asset}`);
 }
 console.log(`[release] DONE v${version}`);
