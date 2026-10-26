@@ -18,6 +18,8 @@ export interface TextBlockBox {
   pageW: number; pageH: number;
   textLen: number;
   lineH: number;
+  text: string;   // 簇原文（审计用）
+  norm: string;   // 归一化文本（匹配用）
 }
 
 type PdfMode = 'en' | 'both' | 'zh';
@@ -89,45 +91,78 @@ export default function DualPdfView({
     [blocks],
   );
 
-  // 2) 文档就绪 → 聚类匹配（pid → page 映射）。逐页增量 setBoxes：
-  // 右栏页组渐进出现，不等全部页聚类完（长文首屏更快，E2E 不再受全量耗时抖动）。
+  // 2) 文档就绪 → 全页聚类 + 全局单调 DP 匹配。
+  // 匹配必须全局做：顺序约束（块下标单调）只有跨整篇 PDF 才成立，逐页独立匹配必然段落穿越。
+  // 性能：14 页 ×100 簇 ×90 块的 DP 在主线程 <50ms；聚类（PDF.js getTextContent）才是大头。
+  // 右栏渐进上屏：聚类每完成一页就先按「页内簇阅读序」渲染该页（pid 待 DP 完成后校正），
+  // 这里简单起见：先逐页聚类收集（不渲染），DP 完成后一次性 setBoxes——首屏等待 ≈ 聚类总耗时，
+  // 对 14 页论文约 1-2s，可接受；长文优化（流水线 DP）后续再做。
   useEffect(() => {
     if (!doc) return;
     let cancelled = false;
     (async () => {
       const blockNorms = blocksRef.current.filter(b => b.type !== 'fig')
         .map(b => ({ pid: b.pid, norm: normText(b.en) })).filter(x => x.norm.length >= 6);
-      let all: TextBlockBox[] = [];
+      const all: TextBlockBox[] = [];
+      const clusterNorms: Array<{ norm: string }> = [];
       for (let p = 1; p <= Math.min(doc.numPages, 60); p++) {
         const page = await doc.getPage(p);
-        all = all.concat(clusterTextItems(await page.getTextContent(), page.getViewport({ scale: 1 }), p, blockNorms));
+        const boxes = clusterTextItems(await page.getTextContent(), page.getViewport({ scale: 1 }), p);
+        for (const b of boxes) clusterNorms.push({ norm: b.norm });
+        all.push(...boxes);
         if (cancelled) return;
-        setBoxes(all);
       }
+      const pids = matchPidsMonotonic(clusterNorms, blockNorms);
+      all.forEach((b, i) => { b.pid = pids[i] || 0; });
+      setBoxes(all);
       setClusterDone(true);
       (window as any).__dpvClusterDone = { pages: Math.min(doc.numPages, 60), matched: all.filter(b => b.pid).length };
       (window as any).__dpvBoxesPids = all.filter(b => b.pid).map(b => b.pid);
+      // 映射审计：每页首个匹配簇的 PDF 原文 vs 对应 block 原文（前 80 字符），控制台可查
+      const audit: any = {};
+      for (const box of all) {
+        if (!box.pid || audit[box.page]) continue;
+        const blk = blocksRef.current.find(x => x.pid === box.pid);
+        if (blk) audit[box.page] = { pdfHead: box.text.slice(0, 80), blockHead: (blk.en ?? '').replace(/\s+/g, ' ').slice(0, 80), pid: box.pid };
+      }
+      (window as any).__dpvMapAudit = audit;
+      console.log('[dpv] 页↔段映射审计（每页首个匹配）', audit);
     })();
     return () => { cancelled = true; };
   }, [doc, enKey]);
 
   // 页 → pid 列表（右栏分组依据）；pid → 首次出现页（左→右定位依据）。
-  // 未匹配到 boxes 的段落归入「未映射」组，不丢弃（保证右栏文字连贯）。
-  const { pidsByPage, unmapped } = useMemo(() => {
+  // 页内顺序 = 文档顺序（seq），不是簇发现顺序——右栏永远按原文行文渲染。
+  // 未匹配的段落：不再全部沉底（旧版把摘要/致谢整块丢文末，正文断层），
+  // 按 seq 邻近原则插入：取它前一个已映射块的页，紧跟其后渲染。
+  const { pidsByPage, unmappedSet } = useMemo(() => {
     const pidFirstPage = new Map<number, number>();
     for (const b of boxes) {
       if (!b.pid) continue;
       if (!pidFirstPage.has(b.pid)) pidFirstPage.set(b.pid, b.page);
     }
-    const byPage = new Map<number, number[]>();
+    const pageOfPid = new Map<number, number>(); // pid → 渲染页（含未映射的邻近归页）
     const unmappedPids: number[] = [];
+    let lastPage = 1; // 前一个已映射块的页（seq 顺序推进）
     for (const b of blocks) {
-      if (b.type === 'fig') continue; // 图表用占位块，不占 pid 组
-      const pg = pidFirstPage.get(b.pid);
-      if (pg === undefined) { unmappedPids.push(b.pid); continue; }
+      if (b.type === 'fig') continue;
+      const mapped = pidFirstPage.get(b.pid);
+      if (mapped !== undefined) {
+        pageOfPid.set(b.pid, mapped);
+        lastPage = mapped;
+      } else {
+        pageOfPid.set(b.pid, lastPage); // 邻近归页：跟前一个块同页渲染
+        unmappedPids.push(b.pid);
+      }
+    }
+    const byPage = new Map<number, number[]>();
+    for (const b of blocks) {
+      if (b.type === 'fig') continue;
+      const pg = pageOfPid.get(b.pid);
+      if (pg === undefined) continue;
       const a = byPage.get(pg) ?? []; a.push(b.pid); byPage.set(pg, a);
     }
-    return { pidsByPage: byPage, unmapped: unmappedPids };
+    return { pidsByPage: byPage, unmappedSet: new Set(unmappedPids) };
   }, [boxes, blocks.map(b => b.pid).join(','), enKey]);
 
   const pidsByPageRef = useRef(pidsByPage);
@@ -385,7 +420,7 @@ export default function DualPdfView({
             <ZhFlow
               blocks={blocks}
               pidsByPage={pidsByPage}
-              unmapped={unmapped}
+              unmappedSet={unmappedSet}
               numPages={numPages}
               activePid={activePid}
               activePage={mode === 'both' ? visiblePage : 0}
@@ -404,11 +439,11 @@ export default function DualPdfView({
 // ---------- 右栏译文流（纯文档流） ----------
 
 const ZhFlow = memo(function ZhFlow({
-  blocks, pidsByPage, unmapped, numPages, activePid, activePage, clusterDone, onJumpPage, onJumpPid, onRetry,
+  blocks, pidsByPage, unmappedSet, numPages, activePid, activePage, clusterDone, onJumpPage, onJumpPid, onRetry,
 }: {
   blocks: BlockRow[];
   pidsByPage: Map<number, number[]>;
-  unmapped: number[];
+  unmappedSet: Set<number>;
   numPages: number;
   activePid: number;
   activePage: number;
@@ -418,60 +453,67 @@ const ZhFlow = memo(function ZhFlow({
   onRetry: (pid: number) => void;
 }) {
   const byPid = useMemo(() => new Map(blocks.map(b => [b.pid, b])), [blocks]);
-  const figBlocks = useMemo(() => blocks.filter(b => b.type === 'fig'), [blocks]);
-  const figByPage = useMemo(() => {
-    const m = new Map<number, BlockRow[]>();
-    // 图表无精确页映射时按邻近文本块粗略归页：这里简单挂在 unmapped 前后；
-    // 已有 fig 路径的走左栏原生图，右栏只放占位提示
-    for (const f of figBlocks) {
-      // 找到 fig 前最近的已映射 pid 所在页
-      const idx = blocks.findIndex(b => b.pid === f.pid);
-      let page: number | null = null;
-      for (let i = idx - 1; i >= 0; i--) {
-        for (const [pg, arr] of pidsByPage) if (arr.includes(blocks[i].pid)) { page = pg; break; }
-        if (page) break;
+  const seqOfPid = useMemo(() => {
+    const m = new Map<number, number>();
+    blocks.forEach((b, i) => m.set(b.pid, b.seq ?? i));
+    return m;
+  }, [blocks]);
+  // 页内渲染序列：段落 + 图表占位按文档 seq 混排（图表内联在原上下文位置，绝不堆页头/页尾）
+  const pageItems = useMemo(() => {
+    const pageOfPid = new Map<number, number>();
+    for (const [pg, arr] of pidsByPage) for (const pid of arr) pageOfPid.set(pid, pg);
+    let lastPage = 1;
+    const items: Array<{ page: number; kind: 'pid' | 'fig'; pid: number; seq: number }> = [];
+    blocks.forEach((b, i) => {
+      const seq = b.seq ?? i;
+      if (b.type === 'fig') {
+        items.push({ page: lastPage, kind: 'fig', pid: b.pid, seq });
+      } else {
+        const pg = pageOfPid.get(b.pid) ?? lastPage;
+        lastPage = pg;
+        items.push({ page: pg, kind: 'pid', pid: b.pid, seq });
       }
-      const key = page ?? 0;
-      const a = m.get(key) ?? []; a.push(f); m.set(key, a);
+    });
+    const m = new Map<number, Array<{ kind: 'pid' | 'fig'; pid: number }>>();
+    for (const it of items) {
+      const a = m.get(it.page) ?? []; a.push(it); m.set(it.page, a);
     }
     return m;
-  }, [figBlocks, blocks, pidsByPage]);
+  }, [blocks, pidsByPage]);
 
   return (
     <div className="dpv-zhflow">
       {Array.from({ length: Math.max(numPages, 1) }, (_, i) => i + 1).map(pg => {
-        const pids = pidsByPage.get(pg) ?? [];
-        const figs = figByPage.get(pg) ?? [];
-        if (!pids.length && !figs.length) return null;
+        const its = pageItems.get(pg) ?? [];
+        if (!its.length) return null;
         return (
           <section key={pg} className={`dpv-zhgroup${pg === activePage ? ' page-active' : ''}`} data-zhpage={pg}>
             <div className="dpv-zhgroup-head" onClick={() => onJumpPage(pg)} role="button" tabIndex={0}
               onKeyDown={e => { if (e.key === 'Enter') onJumpPage(pg); }} title="点击定位左栏该页">
               — 第 {pg} 页 —
             </div>
-            {pids.map(pid => {
-              const b = byPid.get(pid);
+            {its.map(it => {
+              if (it.kind === 'fig') {
+                const f = byPid.get(it.pid);
+                const cap = f ? (f.zh ? f.zh.slice(0, 40) : (f.en ?? '').slice(0, 40)) : '';
+                return (
+                  <div key={`f${it.pid}`} className="dpv-zhfigph" data-pid={it.pid}>
+                    📊 {cap ? `[${cap}…] ` : ''}图表 · 请看左栏原版
+                  </div>
+                );
+              }
+              const b = byPid.get(it.pid);
               if (!b) return null;
-              return <ZhBlock key={pid} b={b} active={activePid === pid} onJump={onJumpPid} onRetry={onRetry} />;
+              return <ZhBlock key={it.pid} b={b} active={activePid === it.pid} onJump={onJumpPid} onRetry={onRetry} unmapped={unmappedSet.has(it.pid)} />;
             })}
-            {figs.map(f => (
-              <div key={f.pid} className="dpv-zhfigph" data-pid={f.pid}>
-                📊 [图表 · {f.zh ? f.zh.slice(0, 40) : f.en.slice(0, 40)}…] 请看左栏原版
-              </div>
-            ))}
           </section>
         );
       })}
-      {/* 未映射段落：聚类全部完成后统一收尾展示（过程中段落还在页组间迁移，先不渲染避免闪烁） */}
-      {clusterDone && unmapped.length > 0 && (
-        <section className="dpv-zhgroup unmapped-group">
-          <div className="dpv-zhgroup-head">— 未定位页码的段落 —</div>
-          {unmapped.map(pid => {
-            const b = byPid.get(pid);
-            if (!b) return null;
-            return <ZhBlock key={pid} b={b} active={activePid === pid} onJump={onJumpPid} onRetry={onRetry} unmapped />;
-          })}
-        </section>
+      {/* 全部段落已按邻近原则归页内联，无文末兜底大组 */}
+      {clusterDone && unmappedSet.size > 0 && (
+        <div className="dpv-unmapped-hint">
+          ⚠ {unmappedSet.size} 段未与 PDF 精确定位（含左侧细线的段落），已按上下文就近插入
+        </div>
       )}
     </div>
   );
@@ -539,38 +581,121 @@ function looksLikeChitchatZh(zh: string): boolean {
   return ZH_CHITCHAT_RE.some(re => re.test(t));
 }
 
-// ---------- 文本归一化 + 聚类匹配（沿用既有算法） ----------
+// ---------- 文本归一化 + 聚类匹配 ----------
+// 连字展开：PDF 里 fi/fl/ff 等是单码位连字（ﬁ U+FB01），HTML 里是两个字符。
+// 不展开则 "specific" 永远匹配不上 "speciﬁc"——前缀匹配全灭，摘要整块失配。
+const LIGATURES: Record<string, string> = {
+  '\uFB00': 'ff', '\uFB01': 'fi', '\uFB02': 'fl', '\uFB03': 'ffi', '\uFB04': 'ffl',
+  '\uFB05': 'st', '\uFB06': 'st', '\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2013': '-', '\u2014': '-', '\u2212': '-',
+};
 
 function normText(s: string): string {
-  return s.replace(/\$\$[^$]*\$\$/g, ' ').replace(/\$[^$]*\$/g, ' ')
-    .toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
+  let out = s.replace(/\$\$[^$]*\$\$/g, ' ').replace(/\$[^$]*\$/g, ' ');
+  out = out.replace(/[\uFB00-\uFB06\u2010-\u2014\u2212]/g, (ch) => LIGATURES[ch] ?? ch);
+  return out.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
 }
 
-function matchPid(clusterText: string, blockNorms: { pid: number; norm: string }[]): number {
-  const cn = normText(clusterText);
-  if (cn.length < 6) return 0;
-  let best = 0, bestScore = 0;
-  for (const b of blockNorms) {
-    if (b.norm.length < 8) continue;
-    let score = 0;
-    if (b.norm === cn) score = 10000 + b.norm.length;
-    else if (cn.length >= 20 && b.norm.includes(cn)) score = 8000 + cn.length * 2;
-    else if (b.norm.length >= 20 && cn.includes(b.norm)) score = 9000 + b.norm.length;
-    else if (b.norm.startsWith(cn) || cn.startsWith(b.norm)) score = 7000 + Math.min(cn.length, b.norm.length);
-    else {
-      for (const k of [60, 40, 28, 20, 14]) {
-        const bhead = b.norm.slice(0, k);
-        if (bhead.length >= 10 && cn.includes(bhead)) { score = 6000 + k * 10; break; }
-        const chead = cn.slice(0, k);
-        if (chead.length >= 10 && b.norm.includes(chead)) { score = 5000 + k * 10; break; }
+// 簇 norm 与块 norm 的相似分（0-1）。
+// 双向锚点：长簇取头部 40 字符在块中搜索（段落被切成多簇时，第 2+ 簇的文本是段落中段，
+// 纯前缀比对必然 0 分——这正是旧版匹配率 15% 的原因）。
+// 锚点用「滑窗匹配」：在块里找簇头出现的位置，容忍少量字符差异。
+function anchorIn(hay: string, needle: string): boolean {
+  if (!needle.length || hay.length < needle.length) return false;
+  const n = needle.length;
+  for (let i = 0; i + n <= hay.length; i++) {
+    let ok = true;
+    for (let j = 0; j < n; j++) {
+      if (hay[i + j] !== needle[j]) { ok = false; break; }
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+function simScore(cn: string, bn: string): number {
+  if (!cn.length || !bn.length) return 0;
+  // 整块等于整簇 / 前缀一致：满分
+  let prefix = 0;
+  const pn = Math.min(cn.length, bn.length);
+  while (prefix < pn && cn[prefix] === bn[prefix]) prefix++;
+  if (prefix === cn.length && prefix === bn.length) return 1;
+  if (prefix >= Math.min(cn.length, 30)) return 0.85 + prefix / Math.max(cn.length, bn.length) * 0.15;
+  // 簇是块的子串（中段簇）：高置信
+  if (cn.length >= 24 && bn.includes(cn)) return 0.9;
+  if (cn.length >= 40 && bn.includes(cn.slice(0, 40))) return 0.85;
+  // 锚点探测：簇头 24 字符在块中出现
+  if (cn.length >= 24 && anchorIn(bn, cn.slice(0, 24))) return 0.75;
+  // 簇尾锚点：跨栏切割的尾簇，尾部对齐块尾
+  if (cn.length >= 24 && anchorIn(bn, cn.slice(-24))) return 0.7;
+  // 短簇（标题类）：要求几乎全等
+  if (cn.length < 24 && bn.length < 24) {
+    return cn === bn ? 0.95 : prefix / Math.max(cn.length, bn.length) < 0.5 ? 0 : prefix / Math.max(cn.length, bn.length);
+  }
+  return prefix / Math.max(cn.length, bn.length) >= 0.5 ? 0.5 * prefix / Math.max(cn.length, bn.length) : 0;
+}
+
+// 单调 DP 匹配：簇（PDF 阅读顺序）× 块（文档顺序）。
+// 核心不变量：分配给簇的块下标单调不减。末尾章节在数学上不可能被映射到第 1 页——
+// 它前面的所有簇必须先消耗掉前面的块（分数不够就跳过簇，绝不回头）。
+// dp[ci][bi] = 处理完前 ci 个簇、块指针在 bi 的最大总分；转移 = 跳过簇 / 跳过块 / 匹配。
+function matchPidsMonotonic(
+  clusters: Array<{ norm: string }>,
+  blockNorms: Array<{ pid: number; norm: string }>,
+): number[] {
+  const C = clusters.length, B = blockNorms.length;
+  const result = new Array<number>(C).fill(0);
+  if (!C || !B) return result;
+
+  // 相似度（只对达标的组合记分）
+  const TH = 0.45;
+  const W = B + 1;
+  const sim = new Float64Array(C * B);
+  for (let ci = 0; ci < C; ci++) {
+    const cn = clusters[ci].norm;
+    if (cn.length < 6) continue;
+    for (let bi = 0; bi < B; bi++) {
+      const bn = blockNorms[bi].norm;
+      if (bn.length < 6) continue;
+      sim[ci * B + bi] = simScore(cn, bn);
+    }
+  }
+
+  const NEG = -1e9;
+  const dp = new Float64Array((C + 1) * W).fill(NEG);
+  const move = new Int8Array((C + 1) * W); // 0=跳过簇 1=跳过块 2=匹配(块前进) 3=续簇(块不前进)
+  dp[0] = 0;
+  for (let ci = 0; ci <= C; ci++) {
+    for (let bi = 0; bi <= B; bi++) {
+      const cur = dp[ci * W + bi];
+      if (cur === NEG) continue;
+      if (ci < C && cur > dp[(ci + 1) * W + bi]) { dp[(ci + 1) * W + bi] = cur; move[(ci + 1) * W + bi] = 0; }
+      if (bi < B && cur > dp[ci * W + bi + 1]) { dp[ci * W + bi + 1] = cur; move[ci * W + bi + 1] = 1; }
+      if (ci < C && bi < B) {
+        const s = sim[ci * B + bi];
+        if (s >= TH) {
+          const v = cur + s * 2 - 0.02; // 低相似匹配是负收益（s<0.01 时 v<cur）
+          if (v > dp[(ci + 1) * W + bi + 1]) { dp[(ci + 1) * W + bi + 1] = v; move[(ci + 1) * W + bi + 1] = 2; }
+          // 续簇：PDF 把一个段落物理切成多簇（跨列/跨页），后续簇继续挂同一块，块指针不前进
+          const v2 = cur + s * 1.2 - 0.05;
+          if (v2 > dp[(ci + 1) * W + bi]) { dp[(ci + 1) * W + bi] = v2; move[(ci + 1) * W + bi] = 3; }
+        }
       }
     }
-    if (score > bestScore) { bestScore = score; best = b.pid; }
   }
-  return best;
+  // 回溯：从 (C, B) 走回 (0, 0)
+  let ci = C, bi = B;
+  while (ci > 0 || bi > 0) {
+    const mv = move[ci * W + bi];
+    if (mv === 2) { result[ci - 1] = blockNorms[bi - 1].pid; ci--; bi--; }
+    else if (mv === 3) { result[ci - 1] = blockNorms[bi - 1].pid; ci--; }
+    else if (mv === 1) bi--;
+    else if (mv === 0) ci--;
+    else break; // 不可达
+  }
+  return result;
 }
 
-function clusterTextItems(tc: any, vp1: any, page: number, blockNorms: { pid: number; norm: string }[]): TextBlockBox[] {
+function clusterTextItems(tc: any, vp1: any, page: number): TextBlockBox[] {
   const items = (tc.items as any[]).filter(i => i.str && i.str.trim() && i.width > 0);
   if (!items.length) return [];
   const vpW = vp1.width, vpH = vp1.height;
@@ -597,10 +722,12 @@ function clusterTextItems(tc: any, vp1: any, page: number, blockNorms: { pid: nu
     }
     if (seg.length) splitLines.push({ y: l.y, items: seg });
   }
+  // 阅读序：单栏页（行中点全在一侧）按 y 降序；双栏页先左列（col 0）y 降序、再右列 y 降序
   const colOf = (l: { items: any[] }) => Math.min(...l.items.map(i => i.transform[4])) < vpW / 2 ? 0 : 1;
+  const twoCol = new Set(splitLines.map(colOf)).size > 1;
   const lines2 = splitLines.slice().sort((a, b) => {
     const ca = colOf(a), cb = colOf(b);
-    if (ca !== cb) return ca - cb;
+    if (twoCol && ca !== cb) return ca - cb;
     return b.y - a.y;
   });
   type Cluster = { items: any[]; col: number };
@@ -623,7 +750,6 @@ function clusterTextItems(tc: any, vp1: any, page: number, blockNorms: { pid: nu
     const text = c.items.map(i => i.str).join(' ');
     const norm = normText(text);
     if (norm.length < 6) continue;
-    const pid = matchPid(text, blockNorms);
     const ys = [...new Set(c.items.map(i => Math.round(i.transform[5])))].sort((a, b) => b - a);
     let lineH = 0;
     if (ys.length >= 2) {
@@ -635,7 +761,7 @@ function clusterTextItems(tc: any, vp1: any, page: number, blockNorms: { pid: nu
     const right = Math.max(...c.items.map(i => i.transform[4] + i.width));
     const pdfTop = Math.max(...c.items.map(i => i.transform[5] + (i.height ?? 10)));
     const pdfBottom = Math.min(...c.items.map(i => i.transform[5]));
-    out.push({ pid, page, textLen: norm.length, x, y: vpH - pdfTop, w: right - x, h: Math.max(8, pdfTop - pdfBottom), pageW: vpW, pageH: vpH, lineH: Math.max(6, lineH) });
+    out.push({ pid: 0, page, textLen: norm.length, x, y: vpH - pdfTop, w: right - x, h: Math.max(8, pdfTop - pdfBottom), pageW: vpW, pageH: vpH, lineH: Math.max(6, lineH), text, norm });
   }
   return out;
 }

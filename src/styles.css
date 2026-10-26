@@ -792,6 +792,11 @@ img, figure { max-width: 100%; }
   padding: 3px 12px; cursor: pointer; user-select: none;
 }
 .dpv-zhpending:hover { color: var(--accent); border-color: var(--accent); }
+/* 未映射段提示（文末一行说明，段落本身已就近内联进页组） */
+.dpv-unmapped-hint {
+  margin: 18px 0 6px; padding: 8px 14px; font-size: 12px; color: var(--muted);
+  background: var(--panel); border: 1px dashed var(--border); border-radius: 8px; text-align: center;
+}
 .dpv-zhpending .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); animation: dpvPulse 1.2s ease-in-out infinite; }
 .dpv-zhpending .dot:nth-child(2) { animation-delay: 0.2s; }
 .dpv-zhpending .dot:nth-child(3) { animation-delay: 0.4s; }

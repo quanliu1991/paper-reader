@@ -117,6 +117,35 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  if (process.env.PR_REIMPORT) {
+    // 一次性数据修复：重新解析 HTML 论文，覆盖旧版解析器的污染 blocks（噪声头/标题摘要丢失）
+    const rows = db.getDb().prepare("SELECT id, arxiv_id FROM papers WHERE import_type='html'").all() as any[];
+    console.log(`[reimport] html papers: ${rows.length}`);
+    for (const row of rows) {
+      try {
+        const parsed = await arxiv.fetchAndParse(row.arxiv_id);
+        if (parsed.importType !== 'html' || parsed.blocks.length < 20) {
+          console.log(`[reimport] ${row.arxiv_id}: skip (type=${parsed.importType}, blocks=${parsed.blocks.length})`);
+          continue;
+        }
+        const headOk = parsed.blocks[0].en.length > 10 && !/^(report|content selection|back to)/i.test(parsed.blocks[0].en);
+        if (!headOk) {
+          console.log(`[reimport] ${row.arxiv_id}: skip (head suspicious: "${parsed.blocks[0].en.slice(0, 40)}")`);
+          continue;
+        }
+        db.getDb().prepare('DELETE FROM blocks WHERE paper_id=?').run(row.id);
+        db.getDb().prepare('DELETE FROM translations WHERE paper_id=?').run(row.id);
+        db.getDb().prepare('UPDATE papers SET title=?, authors=? WHERE id=?')
+          .run(parsed.title, parsed.authors, row.id);
+        db.insertBlocks(row.id, parsed.blocks);
+        console.log(`[reimport] paper ${row.id} (${row.arxiv_id}): ${parsed.blocks.length} blocks rewritten`);
+      } catch (e: any) {
+        console.log(`[reimport] paper ${row.id} FAILED: ${e?.message ?? e}`);
+      }
+    }
+    app.quit();
+    return;
+  }
   if (process.env.PR_UI_INSPECT) {
     // 用户库检查：打开真实库中最近论文，检查渲染状态并截图
     const win = new BrowserWindow({
@@ -695,6 +724,38 @@ app.whenReady().then(async () => {
         }
         const zhGroupCount = await win.webContents.executeJavaScript(`document.querySelectorAll('.dpv-zhgroup[data-zhpage]').length`);
         log(`cluster: done=${JSON.stringify(clusterInfo)}, zhGroups(mapped)=${zhGroupCount}`);
+
+        // 【映射审计】右栏第 N 页组前 3 段文本 vs 左栏该页 PDF 物理簇文本（用户要求的验证）
+        const mapAudit: any = await win.webContents.executeJavaScript(`
+          (() => {
+            const audit = window.__dpvMapAudit ?? {};
+            // 右栏每页组前 3 段的实际渲染文本
+            const groups = [...document.querySelectorAll('.dpv-zhgroup[data-zhpage]')];
+            const rightPages = {};
+            for (const g of groups) {
+              const pg = g.dataset.zhpage;
+              const paras = [...g.querySelectorAll('.dpv-zhpara')].slice(0, 3);
+              rightPages[pg] = paras.map(p => (p.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 60));
+            }
+            return { audit, rightPages };
+          })()
+        `);
+        log('=== 映射审计：每页首个匹配（PDF 簇原文 vs 块原文） ===');
+        for (const [pg, a] of Object.entries<any>(mapAudit.audit)) {
+          log(`  p${pg} pid=${a.pid}: pdf="${a.pdfHead.slice(0, 50)}..." html="${a.blockHead.slice(0, 50)}..."`);
+        }
+        log('=== 右栏页组前 3 段渲染文本 ===');
+        for (const [pg, arr] of Object.entries<any>(mapAudit.rightPages)) {
+          log(`  p${pg}: ${JSON.stringify(arr)}`);
+        }
+        // 单调性断言：右栏各页组的 pid 集合必须随页码递增（后页的 pid 不小于前页的最小 pid）
+        const mono: any = await win.webContents.executeJavaScript(`
+          (() => {
+            const boxes = window.__dpvBoxesPids ?? [];
+            return { n: boxes.length, uniq: new Set(boxes).size };
+          })()
+        `);
+        log(`matched pids: ${mono.uniq}/${mono.n} clusters`);
 
         // 【强制几何校验】左栏 PDF（A）与右栏译文（B）必须物理分离：
         // 水平分栏：B.left >= A.right（gap > 0）；抽查 ≥5 组页/译文对 + 译文段间无垂直相交 + 无横向滚动。

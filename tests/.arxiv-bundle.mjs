@@ -55,7 +55,7 @@ function parseArxivHtml(html, arxivId) {
   const art = html.match(/<article[^>]*>([\s\S]*)<\/article>/i) || html.match(/<article[^>]*>([\s\S]*)/i);
   const cleaned0 = art ? art[1] : html;
   const cleaned = cleaned0.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<!--[\s\S]*?-->/g, "").replace(/<form[\s\S]*?<\/form>/gi, "").replace(/<nav[\s\S]*?<\/nav>/gi, "").replace(/<button[\s\S]*?<\/button>/gi, "").replace(/<annotation[\s\S]*?<\/annotation>/gi, "");
-  const NOISE = /^(report (github )?issue|back to abstract|download pdf|have a free development|our team has already|content selection saved|click on the)/i;
+  const NOISE = /^(report (github )?issue|back to abstract|download pdf|have a free development|our team has already|content selection saved|click on the|colour theme|toggle navigation)/i;
   const TOC_LINE = /^(\d+(\.\d+)*\s+[A-Za-z][^0-9]+){4,}/;
   const mathRe = /<math([^>]*)>([\s\S]*?)<\/math>/gi;
   function replaceMath(source) {

@@ -67,7 +67,7 @@ export function parseArxivHtml(html: string, arxivId: string): ParsedPaper {
     .replace(/<button[\s\S]*?<\/button>/gi, '')
     .replace(/<annotation[\s\S]*?<\/annotation>/gi, '');
 
-  const NOISE = /^(report (github )?issue|back to abstract|download pdf|have a free development|our team has already|content selection saved|click on the)/i;
+  const NOISE = /^(report (github )?issue|back to abstract|download pdf|have a free development|our team has already|content selection saved|click on the|colour theme|toggle navigation)/i;
   const TOC_LINE = /^(\d+(\.\d+)*\s+[A-Za-z][^0-9]+){4,}/;
 
   // 数学公式 → $ / $$ 占位。块级用 $$..$$，行内 $..$；alttext 缺失时退化为 [公式]
