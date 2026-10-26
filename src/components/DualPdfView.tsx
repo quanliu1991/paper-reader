@@ -532,7 +532,9 @@ function renderZh(
       } else break;
       guard++;
     }
-    if (cap.scrollHeight > maxH && zhPart.length > 160) {
+    // 用户已点「展开全文」→ 不再折叠（collapsed 集合记录展开过的 pid）
+    const expanded = collapsed.has(box.pid);
+    if (!expanded && cap.scrollHeight > maxH) {
       cap.classList.add('collapsed');
       cap.style.maxHeight = `${maxH}px`;
       const more = document.createElement('span');

@@ -236,6 +236,38 @@ app.whenReady().then(async () => {
         })()
       `);
       log('diag: ' + JSON.stringify(diag, null, 1));
+      // 排版几何审计：胶囊间垂直重叠 + 超出页面底部 + 左右边距越界（定量发现"排版乱"）
+      const geo: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const pages = [...document.querySelectorAll('.dpv-page')];
+          const issues = [];
+          let totalCaps = 0, overlapCnt = 0, overflowCnt = 0, marginCnt = 0;
+          for (const pg of pages) {
+            const canvas = pg.querySelector('canvas');
+            if (!canvas) continue;
+            const cRect = canvas.getBoundingClientRect();
+            const caps = [...pg.querySelectorAll('.dpv-zhcap')].filter(c => c.dataset.pid);
+            totalCaps += caps.length;
+            const boxes = caps.map(c => ({ el: c, r: c.getBoundingClientRect() }))
+              .sort((a, b) => a.r.top - b.r.top);
+            for (let i = 0; i < boxes.length; i++) {
+              const { el, r } = boxes[i];
+              // 1) 超出所在 canvas 底部
+              if (r.bottom > cRect.bottom + 2) { overflowCnt++; if (issues.length < 8) issues.push({ kind: 'overflow-bottom', pid: el.dataset.pid, over: Math.round(r.bottom - cRect.bottom), pg: pg.dataset.page }); }
+              // 2) 左右越出 canvas
+              if (r.left < cRect.left - 2 || r.right > cRect.right + 2) { marginCnt++; if (issues.length < 8) issues.push({ kind: 'h-overflow', pid: el.dataset.pid, pg: pg.dataset.page }); }
+              // 3) 与下一胶囊垂直重叠（同栏判断：水平投影有交集才算）
+              const nx = boxes[i + 1];
+              if (nx && r.bottom > nx.r.top + 3 && r.left < nx.r.right - 4 && r.right > nx.r.left + 4) {
+                overlapCnt++;
+                if (issues.length < 8) issues.push({ kind: 'v-overlap', pid: el.dataset.pid, next: nx.el.dataset.pid, by: Math.round(r.bottom - nx.r.top), pg: pg.dataset.page });
+              }
+            }
+          }
+          return { totalCaps, overlapCnt, overflowCnt, marginCnt, issues };
+        })()
+      `).catch(e => ({ err: String(e).slice(0, 100) }));
+      log('geo: ' + JSON.stringify(geo, null, 1));
       const img = await win.webContents.capturePage();
       fs.mkdirSync(path.resolve('build'), { recursive: true });
       fs.writeFileSync(path.resolve('build/inspect-user.png'), img.toPNG());
