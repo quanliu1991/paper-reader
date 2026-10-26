@@ -89,7 +89,10 @@ app.whenReady().then(async () => {
       fs.writeFileSync(path.join(figsDir, 'fig-1.png'), PNG_1PX);
       const figBlock = (db.getBlocks(paperId) as any[]).find(b => b.type === 'fig');
       if (figBlock) db.getDb().prepare('UPDATE blocks SET fig_path=? WHERE pid=?').run(`${paperId}/fig-1.png`, figBlock.pid);
-      log(`seed: paper=${paperId}, blocks=${parsed.blocks.length}, pdf=${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`))}, figSeed=${!!figBlock}`);
+      // 译文种子：首个正文块注入固定译文（[H] 断言「err 事件不清空已有译文」需要已有译文）
+      const zhBlock = (db.getBlocks(paperId) as any[]).find(b => b.type === 'para' && b.en && b.en.length > 20);
+      if (zhBlock) db.saveTranslation(paperId, zhBlock.pid, '这是用于译文覆盖断言的种子译文，长度超过十个字符以通过校验。', 'test', 'seed');
+      log(`seed: paper=${paperId}, blocks=${parsed.blocks.length}, pdf=${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`))}, figSeed=${!!figBlock}, zhSeed=${!!zhBlock}`);
 
       const win = new BrowserWindow({
         width: 1400, height: 900, show: true,
@@ -297,7 +300,69 @@ app.whenReady().then(async () => {
       const eOk = figE.figBlocks > 0 && figE.rendered === figE.figBlocks && figE.loaded === figE.imgs && figE.imgs > 0 && figE.deadLinks === 0 && figE.orderOk;
       log(`[E] 图表原位: ${eOk ? 'PASS' : 'FAIL'}`);
 
-      const allOk = aOk && bOk && scrollLock.ok && !narrowDiag.hScroll && eOk;
+      // ---------- F. 页重复断言（含 mode 切换压力） ----------
+      log('[F] 页重复断言（每页 canvas ≤1，both→en→both 切换后复查）');
+      const dupF: any = await win.webContents.executeJavaScript(`
+        (async () => {
+          const countDup = () => {
+            const pages = [...document.querySelectorAll('.dpv-left .pdf-page')];
+            let dup = 0, canvases = 0;
+            for (const p of pages) { const n = p.querySelectorAll('canvas').length; canvases += n; if (n > 1) dup++; }
+            return { pages: pages.length, canvases, dup };
+          };
+          const before = countDup();
+          // 切 en 再切回 both（此前此路径触发重复页 bug）
+          const st = window.__store.getState();
+          const btns = [...document.querySelectorAll('.dpv-mode-switch [role="tab"]')];
+          const enBtn = btns.find(b => /原文|Original/i.test(b.textContent));
+          const bothBtn = btns.find(b => /对照|双语|Both/i.test(b.textContent));
+          if (enBtn) { enBtn.click(); await new Promise(r => setTimeout(r, 1200)); }
+          if (bothBtn) { bothBtn.click(); await new Promise(r => setTimeout(r, 1800)); }
+          const after = countDup();
+          return { before, after, ok: before.dup === 0 && after.dup === 0 && after.canvases <= after.pages };
+        })()
+      `);
+      log(`  切换前: ${JSON.stringify(dupF.before)}, 切换后: ${JSON.stringify(dupF.after)}`);
+      log(`[F] 页重复: ${dupF.ok ? 'PASS' : 'FAIL'}`);
+
+      // ---------- G. 图表事件断言（updateBlockFig 数据流语义） ----------
+      log('[G] 图表事件断言（fig:updated → updateBlockFig → store 更新）');
+      const figG: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const st = window.__store.getState();
+          const fig = st.blocks.find(b => b.type === 'fig');
+          if (!fig) return { ok: false, reason: 'no fig block' };
+          // 直接驱动 store action（Reader 订阅 fig:updated 后调用的就是它）：
+          // 验证「下载完成的 figPath 进 store 后各视图能拿到」这条数据流的最后一环
+          st.updateBlockFig(fig.pid, '999/fig-test.svg');
+          const after = window.__store.getState().blocks.find(b => b.pid === fig.pid);
+          const updated = after.fig_path === '999/fig-test.svg';
+          // 还原（不污染后续断言）
+          st.updateBlockFig(fig.pid, fig.fig_path ?? '');
+          return { ok: updated, pid: fig.pid };
+        })()
+      `);
+      log(`  ${JSON.stringify(figG)}`);
+      log(`[G] 图表事件: ${figG.ok ? 'PASS' : 'FAIL'}`);
+
+      // ---------- H. 译文覆盖断言（err 事件不清空已有译文） ----------
+      log('[H] 译文覆盖断言（err progress 不清空已有 zh）');
+      const zhH: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const st = window.__store.getState();
+          const b = st.blocks.find(x => x.zh && x.zh.length > 10);
+          if (!b) return { ok: false, reason: 'no translated block', zhKept: false };
+          // 模拟 Reader 订阅回调的新语义：err 事件（p.zh 为空）绝不清空已有译文
+          const progressHandler = (p) => { if (p.zh && String(p.zh).trim()) st.updateBlockZh(p.pid, p.zh); };
+          progressHandler({ pid: b.pid, err: 'length-guard(5x)', done: 1, total: 9 }); // err 事件
+          const after = window.__store.getState().blocks.find(x => x.pid === b.pid);
+          return { ok: true, pid: b.pid, zhKept: (after.zh ?? '').length > 10 };
+        })()
+      `);
+      log(`  ${JSON.stringify(zhH)}`);
+      log(`[H] 译文覆盖: ${zhH.ok && zhH.zhKept ? 'PASS' : 'FAIL'}`);
+
+      const allOk = aOk && bOk && scrollLock.ok && !narrowDiag.hScroll && eOk && dupF.ok && figG.ok && zhH.ok && zhH.zhKept;
       log(allOk ? 'GUARD ALL PASS' : 'GUARD FAIL');
     } catch (e: any) {
       log(`FATAL: ${e?.stack ?? e}`);
@@ -1483,20 +1548,56 @@ export function registerIpc() {
     fsMod.mkdirSync(figuresDir, { recursive: true });
     let i = 0;
     const stmt = db.getDb().prepare('UPDATE blocks SET fig_path=? WHERE pid=?');
-    for (const b of blocks) {
-      if (b.type !== 'fig' || !b.fig_path) continue;
-      i++;
-      const url = b.fig_path;
-      const ext = (url.match(/\.(svg|png|jpg|jpeg|gif)$/i) || [, 'png'])[1];
-      const fname = `fig-${i}.${ext}`;
+    // inline SVG 提取：LaTeXML 图表主力是内联 <svg>（解析时 figPath=undefined 落库 NULL），
+    // 这批图此前永远不下载。回源拉 HTML，按 <figure> 文档序对位提取第 N 个 figure 的 svg。
+    let inlineFigs: string[] | null = null; // 惰性：只在遇到首个无 figPath 的 fig 块时拉取
+    const getInlineFigs = async (): Promise<string[]> => {
+      if (inlineFigs) return inlineFigs;
       try {
-        const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
-        if (!resp.ok) continue;
-        const buf = Buffer.from(await resp.arrayBuffer());
-        fsMod.writeFileSync(path.join(figuresDir, fname), buf);
-        stmt.run(`${paperId}/${fname}`, b.pid);
-        send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
-      } catch { /* 单图失败跳过 */ }
+        const resp = await fetch(`https://arxiv.org/html/${arxivId}`, { signal: AbortSignal.timeout(60000) });
+        const html = resp.ok ? await resp.text() : '';
+        inlineFigs = html
+          ? [...html.matchAll(/<figure[^>]*>([\s\S]*?)<\/figure>/gi)].map(m => {
+              const svg = m[1].match(/<svg[\s\S]*?<\/svg>/i);
+              return svg ? svg[0] : '';
+            })
+          : [];
+      } catch { inlineFigs = []; }
+      return inlineFigs;
+    };
+    // fig 块在文档流中的序号（第几个 fig）——与 HTML <figure> 文档序对齐
+    const figBlocks = blocks.filter(b => b.type === 'fig');
+    for (const b of blocks) {
+      if (b.type !== 'fig') continue;
+      i++;
+      if (b.fig_path) {
+        // 常规路径：远端 URL 直接下载
+        const url = b.fig_path;
+        const ext = (url.match(/\.(svg|png|jpg|jpeg|gif)$/i) || [, 'png'])[1];
+        const fname = `fig-${i}.${ext}`;
+        try {
+          const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
+          if (!resp.ok) continue;
+          const buf = Buffer.from(await resp.arrayBuffer());
+          fsMod.writeFileSync(path.join(figuresDir, fname), buf);
+          stmt.run(`${paperId}/${fname}`, b.pid);
+          send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
+        } catch { /* 单图失败跳过 */ }
+      } else {
+        // inline svg 路径：按 fig 序号对位提取（解析器逐 figure 产块，文档序一致）
+        try {
+          const figsHtml = await getInlineFigs();
+          // 对位序号：blocks 里第 k 个 fig ↔ HTML 第 k 个 <figure>。
+          // 解析时带 img 的 figure 与纯 svg figure 按出现顺序都在 figBlocks 里，序号天然对齐。
+          const k = figBlocks.indexOf(b);
+          const svg = figsHtml[k] ?? figsHtml.find(s => s && !figsHtml.slice(0, k).includes(s)) ?? '';
+          if (!svg) continue;
+          const fname = `fig-${i}.svg`;
+          fsMod.writeFileSync(path.join(figuresDir, fname), svg, 'utf8');
+          stmt.run(`${paperId}/${fname}`, b.pid);
+          send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
+        } catch { /* 跳过 */ }
+      }
     }
   }
 
@@ -1699,7 +1800,12 @@ export function registerIpc() {
         { role: 'user', content: userContent },
       ], {
         onDelta: (d) => { acc += d; },
-        onDone: (full) => resolve({ ok: true, text: cleanZh((full || acc).trim()) }),
+        // 流中断（AbortError 等场景 chatStream 以 onDone('') 收尾）产出空文本：
+        // 必须判为失败，否则空译文落库 = 段落译文「缺内容」且不再重试
+        onDone: (full) => {
+          const text = cleanZh((full || acc).trim());
+          resolve(text ? { ok: true, text } : { ok: false, err: 'empty-stream' });
+        },
         onError: (err) => resolve({ ok: false, err }),
       }, { temperature: 0.15, maxTokens: 4096, signal });
     });

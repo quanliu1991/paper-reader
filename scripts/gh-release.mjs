@@ -42,14 +42,15 @@ if (exists.ok) {
   console.log(`[gh-release] 已创建 release #${rel.id} ${tag}`);
 }
 
-// 2. 上传资产
+// 2. 上传资产（274MB 单请求约 5-10 分钟；10 分钟超时守卫）
 const upUrl = rel.upload_url.replace('{?name,label}', `?name=${encodeURIComponent(path.basename(assetPath))}`);
 const buf = fs.readFileSync(assetPath);
-console.log(`[gh-release] 上传 ${path.basename(assetPath)} (${(buf.length / 1048576).toFixed(1)}MB) ...`);
+console.log(`[gh-release] 上传 ${path.basename(assetPath)} (${(buf.length / 1048576).toFixed(1)}MB)，大文件约需 5-10 分钟 ...`);
 const up = await fetch(upUrl, {
   method: 'POST',
   headers: { ...H, 'Content-Type': 'application/octet-stream', 'Content-Length': String(buf.length) },
   body: buf,
+  signal: AbortSignal.timeout(10 * 60 * 1000),
 });
 if (!up.ok) { console.error(`[gh-release] 上传失败: ${up.status} ${await up.text()}`); process.exit(1); }
 console.log(`[gh-release] DONE → https://github.com/${repo}/releases/tag/${tag}`);

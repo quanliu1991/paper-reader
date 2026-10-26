@@ -26,6 +26,7 @@ export default function Reader() {
   const translating = useStore(s => s.translating);
   const progress = useStore(s => s.translateProgress);
   const updateBlockZh = useStore(s => s.updateBlockZh);
+  const updateBlockFig = useStore(s => s.updateBlockFig);
   const askPanelOpen = useStore(s => s.askPanelOpen);
   const fontSize = useStore(s => s.fontSize);
   const lineHeight = useStore(s => s.lineHeight);
@@ -76,11 +77,25 @@ export default function Reader() {
   // 翻译进度推送
   useEffect(() => {
     const off = window.api.onTrProgress((p: any) => {
-      updateBlockZh(p.pid, p.zh ?? '');
+      // err 事件（length-guard/echo-guard/skipped 等）只带 pid 不带 zh：
+      // 绝不能把已有译文覆盖成空串——此前 p.zh ?? '' 的写法让 err 事件清空段落译文
+      //（UI 表现为「翻译内容不全的段落」）。err 时保持现状（待翻译占位由 zh=null 决定）。
+      if (p.zh && String(p.zh).trim()) {
+        updateBlockZh(p.pid, p.zh);
+      }
       useStore.getState().setTranslating(true, { done: p.done, total: p.total });
     });
     return off;
   }, [updateBlockZh]);
+
+  // 图表下载完成推送：主进程 downloadFiguresFor 每存一张图 send('fig:updated')。
+  // 此前无人订阅 → 内存 blocks.fig_path 永不更新 → 各视图一直显示占位框（除非重开论文）。
+  useEffect(() => {
+    const off = window.api.onFigUpdated((p: any) => {
+      if (p?.pid && p?.figPath) updateBlockFig(p.pid, p.figPath);
+    });
+    return off;
+  }, [updateBlockFig]);
 
   // 进度记忆（pid 锚点，跨布局通用）：
   // 保存视口内最靠上的段落 pid；切换布局后按 pid 找到对应元素滚回去。
@@ -414,7 +429,13 @@ export default function Reader() {
       )}
       {askPanelOpen && <AskPanel />}
       {popover && (
-        <div className="sel-popover glass" style={{ left: Math.max(70, popover.x - 150), top: Math.max(8, popover.y) }}>
+        <div
+          className="sel-popover glass"
+          style={{
+            left: Math.min(Math.max(70, popover.x - 150), window.innerWidth - 320),
+            top: Math.max(8, popover.y),
+          }}
+        >
           <button className="ai-btn" onClick={() => runQuick('explain')} title="AI 解释这个概念">解释</button>
           <button className="ai-btn" onClick={() => runQuick('search')} title="联网搜索相关背景">搜索</button>
           <button className="ai-btn" onClick={() => runQuick('translate')} title="翻译选中的句子">翻译</button>

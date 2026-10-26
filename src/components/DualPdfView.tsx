@@ -237,6 +237,9 @@ export default function DualPdfView({
       await page.render({ canvasContext: canvas.getContext('2d')!, viewport: rv }).promise;
       const loading = host.querySelector('.pdf-loading');
       if (loading) loading.remove();
+      // 幂等渲染：append 前清掉旧 canvas/文本层（懒渲染 effect 重跑时守卫可能已清空，
+      // 不清理会导致第二张 display:block 的 canvas 叠在旧页下方 = 「重复页」bug）
+      host.querySelectorAll('canvas, .dpv-textlayer').forEach(el => el.remove());
       host.appendChild(canvas);
       const tl = document.createElement('div');
       tl.className = 'dpv-textlayer';
@@ -269,10 +272,14 @@ export default function DualPdfView({
   }, [translatePageIfNeeded]);
 
   // 5) 左栏懒渲染：只观察视口 ±2 页（rootMargin 控制），canvas 已渲染页不重复。
-  // mode 从 zh 切回时左栏 DOM 重挂载（旧 canvas 丢失），必须清 renderedRef 让全部页重渲染。
+  // 守卫清理策略：仅当左栏 DOM 确实重挂载（首个 host 内无 canvas）时才清 renderedRef。
+  // 此前无条件 clear 会让 both↔en 切换（左栏不卸载、canvas 尚在）后视口页重渲染一遍，
+  // 叠加出「重复页」。zh 模式下左栏卸载（条件渲染），切回时 host 内无 canvas → 正确触发清空。
   useEffect(() => {
     if (!doc || !numPages || mode === 'zh') return;
-    renderedRef.current.clear();
+    const firstHost = leftScrollRef.current?.querySelector('[data-page]');
+    const remounted = !firstHost || !firstHost.querySelector('canvas');
+    if (remounted) renderedRef.current.clear();
     const hosts = leftScrollRef.current?.querySelectorAll('[data-page]');
     if (!hosts?.length) return;
     const io = new IntersectionObserver(entries => {
@@ -463,7 +470,7 @@ export default function DualPdfView({
         {showLeft && (
           <div className="dpv-left" ref={leftScrollRef} onMouseUp={e => onMouseUpRef.current?.(e)} aria-label="原版 PDF">
             {doc && Array.from({ length: numPages }, (_, i) => (
-              <div key={i + 1} className="pdf-page dpv-page" data-page={i + 1} ref={el => { if (el) hostsRef.current.set(i + 1, el); }}>
+              <div key={i + 1} className="pdf-page dpv-page" data-page={i + 1} ref={el => { el ? hostsRef.current.set(i + 1, el) : hostsRef.current.delete(i + 1); }}>
                 <div className="pdf-loading">第 {i + 1} 页</div>
               </div>
             ))}

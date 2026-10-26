@@ -214,7 +214,7 @@ export function insertBlocks(paperId: number, blocks: Array<{ seq: number; type:
 
 export function getBlocks(paperId: number) {
   return getDb().prepare(
-    `SELECT b.pid, b.seq, b.type, b.level, b.en, b.fig_path, t.zh
+    `SELECT b.pid, b.seq, b.type, b.level, b.en, b.fig_path, b.fig_kind, t.zh
      FROM blocks b LEFT JOIN translations t ON t.paper_id=b.paper_id AND t.pid=b.pid
      WHERE b.paper_id=? ORDER BY b.seq`
   ).all(paperId);

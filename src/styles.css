@@ -257,7 +257,7 @@ mark.hl { background: var(--hl-yellow); border-radius: 2px; padding: 0 1px; }
 
 /* 选中浮层 */
 .sel-popover {
-  position: fixed; z-index: 50; background: var(--panel); border: 1px solid var(--border);
+  position: fixed; z-index: 95; background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); padding: 4px; display: flex; gap: 4px;
 }
 .sel-popover button { border: none; padding: 6px 12px; font-size: 13px; }

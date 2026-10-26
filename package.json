@@ -22,7 +22,12 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "!node_modules/pdfjs-dist/legacy/**",
+      "!node_modules/pdfjs-dist/types/**",
+      "!node_modules/pdfjs-dist/web/**",
+      "!node_modules/pdfjs-dist/cmaps/**",
+      "!node_modules/pdfjs-dist/standard_fonts/*.pfb"
     ],
     "win": {
       "target": [
@@ -41,6 +46,8 @@
     }
   },
   "devDependencies": {
+    "@fontsource/noto-sans-sc": "^5.3.1",
+    "@fontsource/noto-serif-sc": "^5.3.1",
     "@playwright/test": "^1.64.1",
     "@types/better-sqlite3": "^7.6.12",
     "@types/react": "^18.3.12",
@@ -56,8 +63,6 @@
     "wait-on": "^8.0.1"
   },
   "dependencies": {
-    "@fontsource/noto-sans-sc": "^5.3.1",
-    "@fontsource/noto-serif-sc": "^5.3.1",
     "@types/katex": "^0.16.8",
     "better-sqlite3": "^11.7.0",
     "katex": "^0.19.0",
