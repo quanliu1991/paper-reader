@@ -5,3 +5,4 @@ release/
 *.log
 .vite/
 tests/.tmp-tg/
+tests/.tmp-ins/
