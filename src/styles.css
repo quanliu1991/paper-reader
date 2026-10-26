@@ -693,6 +693,29 @@ mark.hl { animation: hl-in 0.3s ease; }
 }
 .dpv-more:hover { text-decoration: underline; }
 
+/* 展开浮层：完整译文卡片（不动版面，杜绝覆盖） */
+.dpv-popup-mask {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(15, 18, 25, 0.45);
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(2px);
+}
+.dpv-popup-card {
+  position: relative; max-width: 640px; width: min(86vw, 640px);
+  max-height: 76vh; overflow-y: auto;
+  background: #fff; border-radius: 12px; padding: 26px 30px;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.28);
+  font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
+  font-synthesis: none; color: #111;
+  line-height: 1.9; text-align: justify;
+}
+.dpv-popup-close {
+  position: absolute; top: 8px; right: 10px;
+  border: none; background: none; font-size: 20px;
+  color: #999; cursor: pointer; line-height: 1;
+}
+.dpv-popup-close:hover { color: #333; }
+
 /* ================= 主题依赖库 ================= */
 .topic-page { max-width: 860px; margin: 0 auto; padding: 28px 32px 60px; }
 .topic-page .list-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }

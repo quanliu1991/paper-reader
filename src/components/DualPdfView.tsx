@@ -290,6 +290,7 @@ export default function DualPdfView({
   }, [boxes, collapsed, doc, zhParts, activePid, zhScale, showZh]);
 
   // 「展开全文」事件
+  // 「展开全文」事件（旧路径，现改为浮层卡片，保留事件兼容）
   useEffect(() => {
     const fn = (e: Event) => {
       const pid = (e as CustomEvent).detail as number;
@@ -297,6 +298,15 @@ export default function DualPdfView({
     };
     window.addEventListener('dpv-expand', fn);
     return () => window.removeEventListener('dpv-expand', fn);
+  }, []);
+
+  // 卸载/切论文时清理浮层
+  useEffect(() => () => closeZhPopup(), []);
+  // Esc 关浮层
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') closeZhPopup(); };
+    window.addEventListener('keydown', fn);
+    return () => window.removeEventListener('keydown', fn);
   }, []);
 
   // 译文 ⇄ 原文切换：只切层的显隐，不重渲染 canvas（零闪烁）
@@ -532,19 +542,44 @@ function renderZh(
       } else break;
       guard++;
     }
-    // 用户已点「展开全文」→ 不再折叠（collapsed 集合记录展开过的 pid）
-    const expanded = collapsed.has(box.pid);
-    if (!expanded && cap.scrollHeight > maxH) {
+    // 用户已点「展开」→ 胶囊保持折叠，点开弹出浮层卡片看全文（不动版面，避免覆盖下方内容）
+    if (cap.scrollHeight > maxH) {
       cap.classList.add('collapsed');
       cap.style.maxHeight = `${maxH}px`;
       const more = document.createElement('span');
       more.className = 'dpv-more';
       more.style.fontSize = `${Math.max(9, fs * 0.9)}px`;
       more.textContent = '展开全文';
-      more.onclick = (ev) => { ev.stopPropagation(); setCollapsedGlobal(box.pid); };
+      // 主点击：激活段落；Ctrl/长文点击：浮层完整阅读
+      more.onclick = (ev) => { ev.stopPropagation(); showZhPopup(zhPart, fs, box.pid); };
       cap.appendChild(more);
     }
   }
+}
+
+// 展开浮层：屏幕居中卡片，完整译文 + KaTeX，点击遮罩关闭
+function showZhPopup(fullZh: string, fs: number, pid: number) {
+  closeZhPopup();
+  const mask = document.createElement('div');
+  mask.className = 'dpv-popup-mask';
+  const card = document.createElement('div');
+  card.className = 'dpv-popup-card';
+  card.innerHTML = renderZhRich(fullZh, fs);
+  // 长公式块在浮层里恢复自然高度
+  card.querySelectorAll('.katex-display').forEach(el => (el as HTMLElement).style.margin = '0.4em 0');
+  const close = document.createElement('button');
+  close.className = 'dpv-popup-close';
+  close.textContent = '×';
+  close.onclick = closeZhPopup;
+  card.appendChild(close);
+  mask.appendChild(card);
+  mask.onclick = e => { if (e.target === mask) closeZhPopup(); };
+  document.body.appendChild(mask);
+  (window as any).__dpvPopupPid = pid;
+}
+function closeZhPopup() {
+  document.querySelector('.dpv-popup-mask')?.remove();
+  delete (window as any).__dpvPopupPid;
 }
 
 // 译文富文本：$...$/$$...$$ 用 KaTeX 渲染，其余转义

@@ -131,7 +131,9 @@ app.whenReady().then(async () => {
       await win.loadURL(process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199');
       await new Promise(r => setTimeout(r, 1500));
       const papers = db.listPapers() as any[];
-      const target = papers.find(p => p.last_opened_at) ?? papers[0];
+      // PR_INSPECT_PAPER_ID 可指定论文；否则取最近打开（注意：inspect 自身会刷新 last_opened_at，复查同一篇时须指定）
+      const forced = process.env.PR_INSPECT_PAPER_ID ? papers.find(p => p.id === Number(process.env.PR_INSPECT_PAPER_ID)) : null;
+      const target = forced ?? papers.filter(p => p.last_opened_at).sort((a, b) => String(b.last_opened_at).localeCompare(String(a.last_opened_at)))[0] ?? papers[0];
       if (!target) { log('no papers in library'); fs.writeFileSync(doneFile, '1'); app.quit(); return; }
       log(`opening paper ${target.id}: ${target.title.slice(0, 50)} (import=${target.import_type})`);
       await win.webContents.executeJavaScript(`
