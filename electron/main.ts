@@ -898,6 +898,37 @@ app.whenReady().then(async () => {
         log(`anchor sync: ${JSON.stringify(anchor)}`);
         log(`anchor sync (follow data-page + click flash box): ${anchor.ok ? 'PASS' : 'FAIL'}`);
 
+        // 右→左滚动跟随：右栏滚到 data-page=3 首段位置 → 左栏应滚到第 3 页附近
+        const rightFollow: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            const L = document.querySelector('.dpv-left');
+            const R = document.querySelector('.dpv-right');
+            if (!L || !R) return { ok: false, reason: 'panes missing' };
+            // 复位（左栏程序化复位会带动右栏，等联动结束）
+            L.scrollTop = 0; L.dispatchEvent(new Event('scroll'));
+            await new Promise(r => setTimeout(r, 900));
+            R.scrollTop = 0; R.dispatchEvent(new Event('scroll'));
+            await new Promise(r => setTimeout(r, 600));
+            // 模拟用户滚右栏：直接设 scrollTop（无程序化标记 → 判定为用户滚动）
+            const t3 = R.querySelector('.dpv-zhpara[data-page="3"]');
+            if (!t3) return { ok: false, reason: 'no data-page=3 para' };
+            R.scrollTop = t3.offsetTop - R.offsetTop - 20;
+            R.dispatchEvent(new Event('scroll'));
+            await new Promise(r => setTimeout(r, 1200));
+            // 左栏当前应显示第 3 页附近（视口中心页）
+            const pages = [...L.querySelectorAll('.pdf-page')];
+            const lr = L.getBoundingClientRect();
+            let centerPage = 0;
+            for (const p of pages) {
+              const r = p.getBoundingClientRect();
+              if (r.top < lr.top + lr.height / 2 && r.bottom > lr.top + lr.height / 2) { centerPage = Number(p.dataset.page); break; }
+            }
+            return { centerPage, leftTop: Math.round(L.scrollTop), ok: centerPage >= 2 && centerPage <= 4 };
+          })()
+        `);
+        log(`right->left follow: ${JSON.stringify(rightFollow)}`);
+        log(`right->left follow (scroll zh pane -> pdf follows): ${rightFollow.ok ? 'PASS' : 'FAIL'}`);
+
         // 字体一致性：打包 Noto Serif SC/Sans SC 必须实际加载；有译文胶囊时 computed family 必须唯一
         const fontStats: any = await win.webContents.executeJavaScript(`
           (async () => {
@@ -938,7 +969,7 @@ app.whenReady().then(async () => {
         log('screenshots saved');
         const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300
           && tvStats.rows >= 50 && linked.linked && shell.sidebar && shell.navBtns >= 2 && shell.topSearch
-          && fontOk && geoOk && modeSwitch.ok && zoomIso.ok && anchor.ok
+          && fontOk && geoOk && modeSwitch.ok && zoomIso.ok && anchor.ok && rightFollow.ok
           && stats.hasLeft && stats.hasRight && stats.zhParas >= 1
           && clusterInfo && zhGroupCount >= 5;
         if (allPass) log('E2E ALL PASS');

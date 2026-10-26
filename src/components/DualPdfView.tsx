@@ -283,10 +283,15 @@ export default function DualPdfView({
     return () => { io.disconnect(); };
   }, [doc, numPages, renderPage, mode]);
 
-  // 6) 滚动同步（互斥锁防回环）：
-  // 左→右：IntersectionObserver 找视口交集最大页，右栏滚到对应页组（已在视口则不动）。
-  // 右→左：仅点击触发（页头/段落），不自动跟随——避免两侧抢方向盘。
+  // 6) 滚动同步（互斥锁 + 程序化滚动标记防回环）：
+  // 左→右：IntersectionObserver 找视口交集最大页，右栏滚到 data-page 首段（已在视口则不动）。
+  // 右→左：右栏发生「非程序化」滚动 → 找视口顶部段落所属页 → 左栏滚到该页。
+  // 防回环：程序化 scrollTo 前记录目标位置，右栏 scroll 事件命中该位置（±3px）→ 判定为联动滚动，忽略。
   const syncingRef = useRef(false);
+  const progScrollRef = useRef<{ side: 'left' | 'right'; top: number } | null>(null);
+  const visiblePageRef = useRef(visiblePage);
+  visiblePageRef.current = visiblePage;
+  const rightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const withSyncLock = (fn: () => void) => {
@@ -344,7 +349,9 @@ export default function DualPdfView({
         const rr = right.getBoundingClientRect();
         const gr = g.getBoundingClientRect();
         if (gr.top < rr.top + 40 || gr.bottom > rr.bottom - 40) {
-          right.scrollTo({ top: g.offsetTop - right.offsetTop - 12, behavior: 'smooth' });
+          const top = Math.max(0, g.offsetTop - right.offsetTop - 12);
+          progScrollRef.current = { side: 'right', top };
+          right.scrollTo({ top, behavior: 'smooth' });
         }
       });
     }, { root: leftScrollRef.current, threshold: [0, 0.25, 0.6] });
@@ -352,13 +359,58 @@ export default function DualPdfView({
     return () => { io.disconnect(); };
   }, [doc, numPages, mode]);
 
-  // 7) 右→左 点击定位（方案 B 辅）：点页头/段落 → 左栏滚到对应页
+  // 6b) 右→左 滚动跟随：右栏发生用户滚动（非程序化）→ 视口顶部段落所属页 → 左栏滚到该页。
+  // 防抖 200ms；程序化滚动（左栏联动/复位）通过 progScrollRef 目标位置比对排除。
+  useEffect(() => {
+    const right = rightScrollRef.current;
+    if (!right || mode === 'en') return;
+    const onScroll = () => {
+      const prog = progScrollRef.current;
+      if (prog && prog.side === 'right' && Math.abs(right.scrollTop - prog.top) < 4) return; // 联动滚动，忽略
+      if (rightSyncTimerRef.current) clearTimeout(rightSyncTimerRef.current);
+      rightSyncTimerRef.current = setTimeout(() => {
+        const prog2 = progScrollRef.current;
+        if (prog2 && prog2.side === 'right' && Math.abs(right.scrollTop - prog2.top) < 4) return;
+        // 视口顶部往下第一个可见的带 data-page 段落
+        const rr = right.getBoundingClientRect();
+        const paras = right.querySelectorAll<HTMLElement>('.dpv-zhpara[data-page]');
+        let target: HTMLElement | null = null;
+        for (const p of paras) {
+          const r = p.getBoundingClientRect();
+          if (r.bottom > rr.top + 30) { target = p; break; }
+        }
+        const pg = target ? Number(target.dataset.page) : 0;
+        if (!pg || pg === visiblePageRef.current) return;
+        withSyncLock(() => {
+          const left = leftScrollRef.current;
+          if (!left) return;
+          const t = left.querySelector(`[data-page="${pg}"]`) as HTMLElement | null;
+          if (t) {
+            const top = Math.max(0, t.offsetTop - left.offsetTop - 8);
+            progScrollRef.current = { side: 'left', top };
+            left.scrollTo({ top, behavior: 'smooth' });
+          }
+        });
+      }, 200);
+    };
+    right.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      right.removeEventListener('scroll', onScroll);
+      if (rightSyncTimerRef.current) clearTimeout(rightSyncTimerRef.current);
+    };
+  }, [mode]);
+
+  // 7) 右→左 点击定位（方案 B 辅）：点段落 → 左栏滚到对应页
   const jumpToPage = useCallback((page: number) => {
     const left = leftScrollRef.current;
     if (!left) return;
     withSyncLock(() => {
       const t = left.querySelector(`[data-page="${page}"]`) as HTMLElement | null;
-      if (t) left.scrollTo({ top: t.offsetTop - left.offsetTop - 8, behavior: 'smooth' });
+      if (t) {
+        const top = Math.max(0, t.offsetTop - left.offsetTop - 8);
+        progScrollRef.current = { side: 'left', top };
+        left.scrollTo({ top, behavior: 'smooth' });
+      }
     });
   }, []);
   const jumpToPid = useCallback((pid: number) => {
