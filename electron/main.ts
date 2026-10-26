@@ -215,7 +215,7 @@ app.whenReady().then(async () => {
             await new Promise(r => setTimeout(r, 800));
           }
           const rTop = right?.scrollTop ?? 0;
-          const activeGroup = right ? [...right.querySelectorAll('.dpv-zhgroup')].findIndex(g => {
+          const activeGroup = right ? [...right.querySelectorAll('.dpv-zhpara')].findIndex(g => {
             const r = g.getBoundingClientRect();
             const host = right.getBoundingClientRect();
             return r.top < host.bottom - 40 && r.bottom > host.top + 40;
@@ -257,11 +257,12 @@ app.whenReady().then(async () => {
           const unmapped = document.querySelectorAll('.dpv-zhpara.unmapped').length;
           const figPh = document.querySelectorAll('.dpv-zhfigph').length;
           const canvases = document.querySelectorAll('.dpv-page canvas');
+          const dataPages = new Set([...zhParas].map(p => p.dataset.page).filter(Boolean)).size;
           return {
             layout: st.layout, blocks: st.blocks.length,
             pages: pages.length, canvases: canvases.length,
             textSpans: textSpans.length,
-            zhParas: zhParas.length, zhGroups: zhGroups.length,
+            zhParas: zhParas.length, zhGroups: zhGroups.length, zhPagesTagged: dataPages,
             unmappedParas: unmapped, figPlaceholders: figPh,
             leftPane: !!document.querySelector('.dpv-left'),
             rightPane: !!document.querySelector('.dpv-right'),
@@ -277,15 +278,15 @@ app.whenReady().then(async () => {
           const right = document.querySelector('.dpv-right');
           if (!left || !right) return { n: 0, issues: [{ kind: 'panes-missing' }] };
           const lPages = [...left.querySelectorAll('.pdf-page')].slice(0, 8);
-          const rGroups = [...right.querySelectorAll('.dpv-zhgroup')].slice(0, 8);
+          const rGroups = [...right.querySelectorAll('.dpv-zhpara')].slice(0, 8);
           const issues = [];
           const pairs = [];
           for (let i = 0; i < Math.min(lPages.length, rGroups.length, 8); i++) {
             const a = lPages[i].getBoundingClientRect();
             const b = rGroups[i].getBoundingClientRect();
             const gap = Math.round(b.left - a.right);
-            pairs.push({ page: i + 1, gap });
-            if (gap <= 0) issues.push({ kind: 'h-overlap', page: i + 1, gap });
+            pairs.push({ idx: i + 1, gap });
+            if (gap <= 0) issues.push({ kind: 'h-overlap', idx: i + 1, gap });
           }
           // 右栏段落垂直相交检测
           const paras = [...right.querySelectorAll('.dpv-zhpara')].slice(0, 40);
@@ -319,6 +320,21 @@ app.whenReady().then(async () => {
         })()
       `).catch(() => null);
       log('narrow: ' + JSON.stringify(narrow));
+
+      // 重复渲染诊断：右栏前 14 个块的 pid/type/字号/文本头
+      const dup: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const els = [...document.querySelectorAll('.dpv-zhpara')].slice(0, 14);
+          return els.map(el => ({
+            pid: el.dataset.pid,
+            heading: el.classList.contains('heading'),
+            fontSize: getComputedStyle(el).fontSize,
+            text: (el.textContent ?? '').replace(/\\s+/g, ' ').slice(0, 50),
+          }));
+        })()
+      `).catch(() => null);
+      log('dupcheck: ' + JSON.stringify(dup, null, 1));
+
       const img = await win.webContents.capturePage();
       fs.mkdirSync(path.resolve('build'), { recursive: true });
       fs.writeFileSync(path.resolve('build/inspect-user.png'), img.toPNG());
@@ -722,20 +738,19 @@ app.whenReady().then(async () => {
           if (clusterInfo) break;
           await new Promise(r => setTimeout(r, 500));
         }
-        const zhGroupCount = await win.webContents.executeJavaScript(`document.querySelectorAll('.dpv-zhgroup[data-zhpage]').length`);
-        log(`cluster: done=${JSON.stringify(clusterInfo)}, zhGroups(mapped)=${zhGroupCount}`);
+        const zhGroupCount = await win.webContents.executeJavaScript(`document.querySelectorAll('.dpv-zhpara[data-page]').length`);
+        log(`cluster: done=${JSON.stringify(clusterInfo)}, zhParas(data-page)=${zhGroupCount}`);
 
-        // 【映射审计】右栏第 N 页组前 3 段文本 vs 左栏该页 PDF 物理簇文本（用户要求的验证）
+        // 【映射审计】每页首个匹配簇（PDF 原文 vs 块原文）+ 右栏带 data-page 段落前 3 段文本
         const mapAudit: any = await win.webContents.executeJavaScript(`
           (() => {
             const audit = window.__dpvMapAudit ?? {};
-            // 右栏每页组前 3 段的实际渲染文本
-            const groups = [...document.querySelectorAll('.dpv-zhgroup[data-zhpage]')];
+            const paras = [...document.querySelectorAll('.dpv-zhpara[data-page]')];
             const rightPages = {};
-            for (const g of groups) {
-              const pg = g.dataset.zhpage;
-              const paras = [...g.querySelectorAll('.dpv-zhpara')].slice(0, 3);
-              rightPages[pg] = paras.map(p => (p.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 60));
+            for (const p of paras) {
+              const pg = p.dataset.page;
+              if (rightPages[pg]) continue;
+              rightPages[pg] = (p.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 60);
             }
             return { audit, rightPages };
           })()
@@ -744,9 +759,9 @@ app.whenReady().then(async () => {
         for (const [pg, a] of Object.entries<any>(mapAudit.audit)) {
           log(`  p${pg} pid=${a.pid}: pdf="${a.pdfHead.slice(0, 50)}..." html="${a.blockHead.slice(0, 50)}..."`);
         }
-        log('=== 右栏页组前 3 段渲染文本 ===');
-        for (const [pg, arr] of Object.entries<any>(mapAudit.rightPages)) {
-          log(`  p${pg}: ${JSON.stringify(arr)}`);
+        log('=== 右栏各页首个 data-page 段落渲染文本 ===');
+        for (const [pg, t] of Object.entries<any>(mapAudit.rightPages)) {
+          log(`  p${pg}: ${JSON.stringify(t)}`);
         }
         // 单调性断言：右栏各页组的 pid 集合必须随页码递增（后页的 pid 不小于前页的最小 pid）
         const mono: any = await win.webContents.executeJavaScript(`
@@ -765,14 +780,14 @@ app.whenReady().then(async () => {
             const right = document.querySelector('.dpv-right');
             if (!left || !right) return { n: 0, pairs: [], hScroll: true };
             const lPages = [...left.querySelectorAll('.pdf-page')].slice(0, 8);
-            const rGroups = [...right.querySelectorAll('.dpv-zhgroup')].slice(0, 8);
+            const rGroups = [...right.querySelectorAll('.dpv-zhpara')].slice(0, 8);
             const lRect = left.getBoundingClientRect();
             const rRect = right.getBoundingClientRect();
             const pairs = [];
             for (let i = 0; i < Math.min(lPages.length, rGroups.length, 8); i++) {
               const a = lPages[i].getBoundingClientRect();
               const b = rGroups[i].getBoundingClientRect();
-              pairs.push({ page: i + 1, aRight: Math.round(a.right), bLeft: Math.round(b.left), hGap: Math.round(b.left - a.right) });
+              pairs.push({ idx: i + 1, aRight: Math.round(a.right), bLeft: Math.round(b.left), hGap: Math.round(b.left - a.right) });
             }
             // 译文段间垂直分离（文档流自然保证，仍显式校验）
             const zhParas = [...right.querySelectorAll('.dpv-zhpara')];
@@ -848,7 +863,7 @@ app.whenReady().then(async () => {
         log(`zoom isolation: w ${zoomIso.w0}->${zoomIso.w1}, h ${zoomIso.h0}->${zoomIso.h1}, right font ${zoomIso.fs0}->${zoomIso.fs1}`);
         log(`zoom isolation (A+ affects right HTML only, PDF canvas untouched): ${zoomIso.ok ? 'PASS' : 'FAIL'}`);
 
-        // 视觉锚点联动：左滚到第 2 页中部 → 右栏该页组 page-active 锚线；右点段落（含 pending）→ 左栏 .dpv-flash 闪现后消失
+        // 视觉锚点联动：左滚到第 2 页中部 → 右栏跟随滚动到 data-page=2 首段（视口内可见）；右点段落 → 左栏 .dpv-flash 闪现后消失
         const anchor: any = await win.webContents.executeJavaScript(`
           (async () => {
             const L = document.querySelector('.dpv-left');
@@ -858,7 +873,11 @@ app.whenReady().then(async () => {
             if (!p2) return { ok: false, reason: 'page2 missing' };
             L.scrollTop = p2.offsetTop + p2.offsetHeight / 2 - 100; L.dispatchEvent(new Event('scroll'));
             await new Promise(r => setTimeout(r, 1200));
-            const activePages = [...R.querySelectorAll('.dpv-zhgroup.page-active')].map(g => g.dataset.zhpage);
+            // 连续流模式：跟随滚到 data-page=2 的首段，断言它进入右栏视口
+            const t2 = R.querySelector('.dpv-zhpara[data-page="2"]');
+            const rr = R.getBoundingClientRect();
+            const tr = t2?.getBoundingClientRect();
+            const followed = !!(tr && tr.top < rr.bottom && tr.bottom > rr.top);
             // 找一段有映射（有 data-pid 且其 pid 有 box）的段落点击，pending 段也可（点击 p 本体走 jumpToPid）
             const paras = [...R.querySelectorAll('.dpv-zhpara[data-pid]')];
             let para = null;
@@ -867,17 +886,17 @@ app.whenReady().then(async () => {
               if (window.__dpvBoxesPids && window.__dpvBoxesPids.includes(pid)) { para = p; break; }
             }
             if (!para) para = paras[0];
-            if (!para) return { ok: false, reason: 'no para', activePages };
+            if (!para) return { ok: false, reason: 'no para', followed };
             para.click();
             await new Promise(r => setTimeout(r, 250));
             const flashShown = !!L.querySelector('.dpv-flash');
             await new Promise(r => setTimeout(r, 1000));
             const flashGone = !L.querySelector('.dpv-flash');
-            return { activePages, flashShown, flashGone, ok: activePages.includes('2') && flashShown && flashGone };
+            return { followed, flashShown, flashGone, ok: followed && flashShown && flashGone };
           })()
         `);
         log(`anchor sync: ${JSON.stringify(anchor)}`);
-        log(`anchor sync (page-active rail + click flash box): ${anchor.ok ? 'PASS' : 'FAIL'}`);
+        log(`anchor sync (follow data-page + click flash box): ${anchor.ok ? 'PASS' : 'FAIL'}`);
 
         // 字体一致性：打包 Noto Serif SC/Sans SC 必须实际加载；有译文胶囊时 computed family 必须唯一
         const fontStats: any = await win.webContents.executeJavaScript(`
@@ -1289,6 +1308,15 @@ function registerIpc() {
           e.sender.send('tr:progress', { pid: item.pid, err: 'skipped-empty', done, total: arg.blocks.length });
           continue;
         }
+        // 守卫 1b：学术固定词汇标题 → 本地词表直译，不调 LLM
+        // （LLM 对孤立单词标题极易复读上下文或胡乱扩充——「Abstract」被翻成论文标题的案例）
+        const glossaryHit = FIXED_HEADING_ZH[item.en.trim().toLowerCase()];
+        if (glossaryHit) {
+          done++;
+          db.saveTranslation(arg.paperId, item.pid, glossaryHit, 'local', 'fixed-glossary');
+          e.sender.send('tr:progress', { pid: item.pid, zh: glossaryHit, done, total: arg.blocks.length });
+          continue;
+        }
         // 拿最新全篇状态（含本批刚译完的段落 → 术语承接）
         const blocksNow = (db.getBlocks(arg.paperId) as any[]).map((b: any) => ({
           pid: b.pid, seq: b.seq, type: b.type, level: b.level, en: b.en, zh: b.zh,
@@ -1312,8 +1340,28 @@ function registerIpc() {
         if (zh.ok && looksLikeChitchat(item.en, zh.text ?? '')) {
           e.sender.send('tr:progress', { pid: item.pid, err: 'chitchat-guard', done, total: arg.blocks.length });
         } else if (zh.ok) {
-          db.saveTranslation(arg.paperId, item.pid, zh.text!, providerCfg.name, providerCfg.model);
-          e.sender.send('tr:progress', { pid: item.pid, zh: zh.text, done, total: arg.blocks.length });
+          // 守卫 3：长度异常拒收——短块译文远超正文长度（LLM 把上下文当正文翻了）
+          const enLen = item.en.replace(/\s+/g, ' ').trim().length;
+          const zhLen = (zh.text ?? '').replace(/\s+/g, ' ').trim().length;
+          const ratio = enLen > 0 ? zhLen / enLen : 0;
+          // 守卫 4：复读检测——译文与邻近块的译文完全相同（LLM 复读了前文/标题翻译）
+          let isEcho = false;
+          if (enLen <= 40 && zhLen > 0) {
+            const pidIdx = blocksNow.findIndex((b: any) => b.pid === item.pid);
+            for (let k = Math.max(0, pidIdx - 3); k <= Math.min(blocksNow.length - 1, pidIdx + 3); k++) {
+              const nb = blocksNow[k];
+              if (nb.pid === item.pid || nb.type === 'fig' || !nb.zh) continue;
+              if (nb.zh.replace(/\s+/g, ' ').trim() === (zh.text ?? '').replace(/\s+/g, ' ').trim()) { isEcho = true; break; }
+            }
+          }
+          if (isEcho) {
+            e.sender.send('tr:progress', { pid: item.pid, err: 'echo-guard', done, total: arg.blocks.length });
+          } else if (enLen <= 40 && zhLen > enLen * 4 + 20) {
+            e.sender.send('tr:progress', { pid: item.pid, err: `length-guard(${Math.round(ratio)}x)`, done, total: arg.blocks.length });
+          } else {
+            db.saveTranslation(arg.paperId, item.pid, zh.text!, providerCfg.name, providerCfg.model);
+            e.sender.send('tr:progress', { pid: item.pid, zh: zh.text, done, total: arg.blocks.length });
+          }
         } else {
           e.sender.send('tr:progress', { pid: item.pid, err: zh.err, done, total: arg.blocks.length });
         }
@@ -1334,15 +1382,26 @@ function registerIpc() {
   });
 
   // 上下文感知翻译：论文元信息 + 章节链 + 摘要 + 前文译文 + 后文原文 + 术语表
+  // 短块（标题/短语）防御：上下文比正文长 6 倍以上时，LLM 会把上下文内容当正文翻译
+  // （实测案例：heading「Abstract」带 800 字摘要上下文 → 译文变成整段摘要，渲染成大标题+重复正文）。
+  // 规则：en ≤ 40 字符（标题/短语类）时，摘要提示降为术语行、砍掉后文、前文限 300 字符。
   function translateBlockCtx(
     provider: llm.ProviderConfig, en: string, paperMeta: tr.PaperMeta,
     blocks: tr.BlockLite[], pid: number, glossaryLines: string[],
     signal?: AbortSignal, qcIssues?: string[],
   ): Promise<{ ok: boolean; text?: string; err?: string }> {
     const sys = tr.buildSystemPrompt(glossaryLines);
-    let ctx = tr.extractContext(blocks, pid) ?? { paperLine: '', sectionLine: '', abstractHint: '', prevZh: '', nextEn: '' };
+    const enLen = en.replace(/\s+/g, ' ').trim().length;
+    const isShort = enLen <= 40;
+    let ctx = tr.extractContext(blocks, pid, isShort ? { prevChars: 300, nextChars: 0, abstractChars: 160 } : undefined)
+      ?? { paperLine: '', sectionLine: '', abstractHint: '', prevZh: '', nextEn: '' };
     ctx = { ...ctx, paperLine: `${paperMeta.title}${paperMeta.authors ? ` · ${paperMeta.authors.split(/[;,]/).slice(0, 3).join(', ')}` : ''}${paperMeta.arxivId ? ` (arXiv:${paperMeta.arxivId})` : ''}` };
+    if (isShort) ctx.abstractHint = ctx.abstractHint.split(/[.。;；]/)[0] ?? ''; // 只留一句术语提示
     let userContent = tr.buildContextBlock(ctx) + en;
+    // 短块强化指令：正文就是这一个短语，禁止输出解释或上下文翻译
+    if (isShort) {
+      userContent += `\n\n【注意】待译内容只有上面这 ${enLen} 个字符的短语/标题，译文也必须只有对应的几个字，不要翻译、复述或解释上下文中的任何其他内容。`;
+    }
     if (qcIssues?.length) {
       userContent += `\n\n【上一版译文的质检问题（必须全部修正后重新输出完整译文）】\n${qcIssues.map(s => '- ' + s).join('\n')}`;
     }
@@ -1376,6 +1435,39 @@ function registerIpc() {
     /^(?:好的|当然|抱歉)[，,。].{0,25}(?:翻译|英文|段落)/,
     /nothing to translate|no (?:english )?text (?:provided|to translate)/i,
   ];
+  // 学术论文固定词汇标题的本地译法（不调 LLM，杜绝复读/扩充）
+  const FIXED_HEADING_ZH: Record<string, string> = {
+    'abstract': '摘要',
+    'introduction': '引言',
+    'conclusion': '结论',
+    'conclusions': '结论',
+    'related work': '相关工作',
+    'references': '参考文献',
+    'acknowledgments': '致谢',
+    'acknowledgements': '致谢',
+    'acknowledgment': '致谢',
+    'appendix': '附录',
+    'preprint': '预印本',
+    'proof': '证明',
+    'discussion': '讨论',
+    'background': '背景',
+    'motivation': '研究动机',
+    'preliminaries': '预备知识',
+    'experiments': '实验',
+    'evaluation': '评估',
+    'results': '结果',
+    'analysis': '分析',
+    'limitations': '局限性',
+    'future work': '未来工作',
+    'broader impact': '更广泛的影响',
+    'contribution': '贡献',
+    'contributions': '贡献',
+    'setup': '实验设置',
+    'methodology': '方法',
+    'overview': '概述',
+    'summary': '总结',
+  };
+
   function looksLikeChitchat(en: string, zh: string): boolean {
     const t = zh.trim();
     if (!t) return true;

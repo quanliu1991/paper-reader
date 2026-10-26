@@ -335,11 +335,11 @@ export default function DualPdfView({
       // 直接跟随主导可见页（此前的 |prev-best|<=2 钳位会让逐页滚动时锚点永远停在旧页——正是失焦的根源）
       setVisiblePage(best);
       if (mode !== 'both') return;
-      // 右栏跟随：目标页组不在视口时滚过去（在视口则不动，防抖动）
+      // 右栏跟随：连续段落流模式——找 data-page=best 的第一个段落，不在视口则平滑滚过去
       withSyncLock(() => {
         const right = rightScrollRef.current;
         if (!right) return;
-        const g = right.querySelector(`[data-zhpage="${best}"]`) as HTMLElement | null;
+        const g = right.querySelector(`[data-page="${best}"]`) as HTMLElement | null;
         if (!g) return;
         const rr = right.getBoundingClientRect();
         const gr = g.getBoundingClientRect();
@@ -436,7 +436,9 @@ export default function DualPdfView({
   );
 }
 
-// ---------- 右栏译文流（纯文档流） ----------
+// ---------- 右栏译文流（连续段落流：不按页切块） ----------
+// 段落按文档 seq 顺序排成一条顺滑的流；每段带 data-pid + data-page（首个匹配页）。
+// 左栏滚动同步：找 data-page 的第一个段落平滑滚过去，不依赖组头。
 
 const ZhFlow = memo(function ZhFlow({
   blocks, pidsByPage, unmappedSet, numPages, activePid, activePage, clusterDone, onJumpPage, onJumpPid, onRetry,
@@ -453,63 +455,37 @@ const ZhFlow = memo(function ZhFlow({
   onRetry: (pid: number) => void;
 }) {
   const byPid = useMemo(() => new Map(blocks.map(b => [b.pid, b])), [blocks]);
-  const seqOfPid = useMemo(() => {
+  // pid → 首个匹配页（左→右同步的锚点）
+  const pageOfPid = useMemo(() => {
     const m = new Map<number, number>();
-    blocks.forEach((b, i) => m.set(b.pid, b.seq ?? i));
+    for (const [pg, arr] of pidsByPage) for (const pid of arr) if (!m.has(pid)) m.set(pid, pg);
     return m;
-  }, [blocks]);
-  // 页内渲染序列：段落 + 图表占位按文档 seq 混排（图表内联在原上下文位置，绝不堆页头/页尾）
-  const pageItems = useMemo(() => {
-    const pageOfPid = new Map<number, number>();
-    for (const [pg, arr] of pidsByPage) for (const pid of arr) pageOfPid.set(pid, pg);
-    let lastPage = 1;
-    const items: Array<{ page: number; kind: 'pid' | 'fig'; pid: number; seq: number }> = [];
-    blocks.forEach((b, i) => {
-      const seq = b.seq ?? i;
-      if (b.type === 'fig') {
-        items.push({ page: lastPage, kind: 'fig', pid: b.pid, seq });
-      } else {
-        const pg = pageOfPid.get(b.pid) ?? lastPage;
-        lastPage = pg;
-        items.push({ page: pg, kind: 'pid', pid: b.pid, seq });
-      }
-    });
-    const m = new Map<number, Array<{ kind: 'pid' | 'fig'; pid: number }>>();
-    for (const it of items) {
-      const a = m.get(it.page) ?? []; a.push(it); m.set(it.page, a);
-    }
-    return m;
-  }, [blocks, pidsByPage]);
+  }, [pidsByPage]);
 
   return (
     <div className="dpv-zhflow">
-      {Array.from({ length: Math.max(numPages, 1) }, (_, i) => i + 1).map(pg => {
-        const its = pageItems.get(pg) ?? [];
-        if (!its.length) return null;
-        return (
-          <section key={pg} className={`dpv-zhgroup${pg === activePage ? ' page-active' : ''}`} data-zhpage={pg}>
-            <div className="dpv-zhgroup-head" onClick={() => onJumpPage(pg)} role="button" tabIndex={0}
-              onKeyDown={e => { if (e.key === 'Enter') onJumpPage(pg); }} title="点击定位左栏该页">
-              — 第 {pg} 页 —
+      {blocks.map((b, i) => {
+        if (b.type === 'fig') {
+          const cap = b.zh ? b.zh.slice(0, 40) : (b.en ?? '').slice(0, 40);
+          return (
+            <div key={`f${b.pid}`} className="dpv-zhfigph" data-pid={b.pid}>
+              📊 {cap ? `[${cap}…] ` : ''}图表 · 请看左栏原版
             </div>
-            {its.map(it => {
-              if (it.kind === 'fig') {
-                const f = byPid.get(it.pid);
-                const cap = f ? (f.zh ? f.zh.slice(0, 40) : (f.en ?? '').slice(0, 40)) : '';
-                return (
-                  <div key={`f${it.pid}`} className="dpv-zhfigph" data-pid={it.pid}>
-                    📊 {cap ? `[${cap}…] ` : ''}图表 · 请看左栏原版
-                  </div>
-                );
-              }
-              const b = byPid.get(it.pid);
-              if (!b) return null;
-              return <ZhBlock key={it.pid} b={b} active={activePid === it.pid} onJump={onJumpPid} onRetry={onRetry} unmapped={unmappedSet.has(it.pid)} />;
-            })}
-          </section>
+          );
+        }
+        const pg = pageOfPid.get(b.pid);
+        return (
+          <ZhBlock
+            key={b.pid}
+            b={b}
+            page={pg}
+            active={activePid === b.pid}
+            onJump={onJumpPid}
+            onRetry={onRetry}
+            unmapped={unmappedSet.has(b.pid)}
+          />
         );
       })}
-      {/* 全部段落已按邻近原则归页内联，无文末兜底大组 */}
       {clusterDone && unmappedSet.size > 0 && (
         <div className="dpv-unmapped-hint">
           ⚠ {unmappedSet.size} 段未与 PDF 精确定位（含左侧细线的段落），已按上下文就近插入
@@ -520,9 +496,10 @@ const ZhFlow = memo(function ZhFlow({
 });
 
 const ZhBlock = memo(function ZhBlock({
-  b, active, onJump, onRetry, unmapped,
+  b, page, active, onJump, onRetry, unmapped,
 }: {
   b: BlockRow;
+  page?: number;
   active: boolean;
   onJump: (pid: number) => void;
   onRetry: (pid: number) => void;
@@ -534,7 +511,7 @@ const ZhBlock = memo(function ZhBlock({
   const cls = `dpv-zhpara ${b.type === 'heading' ? 'heading' : ''} ${active ? 'active' : ''} ${unmapped ? 'unmapped' : ''}`;
   if (dirty && b.type === 'heading') {
     return (
-      <p className={cls} data-pid={b.pid} onClick={() => onJump(b.pid)} title="点击定位左栏原文页">
+      <p className={cls} data-pid={b.pid} data-page={page} onClick={() => onJump(b.pid)} title="点击定位左栏原文页">
         <RichText text={b.en} />
       </p>
     );
@@ -544,6 +521,7 @@ const ZhBlock = memo(function ZhBlock({
       <p
         className={cls}
         data-pid={b.pid}
+        data-page={page}
         onClick={() => onJump(b.pid)}
         title={unmapped ? '该段未与 PDF 建立精准映射' : '点击定位左栏原文页'}
       >
@@ -559,6 +537,7 @@ const ZhBlock = memo(function ZhBlock({
     <p
       className={cls}
       data-pid={b.pid}
+      data-page={page}
       onClick={() => onJump(b.pid)}
       title={unmapped ? '该段未与 PDF 建立精准映射' : '点击定位左栏原文页'}
     >
