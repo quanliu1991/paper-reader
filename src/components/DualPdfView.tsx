@@ -730,8 +730,17 @@ function clusterTextItems(tc: any, vp1: any, page: number): TextBlockBox[] {
   const items = (tc.items as any[]).filter(i => i.str && i.str.trim() && i.width > 0);
   if (!items.length) return [];
   const vpW = vp1.width, vpH = vp1.height;
+  // 坐标去重（Overlap Deduplication）：PDF 底层偶有隐藏文本层（同文本同位置重复绘制）。
+  // 规约：提取前先按 (文本, x, y) 键去重，防止同段文字进入两次 → 重复段落 Bug。
+  const seenKeys = new Set<string>();
+  const deduped = items.filter(i => {
+    const key = `${i.str}|${Math.round(i.transform[4])}|${Math.round(i.transform[5])}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
   const lines: { y: number; items: any[] }[] = [];
-  for (const it of items) {
+  for (const it of deduped) {
     const y = it.transform[5];
     const hit = lines.find(l => Math.abs(l.y - y) <= 3);
     if (hit) hit.items.push(it); else lines.push({ y, items: [it] });
@@ -777,10 +786,13 @@ function clusterTextItems(tc: any, vp1: any, page: number): TextBlockBox[] {
   }
   if (cur) clusters.push(cur);
   const out: TextBlockBox[] = [];
+  const normSeen = new Set<string>(); // 同页同文本簇去重（隐藏层/重复绘制的第二道防线）
   for (const c of clusters) {
     const text = c.items.map(i => i.str).join(' ');
     const norm = normText(text);
     if (norm.length < 6) continue;
+    if (normSeen.has(norm)) continue;
+    normSeen.add(norm);
     const ys = [...new Set(c.items.map(i => Math.round(i.transform[5])))].sort((a, b) => b - a);
     let lineH = 0;
     if (ys.length >= 2) {
