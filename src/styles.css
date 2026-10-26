@@ -467,11 +467,11 @@ mark.hl { animation: hl-in 0.3s ease; }
 .bi-row { margin: 0; }
 .bi-para { margin-bottom: 18px; }
 .bi-en {
-  margin: 0; line-height: 1.75; text-align: justify; color: #2a2a2a;
+  margin: 0; line-height: var(--reading-lh, 1.75); text-align: justify; color: #2a2a2a;
   font-family: "Georgia", "Times New Roman", "Noto Serif SC", serif;
 }
 .bi-zh {
-  margin: 6px 0 0; line-height: 1.9; text-align: justify; color: #3d3d3d;
+  margin: 6px 0 0; line-height: calc(var(--reading-lh, 1.9) + 0.1); text-align: justify; color: #3d3d3d;
 }
 /* 译文段与原文段的视觉区分：左侧细线 + 轻微暖底，不打断阅读流 */
 .bi-para .bi-zh {
@@ -524,8 +524,8 @@ mark.hl { animation: hl-in 0.3s ease; }
 .tv-cell.en { padding-left: 0; }
 .tv-cell.zh { padding-right: 0; background: rgba(251, 191, 36, 0.045); border-radius: 4px; }
 
-/* 段落排版（两侧同构） */
-.tv-p { margin: 4px 0 10px; line-height: 1.8; text-align: justify; font-size: 0.95em; }
+/* 段落排版（两侧同构）——行距可用 ⇕± 调节（--reading-lh 由 Reader 注入） */
+.tv-p { margin: 4px 0 10px; line-height: var(--reading-lh, 1.8); text-align: justify; font-size: 0.95em; }
 .tv-cell.en .tv-p { color: #333; }
 .tv-cell.zh .tv-p { color: #1f2937; }
 
@@ -586,7 +586,36 @@ mark.hl { animation: hl-in 0.3s ease; }
   .bi-heading .bi-en { color: #eee; }
   .bi-heading .heading-sub { color: #9ca3af; }
   .bi-fig figcaption { color: #aaa; }
+  .tv-expand-hint { background: #1e2a44; color: #93c5fd; border-color: #2c3e63; }
+  .tv-expand-hint:hover { background: #24345a; }
 }
+
+/* ===== 响应式：窄窗口/平板双栏降级为上下对照 ===== */
+@media (max-width: 760px) {
+  .tv-row { grid-template-columns: 1fr !important; gap: 2px 0; }
+  .tv-para-row::before { display: none; }        /* 无中缝 */
+  .tv-cell.zh { background: transparent; }        /* 上下结构不再需要暖底区分 */
+  .tv-para-row .tv-cell.en { border-bottom: 1px dashed var(--border); }
+  .tv-fig { max-width: 92%; }
+  .translate-view, .bilingual-view { padding-left: 14px; padding-right: 14px; }
+  .reader-scroll { padding: 16px 10px 60px; }
+  .reader-toolbar { flex-wrap: wrap; row-gap: 6px; }
+  .reader-toolbar .title { min-width: 100px; font-size: 13px; }
+  .ask-panel { width: 100vw; }
+}
+@media (max-width: 560px) {
+  .mode-switch button { padding: 5px 8px; font-size: 12px; }
+  .toolbar-actions button:not(.primary) { padding: 5px 8px; }
+}
+
+/* ===== 防横向滚动（所有阅读视图） ===== */
+.reader-scroll, .dpv-scroll, .translate-view, .bilingual-view, .translated-panel.academic {
+  overflow-x: hidden;
+}
+.math-block { overflow-x: auto; overflow-y: hidden; max-width: 100%; }
+.math-block .katex-display { margin: 0.4em 0; }
+.dpv-zhcap .katex-display { max-width: 100%; overflow-x: auto; }
+img, figure { max-width: 100%; }
 
 /* ==================== 原版式对照视图（PDF 底 + 可划词文本层 + 原位译文胶囊） ==================== */
 
@@ -619,102 +648,105 @@ mark.hl { animation: hl-in 0.3s ease; }
 
 /* ==================== 双页联动视图（豆包式：左原文 PDF + 右译文页） ==================== */
 
-/* PDF 阅读视图（单栏豆包式）：一列页面，译文原位覆盖，顶部切换中/英文 */
+/* PDF 双语对照视图（方案 A）：左原版 PDF + 右译文流，独立滚动，零覆盖 */
 .dpv-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; background: #525659; }
-.dpv-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 6px 14px; background: rgba(0,0,0,0.55); color: #ddd; font-size: 12px; flex-shrink: 0; }
-.dpv-hint { color: #999; }
-.dpv-scroll { flex: 1; overflow-y: auto; padding: 16px 10px 60px; }
-.dpv-wrap .pdf-page { position: relative; background: #fff; margin: 0 auto 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.35); max-width: 980px; }
-.dpv-wrap .pdf-loading { color: #aaa; padding: 160px 0; text-align: center; }
-/* 译文 ⇄ 原文 切换按钮 */
-.dpv-toggle {
-  padding: 4px 14px; border-radius: 13px; font-size: 12px;
+.dpv-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 14px; background: rgba(0,0,0,0.55); color: #ddd; font-size: 12px; flex-shrink: 0; flex-wrap: wrap; }
+.dpv-page-indicator { color: #ccc; }
+.dpv-actions button {
   background: rgba(255,255,255,0.12); color: #ddd; border: 1px solid rgba(255,255,255,0.2);
-  cursor: pointer; transition: all 0.15s; min-width: 52px;
+  border-radius: 5px; cursor: pointer; padding: 3px 10px; font-size: 12px; margin-left: 4px;
 }
-.dpv-toggle.on { background: #4a90d9; border-color: #4a90d9; color: #fff; }
-.dpv-toggle:hover { border-color: rgba(255,255,255,0.45); }
-/* 译文层隐藏（切回原文） */
-.dpv-zhlayer.hidden { display: none; }
+.dpv-actions button:hover { border-color: rgba(255,255,255,0.45); }
 
-/* 左：透明划词层 */
+/* 三态切换 */
+.dpv-mode-switch { display: flex; gap: 2px; background: rgba(255,255,255,0.08); border-radius: 8px; padding: 2px; }
+.dpv-mode-switch button {
+  border: none; background: transparent; color: #bbb; padding: 4px 14px; border-radius: 6px;
+  font-size: 12px; cursor: pointer; transition: all 0.15s;
+}
+.dpv-mode-switch button.active { background: #4a90d9; color: #fff; }
+.dpv-mode-switch button:hover:not(.active) { color: #fff; }
+
+/* 双栏分屏：两栏独立滚动，译文在独立容器——结构上不可能覆盖 PDF */
+.dpv-split { flex: 1; display: flex; min-height: 0; }
+.dpv-split.zh { flex-direction: row; }
+.dpv-split.both { flex-direction: row; }
+.dpv-split.en { flex-direction: row; }
+.dpv-left {
+  flex: 1 1 50%; min-width: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 14px 8px 60px; background: #3a3d42;
+}
+.dpv-right {
+  flex: 1 1 50%; min-width: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 20px 26px 80px; background: var(--bg);
+  border-left: 1px solid var(--border);
+}
+.dpv-split.zh .dpv-right { border-left: none; }
+
+.dpv-wrap .pdf-page { position: relative; background: #fff; margin: 0 auto 14px; box-shadow: 0 2px 10px rgba(0,0,0,0.35); }
+.dpv-wrap .pdf-loading { color: #aaa; padding: 160px 0; text-align: center; }
+
+/* 透明划词层：span 文字 color:transparent，仅提供选择能力；选区高亮由浏览器
+   ::selection 底层渲染（文字下方），不覆盖任何内容 */
 .dpv-textlayer { position: absolute; inset: 0; z-index: 5; overflow: hidden; }
 .dpv-textlayer span { position: absolute; color: transparent; white-space: pre; cursor: text; user-select: text; }
 .dpv-textlayer ::selection { background: rgba(59,130,246,0.35); }
 
-/* 左：联动高亮框 */
-.dpv-hllayer { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
-.dpv-hlbox { position: absolute; border: 2px solid #4a90d9; background: rgba(74,144,217,0.12); border-radius: 4px; box-shadow: 0 0 0 3px rgba(74,144,217,0.15); transition: opacity 0.2s; }
-
-/* 右：译文层——无缝中文论文排版（无框无阴影，像直接印在纸上）
-   字号/行高由 JS 按原文行距内联设置（行距锁原文） */
-.dpv-zhlayer { position: absolute; inset: 0; z-index: 8; }
-.dpv-zhcap {
-  position: absolute; box-sizing: border-box;
-  background: #fff;
-  border: 1px solid #fff; /* 白描边盖住底下英文，视觉上无边框 */
-  border-radius: 0;
-  padding: 2px 4px; margin: 0;
-  text-align: justify; text-justify: inter-ideograph;
-  color: #111; overflow: hidden;
-  font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", "Songti SC", "FangSong", serif;
-  font-synthesis: none;
-  cursor: pointer;
-  transition: background 0.12s;
+/* 右栏译文流：纯文档流排版 */
+.dpv-zhflow { max-width: 760px; margin: 0 auto; }
+.dpv-zhgroup { margin-bottom: 6px; }
+.dpv-zhgroup-head {
+  text-align: center; color: var(--muted); font-size: 11px; letter-spacing: 2px;
+  font-family: "Segoe UI", sans-serif; margin: 14px 0 10px; cursor: pointer;
+  border-bottom: 1px dashed var(--border); padding-bottom: 6px; user-select: none;
 }
-.dpv-zhcap.heading {
+.dpv-zhgroup-head:hover { color: var(--accent); border-color: var(--accent); }
+.dpv-zhpara {
+  margin: 0 0 10px; line-height: 1.9; text-align: justify; text-justify: inter-ideograph;
+  text-indent: 2em; min-height: 1em; cursor: pointer; border-radius: 4px;
+  padding: 1px 6px; transition: background 0.12s;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", serif; font-synthesis: none;
+  color: var(--text);
+}
+.dpv-zhpara:hover { background: rgba(59,130,246,0.06); }
+.dpv-zhpara.active { background: rgba(74,144,217,0.12); box-shadow: inset 3px 0 0 #4a90d9; text-indent: 2em; }
+.dpv-zhpara.heading {
   font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-weight: 600; color: #000;
+  font-weight: 600; text-indent: 0; margin: 18px 0 8px; line-height: 1.4;
 }
-.dpv-zhcap.center { text-align: center; text-indent: 0 !important; }
-/* 正文段首行缩进由 JS 按内容长度加 text-indent（短行不缩进） */
-.dpv-zhcap:hover { background: rgba(201,168,76,0.07); border-color: rgba(201,168,76,0.35); }
-.dpv-zhcap.active {
-  background: rgba(74,144,217,0.08);
-  border-color: rgba(74,144,217,0.4);
-  box-shadow: none;
+.dpv-zhpara.heading.l1 { font-size: 1.3em; }
+.dpv-zhpara.heading.l2 { font-size: 1.15em; }
+.dpv-zhpara.heading.l3 { font-size: 1.05em; }
+/* 未映射段落：左侧灰细线弱标识，文字不丢 */
+.dpv-zhpara.unmapped { border-left: 2px solid var(--border); padding-left: 10px; text-indent: 0; }
+.dpv-zhpara.unmapped:hover { border-left-color: var(--muted); }
+/* 图表占位：提示看左栏原版，不试图重绘图 */
+.dpv-zhfigph {
+  margin: 10px 0; padding: 12px 16px; text-align: center; font-size: 0.88em;
+  color: var(--muted); background: var(--panel); border: 1px dashed var(--border);
+  border-radius: 8px; text-indent: 0;
 }
-.dpv-zhcap.collapsed::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 30px;
-  background: linear-gradient(transparent, rgba(255,255,255,0.96));
+.dpv-zhpending {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.82em; color: var(--muted); text-indent: 0;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 3px 12px; cursor: pointer; user-select: none;
 }
-.dpv-pending {
-  position: absolute; font-size: 8.5px; color: rgba(0,0,0,0.28);
-  font-family: "Noto Serif SC", "SimSun", serif; letter-spacing: 1px;
-  pointer-events: none;
-}/* KaTeX 在译文小字号下的适配：随宿主字号缩放、行内公式不撑破行距 */
-.dpv-zhcap .katex { font-size: 1.02em; }
-.dpv-zhcap .katex-display { margin: 0.15em 0; }
-.dpv-zhcap .katex-display > .katex { font-size: 1.08em; }
-.dpv-more {
-  position: absolute; right: 4px; bottom: 2px;
-  font-size: 10px; color: #4a90d9; cursor: pointer;
-  background: #fff; padding: 0 4px;
-}
-.dpv-more:hover { text-decoration: underline; }
+.dpv-zhpending:hover { color: var(--accent); border-color: var(--accent); }
+.dpv-zhpending .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); animation: dpvPulse 1.2s ease-in-out infinite; }
+.dpv-zhpending .dot:nth-child(2) { animation-delay: 0.2s; }
+.dpv-zhpending .dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dpvPulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+.dpv-zhpara .katex { font-size: 1.02em; }
+.dpv-zhpara .katex-display { margin: 0.3em 0; max-width: 100%; overflow-x: auto; }
 
-/* 展开浮层：完整译文卡片（不动版面，杜绝覆盖） */
-.dpv-popup-mask {
-  position: fixed; inset: 0; z-index: 200;
-  background: rgba(15, 18, 25, 0.45);
-  display: flex; align-items: center; justify-content: center;
-  backdrop-filter: blur(2px);
+/* 窄屏（≤760px）：上下分屏，各自内部滚动 */
+@media (max-width: 760px) {
+  .dpv-split.both { flex-direction: column; }
+  .dpv-left { flex: 1 1 50%; min-height: 0; padding: 10px 4px 30px; }
+  .dpv-right { flex: 1 1 50%; min-height: 0; border-left: none; border-top: 1px solid var(--border); padding: 14px 16px 50px; }
+  .dpv-zhflow { max-width: none; }
 }
-.dpv-popup-card {
-  position: relative; max-width: 640px; width: min(86vw, 640px);
-  max-height: 76vh; overflow-y: auto;
-  background: #fff; border-radius: 12px; padding: 26px 30px;
-  box-shadow: 0 12px 48px rgba(0,0,0,0.28);
-  font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
-  font-synthesis: none; color: #111;
-  line-height: 1.9; text-align: justify;
-}
-.dpv-popup-close {
-  position: absolute; top: 8px; right: 10px;
-  border: none; background: none; font-size: 20px;
-  color: #999; cursor: pointer; line-height: 1;
-}
-.dpv-popup-close:hover { color: #333; }
 
 /* ================= 主题依赖库 ================= */
 .topic-page { max-width: 860px; margin: 0 auto; padding: 28px 32px 60px; }

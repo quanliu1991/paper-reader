@@ -27,6 +27,7 @@ export default function Reader() {
   const updateBlockZh = useStore(s => s.updateBlockZh);
   const askPanelOpen = useStore(s => s.askPanelOpen);
   const fontSize = useStore(s => s.fontSize);
+  const lineHeight = useStore(s => s.lineHeight);
   const columnWidth = useStore(s => s.columnWidth);
   const immersive = useStore(s => s.immersive);
 
@@ -78,14 +79,24 @@ export default function Reader() {
     return off;
   }, [updateBlockZh]);
 
-  // 进度记忆：滚动防抖保存 + 打开恢复
+  // 进度记忆（pid 锚点，跨布局通用）：
+  // 保存视口内最靠上的段落 pid；切换布局后按 pid 找到对应元素滚回去。
+  // 旧的 scrollTop 方案在 PDF 模式（.dpv-scroll）与其他布局（.reader-scroll）容器不同、
+  // 高度差异巨大时必然跳到错误位置。
+  const anchorPidRef = useRef<number | null>(null);
   useEffect(() => {
-    const el = scrollRef.current;
+    const el = scrollRef.current ?? document.querySelector('.dpv-scroll') as HTMLElement | null;
     if (!el) return;
-    const saved = localStorage.getItem(`paper:${paper.id}:scroll`);
-    if (saved) {
-      requestAnimationFrame(() => { el.scrollTop = Number(saved); });
-    }
+    // 打开恢复：优先 pid 锚点，回退旧 scrollTop
+    const savedPid = Number(localStorage.getItem(`paper:${paper.id}:pid`) || 0);
+    const savedTop = localStorage.getItem(`paper:${paper.id}:scroll`);
+    requestAnimationFrame(() => {
+      if (savedPid) {
+        const t = el.querySelector(`[data-pid="${savedPid}"], [data-rowpid="${savedPid}"]`) as HTMLElement | null;
+        if (t) { el.scrollTop = t.offsetTop - el.clientHeight / 3; return; }
+      }
+      if (savedTop) el.scrollTop = Number(savedTop);
+    });
     let timer: ReturnType<typeof setTimeout>;
     const onScroll = () => {
       const max = el.scrollHeight - el.clientHeight;
@@ -93,21 +104,41 @@ export default function Reader() {
       clearTimeout(timer);
       timer = setTimeout(() => {
         localStorage.setItem(`paper:${paper.id}:scroll`, String(el.scrollTop));
+        // 找视口内最靠上的块 pid（data-pid 或 data-rowpid）
+        let topPid: number | null = null, topY = Infinity;
+        el.querySelectorAll<HTMLElement>('[data-pid], [data-rowpid]').forEach(n => {
+          const r = n.getBoundingClientRect();
+          if (r.bottom > 60 && r.top < topY) { topY = r.top; topPid = Number(n.dataset.pid ?? n.dataset.rowpid); }
+        });
+        if (topPid) {
+          anchorPidRef.current = topPid;
+          localStorage.setItem(`paper:${paper.id}:pid`, String(topPid));
+        }
       }, 500);
     };
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => { el.removeEventListener('scroll', onScroll); clearTimeout(timer); };
   }, [paper.id]);
 
-  // 布局切换时按比例恢复滚动位置
+  // 布局切换时按 pid 锚点恢复阅读位置（PDF 模式容器异步挂载 → 轮询等待最多 3s）
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || suppressSaveRef.current) return;
-    requestAnimationFrame(() => {
+    if (suppressSaveRef.current) return;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const tryRestore = () => {
+      const el = scrollRef.current ?? document.querySelector('.dpv-scroll') as HTMLElement | null;
+      if (!el) { if (++tries < 20) timer = setTimeout(tryRestore, 150); return; }
+      const pid = anchorPidRef.current ?? Number(localStorage.getItem(`paper:${paper.id}:pid`) || 0);
+      if (pid) {
+        const target = el.querySelector(`[data-pid="${pid}"], [data-rowpid="${pid}"]`) as HTMLElement | null;
+        if (target) { el.scrollTop = target.offsetTop - el.clientHeight / 3; return; }
+      }
       const max = el.scrollHeight - el.clientHeight;
       el.scrollTop = scrollRatioRef.current * max;
-    });
-  }, [layout]);
+    };
+    timer = setTimeout(tryRestore, 50);
+    return () => clearTimeout(timer);
+  }, [layout, paper.id]);
 
   // 快捷键（含 PDF 模式循环）
   useEffect(() => {
@@ -148,6 +179,12 @@ export default function Reader() {
     } finally {
       useStore.getState().setTranslating(false, null);
     }
+  }
+
+  function cancelTranslate() {
+    window.api.cancelTranslate(paper.id).catch(() => {});
+    useStore.getState().setTranslating(false, null);
+    useStore.getState().toast({ type: 'info', msg: '已取消翻译' });
   }
 
   async function translateOne(pid: number, en: string) {
@@ -275,6 +312,8 @@ export default function Reader() {
               <>
                 <button onClick={() => useStore.getState().setFontSize(fontSize - 1)} title="缩小字号">A-</button>
                 <button onClick={() => useStore.getState().setFontSize(fontSize + 1)} title="放大字号">A+</button>
+                <button onClick={() => useStore.getState().setLineHeight(useStore.getState().lineHeight - 0.2)} title="收紧行距">⇕-</button>
+                <button onClick={() => useStore.getState().setLineHeight(useStore.getState().lineHeight + 0.2)} title="放宽行距">⇕+</button>
                 <button onClick={() => useStore.getState().setColumnWidth(columnWidth === 'wide' ? 'standard' : 'wide')} title="切换栏宽">
                   {columnWidth === 'wide' ? '⇤⇥' : '⇤ ⇥'}
                 </button>
@@ -284,9 +323,15 @@ export default function Reader() {
             <button className="icon-btn" onClick={exportTranslatedPdf} title="导出翻译版 PDF" disabled={exporting}>
               {exporting ? '…' : <IconExport />}
             </button>
-            <button className="primary" onClick={translateAll} disabled={translating}>
-              {translating ? `翻译中 ${progress?.done ?? 0}/${progress?.total ?? 0}` : '翻译全文'}
-            </button>
+            {translating ? (
+              <button className="danger" onClick={cancelTranslate} title="取消翻译">
+                翻译中 {progress?.done ?? 0}/{progress?.total ?? 0} · 取消
+              </button>
+            ) : (
+              <button className="primary" onClick={translateAll}>
+                翻译全文
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -299,6 +344,7 @@ export default function Reader() {
           className="reader-scroll translate-host"
           ref={scrollRef}
           onMouseUp={onMouseUp}
+          style={{ fontSize: `${fontSize}px`, '--reading-lh': lineHeight } as React.CSSProperties}
         >
           <TranslateView
             blocks={blocks}
@@ -312,7 +358,7 @@ export default function Reader() {
           className={`reader-scroll bilingual-host ${columnWidth === 'standard' ? 'narrow' : ''}`}
           ref={scrollRef}
           onMouseUp={onMouseUp}
-          style={{ fontSize: `${fontSize}px` }}
+          style={{ fontSize: `${fontSize}px`, '--reading-lh': lineHeight } as React.CSSProperties}
         >
           <BilingualView
             blocks={blocks}

@@ -1,28 +1,25 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import katex from 'katex';
+import RichText from './RichText';
 import type { BlockRow } from '../store';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
-// PDF 阅读视图（豆包式单栏）：一列 PDF 页面，译文原位覆盖原文，
-// 顶部「译文 ⇄ 原文」一键切换。划词/高亮/按需翻译/失败退避同前。
+// PDF 双语对照视图（方案 A）：左栏原版 PDF canvas 分页（原汁原味），
+// 右栏 HTML 译文流（纯文档流，按页分组）。两栏独立滚动 + 页级同步（互斥锁防回环）。
+// 三态：en（仅原文）/ both（双语对照，默认）/ zh（仅译文）。窄屏（≤760px）自动上下分屏。
+// 禁止任何绝对定位文字排版：译文在独立滚动容器中，结构上不可能覆盖 PDF。
 export interface TextBlockBox {
   pid: number;
   page: number;
   x: number; y: number; w: number; h: number;
   textLen: number;
-  lineH: number;   // 原文行距（PDF 单位）——译文行距跟它走
+  lineH: number;
 }
 
-interface PageState {
-  canvas: HTMLCanvasElement | null;
-  zhLayer: HTMLDivElement | null;
-  hlLayer: HTMLDivElement | null;
-  pageEl: HTMLDivElement | null;
-}
+type PdfMode = 'en' | 'both' | 'zh';
 
 export default function DualPdfView({
   paperId, blocks, onMouseUp,
@@ -31,47 +28,45 @@ export default function DualPdfView({
   blocks: BlockRow[];
   onMouseUp?: (e: React.MouseEvent) => void;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // ---- 左栏（PDF）状态 ----
+  const leftScrollRef = useRef<HTMLDivElement>(null);
   const hostsRef = useRef<Map<number, HTMLDivElement>>(new Map());
-  const statesRef = useRef<Map<number, PageState>>(new Map());
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [error, setError] = useState('');
   const [boxes, setBoxes] = useState<TextBlockBox[]>([]);
-  const [activePid, setActivePid] = useState(0);
-  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
-  const [showZh, setShowZh] = useState(true);
-  const [zhScale, setZhScale] = useState(1);
   const [visiblePage, setVisiblePage] = useState(1);
   const [failedPages, setFailedPages] = useState<Set<number>>(new Set());
   const renderedRef = useRef<Set<number>>(new Set());
 
-  // 易变引用（effect 只依赖 doc，译文/交互更新不重建渲染管线 → 不闪）
+  // ---- 右栏（译文）状态 ----
+  const rightScrollRef = useRef<HTMLDivElement>(null);
+  const [mode, setMode] = useState<PdfMode>('both');
+  const [zhScale, setZhScale] = useState(1);
+  const [activePid, setActivePid] = useState(0);
+
+  // ---- 按需翻译 ----
+  const requestedTx = useRef<Set<number>>(new Set());
+  const txFailCount = useRef<Map<number, number>>(new Map());
+  const [txPending, setTxPending] = useState(0);
+  const txPendingRef = useRef(0);
+
+  // 易变引用
   const blocksRef = useRef(blocks);
   blocksRef.current = blocks;
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
-  const activePidRef = useRef(activePid);
-  activePidRef.current = activePid;
-  const collapsedRef = useRef(collapsed);
-  collapsedRef.current = collapsed;
-  const showZhRef = useRef(showZh);
-  showZhRef.current = showZh;
-  const zhScaleRef = useRef(zhScale);
-  zhScaleRef.current = zhScale;
   const onMouseUpRef = useRef(onMouseUp);
   onMouseUpRef.current = onMouseUp;
-  const requestedTx = useRef<Set<number>>(new Set());
-  const txFailCount = useRef<Map<number, number>>(new Map());   // pid → 连续失败次数（指数退避）
-  const [txPending, setTxPending] = useState(0);                // 本会话按需翻译在途数
-  const txPendingRef = useRef(0);
+  const activePidRef = useRef(activePid);
+  activePidRef.current = activePid;
 
-  // 1) 只在换论文时加载文档（译文更新不再触发重载 → 不闪）
+  // 1) 换论文时加载 PDF 文档
   useEffect(() => {
     let cancelled = false;
     setDoc(null); setError(''); setNumPages(0); setBoxes([]); setFailedPages(new Set());
     renderedRef.current.clear();
-    hostsRef.current.clear(); statesRef.current.clear();
+    hostsRef.current.clear();
     requestedTx.current.clear();
     txFailCount.current.clear();
     (async () => {
@@ -86,22 +81,13 @@ export default function DualPdfView({
     return () => { cancelled = true; };
   }, [paperId]);
 
-  // en 文本指纹：en 不变则不重新聚类
+  // en 指纹：不变则不重新聚类
   const enKey = useMemo(
     () => blocks.map(b => `${b.pid}.${(b.en ?? '').length}`).join(','),
     [blocks],
   );
 
-  // block 元信息（标题/正文区分排版）
-  const blockMeta = useMemo(() => {
-    const m = new Map<number, { type: string; level: number }>();
-    for (const b of blocks) m.set(b.pid, { type: b.type, level: b.level ?? 9 });
-    return m;
-  }, [blocks.map(b => b.pid).join(','), enKey]);
-  const blockMetaRef = useRef(blockMeta);
-  blockMetaRef.current = blockMeta;
-
-  // 2) 文档就绪后聚类 + 匹配
+  // 2) 文档就绪 → 聚类匹配（pid → page 映射）
   useEffect(() => {
     if (!doc) return;
     let cancelled = false;
@@ -119,36 +105,41 @@ export default function DualPdfView({
     return () => { cancelled = true; };
   }, [doc, enKey]);
 
-  // pid → 译文切片（跨栏/跨页按比例句界切分）
-  const zhParts = useCallback(() => {
-    const byPid = new Map<number, TextBlockBox[]>();
-    for (const b of boxesRef.current) {
+  // 页 → pid 列表（右栏分组依据）；pid → 首次出现页（左→右定位依据）。
+  // 未匹配到 boxes 的段落归入「未映射」组，不丢弃（保证右栏文字连贯）。
+  const { pidsByPage, unmapped } = useMemo(() => {
+    const pidFirstPage = new Map<number, number>();
+    for (const b of boxes) {
       if (!b.pid) continue;
-      const a = byPid.get(b.pid) ?? []; a.push(b); byPid.set(b.pid, a);
+      if (!pidFirstPage.has(b.pid)) pidFirstPage.set(b.pid, b.page);
     }
-    const out = new Map<number, string[]>();
-    const zhByPid = new Map(blocksRef.current.map(b => [b.pid, b.zh ?? '']));
-    for (const [pid, arr] of byPid) {
-      out.set(pid, splitZh(zhByPid.get(pid) ?? '', arr.map(b => b.textLen)));
+    const byPage = new Map<number, number[]>();
+    const unmappedPids: number[] = [];
+    for (const b of blocks) {
+      if (b.type === 'fig') continue; // 图表用占位块，不占 pid 组
+      const pg = pidFirstPage.get(b.pid);
+      if (pg === undefined) { unmappedPids.push(b.pid); continue; }
+      const a = byPage.get(pg) ?? []; a.push(b.pid); byPage.set(pg, a);
     }
-    return out;
-  }, []);
+    return { pidsByPage: byPage, unmapped: unmappedPids };
+  }, [boxes, blocks.map(b => b.pid).join(','), enKey]);
 
-  // 滚到哪翻到哪 + 失败指数退避（1次→8s 屏蔽，2次→40s，3次+→本会话放弃）
+  const pidsByPageRef = useRef(pidsByPage);
+  pidsByPageRef.current = pidsByPage;
+
+  // 3) 按需翻译 + 失败指数退避（滚到哪翻到哪）
   const translatePageIfNeeded = useCallback((page: number) => {
     const now = Date.now();
-    const pageBoxes = boxesRef.current.filter(b => b.page === page && b.pid);
+    const pagePids = pidsByPageRef.current.get(page) ?? [];
     const zhByPid = new Map(blocksRef.current.map(b => [b.pid, b.zh ?? '']));
-    const need = pageBoxes
-      .map(b => b.pid)
-      .filter(pid => {
-        if (zhByPid.get(pid)) return false;
-        if (requestedTx.current.has(pid)) return false;
-        const fails = txFailCount.current.get(pid) ?? 0;
-        if (fails >= 3) return false;
-        const bannedUntil = txFailCount.current.get(-pid) ?? 0;
-        return now >= bannedUntil;
-      });
+    const need = pagePids.filter(pid => {
+      if (zhByPid.get(pid)) return false;
+      if (requestedTx.current.has(pid)) return false;
+      const fails = txFailCount.current.get(pid) ?? 0;
+      if (fails >= 3) return false;
+      const bannedUntil = txFailCount.current.get(-pid) ?? 0;
+      return now >= bannedUntil;
+    });
     if (!need.length) return;
     need.forEach(pid => requestedTx.current.add(pid));
     const items = blocksRef.current.filter(b => need.includes(b.pid)).map(b => ({ pid: b.pid, en: b.en }));
@@ -164,12 +155,31 @@ export default function DualPdfView({
         });
       }).finally(() => {
         txPendingRef.current -= items.length;
-        setTxPending(txPendingRef.current);
+        setTxPending(Math.max(0, txPendingRef.current));
       });
     }
   }, [paperId]);
 
-  // 渲染单页：canvas + 划词层 + 译文层 + 高亮层（单栏一体）——DPR 高清渲染
+  // 手动重试
+  const retryTranslate = useCallback((pid: number) => {
+    requestedTx.current.delete(pid);
+    txFailCount.current.delete(pid);
+    txFailCount.current.delete(-pid);
+    const b = blocksRef.current.find(x => x.pid === pid);
+    if (!b || b.zh) return;
+    requestedTx.current.add(pid);
+    txPendingRef.current += 1;
+    setTxPending(txPendingRef.current);
+    window.api.translateAll({ paperId, blocks: [{ pid, en: b.en }], scope: 'all' }).catch(() => {
+      requestedTx.current.delete(pid);
+      txFailCount.current.set(pid, (txFailCount.current.get(pid) ?? 0) + 1);
+    }).finally(() => {
+      txPendingRef.current -= 1;
+      setTxPending(Math.max(0, txPendingRef.current));
+    });
+  }, [paperId]);
+
+  // 4) 渲染单页 canvas + 透明选择层（PDF.js 标准做法，无可见渲染，不覆盖任何文字）
   const renderPage = useCallback(async (d: PDFDocumentProxy, n: number) => {
     const host = hostsRef.current.get(n);
     if (!host || renderedRef.current.has(n)) return;
@@ -186,18 +196,8 @@ export default function DualPdfView({
       const loading = host.querySelector('.pdf-loading');
       if (loading) loading.remove();
       host.appendChild(canvas);
-      const ps: PageState = { canvas, zhLayer: null, hlLayer: null, pageEl: host };
-      const pageBoxes = boxesRef.current.filter(b => b.page === n);
-      // 译文层（原位覆盖）
-      const zhLayer = document.createElement('div');
-      zhLayer.className = 'dpv-zhlayer' + (showZhRef.current ? '' : ' hidden');
-      host.appendChild(zhLayer);
-      ps.zhLayer = zhLayer;
-      renderZh(zhLayer, pageBoxes, canvas, vp1, zhParts(), activePidRef.current, collapsedRef.current,
-        pid => { setActivePid(pid); }, zhScaleRef.current, showZhRef.current, blockMetaRef.current);
-      // 划词层（透明原文，选区可见）
       const tl = document.createElement('div');
-      tl.className = 'dpv-textlayer' + (showZhRef.current ? ' under-zh' : '');
+      tl.className = 'dpv-textlayer';
       const tc = await page.getTextContent();
       const hostW = host.getBoundingClientRect().width || rv.width / (2 * dpr);
       const eff = hostW / vp1.width;
@@ -218,133 +218,256 @@ export default function DualPdfView({
         }
       }
       host.appendChild(tl);
-      // 高亮层（点击译文段落 → 原文位置示意框；译文模式下显示在译文之上）
-      const hlLayer = document.createElement('div');
-      hlLayer.className = 'dpv-hllayer';
-      host.appendChild(hlLayer);
-      ps.hlLayer = hlLayer;
-      renderHl(hlLayer, pageBoxes, canvas, vp1, activePidRef.current);
-      // 本页可见 → 按需翻译 + 记录可见页
       translatePageIfNeeded(n);
-      if (n > 0) setVisiblePage(prev => (Math.abs(prev - n) > 2 ? n : prev));
-      // 失败重试：清掉失败标记（渲染成功即恢复）
       setFailedPages(s => { if (!s.has(n)) return s; const x = new Set(s); x.delete(n); return x; });
-      statesRef.current.set(n, ps);
     } catch {
       renderedRef.current.delete(n);
       setFailedPages(s => new Set(s).add(n));
     }
-  }, [doc, zhParts, translatePageIfNeeded]);
+  }, [translatePageIfNeeded]);
 
-  // 懒渲染（单栏）
+  // 5) 左栏懒渲染：只观察视口 ±2 页（rootMargin 控制），canvas 已渲染页不重复
   useEffect(() => {
-    if (!doc || !numPages) return;
-    const hosts = scrollRef.current?.querySelectorAll('[data-page]');
+    if (!doc || !numPages || mode === 'zh') return;
+    const hosts = leftScrollRef.current?.querySelectorAll('[data-page]');
+    if (!hosts?.length) return;
     const io = new IntersectionObserver(entries => {
-      for (const en of entries) if (en.isIntersecting) renderPage(doc, Number((en.target as HTMLElement).dataset.page));
-    }, { root: scrollRef.current, rootMargin: '600px 0px' });
-    hosts?.forEach(el => io.observe(el));
-    return () => { io.disconnect(); };
-  }, [doc, numPages, renderPage]);
-
-  // boxes 聚类完成后：对已渲染页重算胶囊 + 触发按需翻译
-  useEffect(() => {
-    if (!doc || !boxes.length) return;
-    const parts = zhParts();
-    const dpr = Math.min(3, window.devicePixelRatio || 1);
-    for (const [n, ps] of statesRef.current) {
-      if (ps.zhLayer && ps.canvas) {
-        renderZh(ps.zhLayer, boxes.filter(b => b.page === n), ps.canvas, { width: ps.canvas.width / (2 * dpr) },
-          parts, activePid, collapsed, pid => setActivePid(pid), zhScale, showZh, blockMetaRef.current);
+      for (const en of entries) {
+        if (en.isIntersecting) renderPage(doc, Number((en.target as HTMLElement).dataset.page));
       }
-      if (ps.canvas) translatePageIfNeeded(n);
-    }
-  }, [boxes, doc, zhParts, activePid, collapsed, zhScale, showZh, translatePageIfNeeded]);
+    }, { root: leftScrollRef.current, rootMargin: '1200px 0px' });
+    hosts.forEach(el => io.observe(el));
+    return () => { io.disconnect(); };
+  }, [doc, numPages, renderPage, mode]);
 
-  // activePid 变化 → 切 class + 重画高亮框（单栏内原位示意，不跨栏滚动）
+  // 6) 滚动同步（互斥锁防回环）：
+  // 左→右：IntersectionObserver 找视口交集最大页，右栏滚到对应页组（已在视口则不动）。
+  // 右→左：仅点击触发（页头/段落），不自动跟随——避免两侧抢方向盘。
+  const syncingRef = useRef(false);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const withSyncLock = (fn: () => void) => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    fn();
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => { syncingRef.current = false; }, 150);
+  };
+
+  // 左栏可见页追踪 + 驱动右栏跟随 + 按需翻译
   useEffect(() => {
-    document.querySelectorAll('.dpv-zhcap').forEach(el => {
+    if (!doc || !numPages || mode === 'en') return;
+    const hosts = leftScrollRef.current?.querySelectorAll('.pdf-page');
+    if (!hosts?.length) return;
+    const io = new IntersectionObserver(entries => {
+      let best = 0, bestRatio = 0;
+      for (const en of entries) {
+        if (en.isIntersecting && en.intersectionRatio > bestRatio) {
+          bestRatio = en.intersectionRatio;
+          best = Number((en.target as HTMLElement).dataset.page);
+        }
+      }
+      if (!best) return;
+      setVisiblePage(prev => (Math.abs(prev - best) > 2 ? best : prev));
+      if (mode !== 'both') return;
+      // 右栏跟随：目标页组不在视口时滚过去（在视口则不动，防抖动）
+      withSyncLock(() => {
+        const right = rightScrollRef.current;
+        if (!right) return;
+        const g = right.querySelector(`[data-zhpage="${best}"]`) as HTMLElement | null;
+        if (!g) return;
+        const rr = right.getBoundingClientRect();
+        const gr = g.getBoundingClientRect();
+        if (gr.top < rr.top + 40 || gr.bottom > rr.bottom - 40) {
+          right.scrollTo({ top: g.offsetTop - right.offsetTop - 12, behavior: 'smooth' });
+        }
+      });
+    }, { root: leftScrollRef.current, threshold: [0, 0.25, 0.6] });
+    hosts.forEach(el => io.observe(el));
+    return () => { io.disconnect(); };
+  }, [doc, numPages, mode]);
+
+  // 7) 右→左 点击定位（方案 B 辅）：点页头/段落 → 左栏滚到对应页
+  const jumpToPage = useCallback((page: number) => {
+    const left = leftScrollRef.current;
+    if (!left) return;
+    withSyncLock(() => {
+      const t = left.querySelector(`[data-page="${page}"]`) as HTMLElement | null;
+      if (t) left.scrollTo({ top: t.offsetTop - left.offsetTop - 8, behavior: 'smooth' });
+    });
+  }, []);
+  const jumpToPid = useCallback((pid: number) => {
+    const box = boxesRef.current.find(b => b.pid === pid);
+    if (box) jumpToPage(box.page);
+    setActivePid(pid);
+  }, [jumpToPage]);
+
+  // activePid 高亮：作用于右栏段落本身（背景色 + 左线，非悬浮层）
+  useEffect(() => {
+    rightScrollRef.current?.querySelectorAll('.dpv-zhpara').forEach(el => {
       el.classList.toggle('active', Number((el as HTMLElement).dataset.pid) === activePid);
     });
-    if (!activePid) return;
-    for (const [, ps] of statesRef.current) {
-      if (ps.hlLayer && ps.canvas) {
-        const n = Number(ps.canvas.closest('[data-page]')?.getAttribute('data-page'));
-        renderHl(ps.hlLayer, boxesRef.current.filter(b => b.page === n), ps.canvas,
-          { width: ps.canvas.width / (2 * Math.min(3, window.devicePixelRatio || 1)) }, activePid);
-      }
-    }
-  }, [activePid, boxes]);
-
-  // 译文/折叠/显隐/字号变化 → 重建胶囊层
-  useEffect(() => {
-    if (!doc) return;
-    const parts = zhParts();
-    const dpr = Math.min(3, window.devicePixelRatio || 1);
-    for (const [n, ps] of statesRef.current) {
-      if (ps.zhLayer && ps.canvas) {
-        renderZh(ps.zhLayer, boxes.filter(b => b.page === n), ps.canvas, { width: ps.canvas.width / (2 * dpr) },
-          parts, activePid, collapsed, pid => setActivePid(pid), zhScale, showZh, blockMetaRef.current);
-      }
-    }
-  }, [boxes, collapsed, doc, zhParts, activePid, zhScale, showZh]);
-
-  // 「展开全文」事件
-  // 「展开全文」事件（旧路径，现改为浮层卡片，保留事件兼容）
-  useEffect(() => {
-    const fn = (e: Event) => {
-      const pid = (e as CustomEvent).detail as number;
-      setCollapsed(s => new Set(s).add(pid));
-    };
-    window.addEventListener('dpv-expand', fn);
-    return () => window.removeEventListener('dpv-expand', fn);
-  }, []);
-
-  // 卸载/切论文时清理浮层
-  useEffect(() => () => closeZhPopup(), []);
-  // Esc 关浮层
-  useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') closeZhPopup(); };
-    window.addEventListener('keydown', fn);
-    return () => window.removeEventListener('keydown', fn);
-  }, []);
-
-  // 译文 ⇄ 原文切换：只切层的显隐，不重渲染 canvas（零闪烁）
-  useEffect(() => {
-    for (const [, ps] of statesRef.current) {
-      if (ps.zhLayer) ps.zhLayer.classList.toggle('hidden', !showZh);
-    }
-  }, [showZh]);
+  }, [activePid, blocks]);
 
   if (error) {
     return <div className="dpv-wrap"><div className="pdf-error">PDF 未就绪（{error.slice(0, 80)}）。后台下载完成后重开论文即可。</div></div>;
   }
 
+  const showLeft = mode !== 'zh';
+  const showRight = mode !== 'en';
+
   return (
     <div className="dpv-wrap">
       <div className="dpv-toolbar">
-        <span>{numPages ? `${numPages} 页` : '加载中…'}</span>
-        <span className="dpv-page-indicator">第 {visiblePage} 页{txPending > 0 ? ` · 翻译中 ${txPending} 段` : ''}</span>
+        <div className="dpv-mode-switch" role="tablist" aria-label="阅读模式">
+          <button role="tab" aria-selected={mode === 'en'} className={mode === 'en' ? 'active' : ''} onClick={() => setMode('en')}>仅原文</button>
+          <button role="tab" aria-selected={mode === 'both'} className={mode === 'both' ? 'active' : ''} onClick={() => setMode('both')}>双语对照</button>
+          <button role="tab" aria-selected={mode === 'zh'} className={mode === 'zh' ? 'active' : ''} onClick={() => setMode('zh')}>仅译文</button>
+        </div>
+        <span className="dpv-page-indicator">{numPages ? `第 ${visiblePage}/${numPages} 页` : '加载中…'}{txPending > 0 ? ` · 翻译中 ${txPending} 段` : ''}</span>
         <div className="dpv-actions">
-          <button className={`dpv-toggle ${showZh ? 'on' : ''}`} onClick={() => setShowZh(v => !v)}>
-            {showZh ? '中文' : '英文'}
-          </button>
-          <button onClick={() => setZhScale(s => Math.max(0.6, Math.round((s - 0.1) * 10) / 10))}>A-</button>
-          <button onClick={() => setZhScale(s => Math.min(1.6, Math.round((s + 0.1) * 10) / 10))}>A+</button>
+          <button onClick={() => setZhScale(s => Math.max(0.7, Math.round((s - 0.1) * 10) / 10))} title="缩小译文（仅右栏）">A-</button>
+          <button onClick={() => setZhScale(s => Math.min(1.6, Math.round((s + 0.1) * 10) / 10))} title="放大译文（仅右栏）">A+</button>
         </div>
       </div>
-      <div className="dpv-scroll" ref={scrollRef} onMouseUp={e => onMouseUpRef.current?.(e)}>
-        {doc && Array.from({ length: numPages }, (_, i) => (
-          <div key={i + 1} className="pdf-page dpv-page" data-page={i + 1} ref={el => { if (el) hostsRef.current.set(i + 1, el); }}>
-            <div className="pdf-loading">第 {i + 1} 页</div>
+      <div className={`dpv-split ${mode}`}>
+        {showLeft && (
+          <div className="dpv-left" ref={leftScrollRef} onMouseUp={e => onMouseUpRef.current?.(e)} aria-label="原版 PDF">
+            {doc && Array.from({ length: numPages }, (_, i) => (
+              <div key={i + 1} className="pdf-page dpv-page" data-page={i + 1} ref={el => { if (el) hostsRef.current.set(i + 1, el); }}>
+                <div className="pdf-loading">第 {i + 1} 页</div>
+              </div>
+            ))}
+            {!doc && <div className="pdf-loading">PDF 加载中…</div>}
           </div>
-        ))}
+        )}
+        {showRight && (
+          <div
+            className="dpv-right"
+            ref={rightScrollRef}
+            onMouseUp={e => onMouseUpRef.current?.(e)}
+            style={{ fontSize: `${14 * zhScale}px` }}
+            aria-label="中文译文"
+          >
+            <ZhFlow
+              blocks={blocks}
+              pidsByPage={pidsByPage}
+              unmapped={unmapped}
+              numPages={numPages}
+              activePid={activePid}
+              onJumpPage={jumpToPage}
+              onJumpPid={jumpToPid}
+              onRetry={retryTranslate}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// ---------- 文本归一化 + 最佳匹配 ----------
+// ---------- 右栏译文流（纯文档流） ----------
+
+const ZhFlow = memo(function ZhFlow({
+  blocks, pidsByPage, unmapped, numPages, activePid, onJumpPage, onJumpPid, onRetry,
+}: {
+  blocks: BlockRow[];
+  pidsByPage: Map<number, number[]>;
+  unmapped: number[];
+  numPages: number;
+  activePid: number;
+  onJumpPage: (p: number) => void;
+  onJumpPid: (pid: number) => void;
+  onRetry: (pid: number) => void;
+}) {
+  const byPid = useMemo(() => new Map(blocks.map(b => [b.pid, b])), [blocks]);
+  const figBlocks = useMemo(() => blocks.filter(b => b.type === 'fig'), [blocks]);
+  const figByPage = useMemo(() => {
+    const m = new Map<number, BlockRow[]>();
+    // 图表无精确页映射时按邻近文本块粗略归页：这里简单挂在 unmapped 前后；
+    // 已有 fig 路径的走左栏原生图，右栏只放占位提示
+    for (const f of figBlocks) {
+      // 找到 fig 前最近的已映射 pid 所在页
+      const idx = blocks.findIndex(b => b.pid === f.pid);
+      let page: number | null = null;
+      for (let i = idx - 1; i >= 0; i--) {
+        for (const [pg, arr] of pidsByPage) if (arr.includes(blocks[i].pid)) { page = pg; break; }
+        if (page) break;
+      }
+      const key = page ?? 0;
+      const a = m.get(key) ?? []; a.push(f); m.set(key, a);
+    }
+    return m;
+  }, [figBlocks, blocks, pidsByPage]);
+
+  return (
+    <div className="dpv-zhflow">
+      {Array.from({ length: Math.max(numPages, 1) }, (_, i) => i + 1).map(pg => {
+        const pids = pidsByPage.get(pg) ?? [];
+        const figs = figByPage.get(pg) ?? [];
+        if (!pids.length && !figs.length) return null;
+        return (
+          <section key={pg} className="dpv-zhgroup" data-zhpage={pg}>
+            <div className="dpv-zhgroup-head" onClick={() => onJumpPage(pg)} role="button" tabIndex={0}
+              onKeyDown={e => { if (e.key === 'Enter') onJumpPage(pg); }} title="点击定位左栏该页">
+              — 第 {pg} 页 —
+            </div>
+            {pids.map(pid => {
+              const b = byPid.get(pid);
+              if (!b) return null;
+              return <ZhBlock key={pid} b={b} active={activePid === pid} onJump={onJumpPid} onRetry={onRetry} />;
+            })}
+            {figs.map(f => (
+              <div key={f.pid} className="dpv-zhfigph" data-pid={f.pid}>
+                📊 [图表 · {f.zh ? f.zh.slice(0, 40) : f.en.slice(0, 40)}…] 请看左栏原版
+              </div>
+            ))}
+          </section>
+        );
+      })}
+      {/* 未映射段落：不丢弃，统一收尾展示（保持全文连贯），弱视觉标识 */}
+      {unmapped.length > 0 && (
+        <section className="dpv-zhgroup unmapped-group">
+          <div className="dpv-zhgroup-head">— 未定位页码的段落 —</div>
+          {unmapped.map(pid => {
+            const b = byPid.get(pid);
+            if (!b) return null;
+            return <ZhBlock key={pid} b={b} active={activePid === pid} onJump={onJumpPid} onRetry={onRetry} unmapped />;
+          })}
+        </section>
+      )}
+    </div>
+  );
+});
+
+const ZhBlock = memo(function ZhBlock({
+  b, active, onJump, onRetry, unmapped,
+}: {
+  b: BlockRow;
+  active: boolean;
+  onJump: (pid: number) => void;
+  onRetry: (pid: number) => void;
+  unmapped?: boolean;
+}) {
+  const cls = `dpv-zhpara ${b.type === 'heading' ? 'heading' : ''} ${active ? 'active' : ''} ${unmapped ? 'unmapped' : ''}`;
+  return (
+    <p
+      className={cls}
+      data-pid={b.pid}
+      onClick={() => onJump(b.pid)}
+      title={unmapped ? '该段未与 PDF 建立精准映射' : '点击定位左栏原文页'}
+    >
+      {b.zh
+        ? <RichText text={b.zh} />
+        : <span className="dpv-zhpending" onClick={e => { e.stopPropagation(); onRetry(b.pid); }}
+            role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); onRetry(b.pid); } }}
+            title="点击重试翻译">
+            <span className="dot" /><span className="dot" /><span className="dot" />待翻译
+          </span>}
+    </p>
+  );
+});
+
+// ---------- 文本归一化 + 聚类匹配（沿用既有算法） ----------
 
 function normText(s: string): string {
   return s.replace(/\$\$[^$]*\$\$/g, ' ').replace(/\$[^$]*\$/g, ' ')
@@ -429,7 +552,6 @@ function clusterTextItems(tc: any, vp1: any, page: number, blockNorms: { pid: nu
     const norm = normText(text);
     if (norm.length < 6) continue;
     const pid = matchPid(text, blockNorms);
-    // 原文行距：取簇内相邻行 y 差的中位数（抗单行异常）
     const ys = [...new Set(c.items.map(i => Math.round(i.transform[5])))].sort((a, b) => b - a);
     let lineH = 0;
     if (ys.length >= 2) {
@@ -444,197 +566,4 @@ function clusterTextItems(tc: any, vp1: any, page: number, blockNorms: { pid: nu
     out.push({ pid, page, textLen: norm.length, x, y: vpH - pdfTop, w: right - x, h: Math.max(8, pdfTop - pdfBottom), lineH: Math.max(6, lineH) });
   }
   return out;
-}
-
-function splitZh(zh: string, parts: number[]): string[] {
-  if (parts.length <= 1 || !zh) return parts.length === 1 ? [zh] : [];
-  const total = parts.reduce((a, b) => a + b, 0) || 1;
-  const ends: number[] = [];
-  const re = /[。！？!?；;]|\.\s/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(zh))) ends.push(m.index + m[0].length);
-  if (!ends.length || ends[ends.length - 1] < zh.length) ends.push(zh.length);
-  const out: string[] = [];
-  let start = 0, acc = 0;
-  for (let i = 0; i < parts.length; i++) {
-    acc += parts[i];
-    if (i === parts.length - 1) { out.push(zh.slice(start).trim()); break; }
-    const target = Math.round(acc / total * zh.length);
-    const best = ends.find(e => e >= target && e > start) ?? zh.length;
-    out.push(zh.slice(start, best).trim());
-    start = best;
-  }
-  return out;
-}
-
-// ---------- 渲染 ----------
-
-// 中文正文排版：行距锁原文行距、字号从行高推导、公式 KaTeX、两端对齐、首行缩进
-function renderZh(
-  layer: HTMLElement, pageBoxes: TextBlockBox[], canvas: HTMLCanvasElement,
-  vp1: any, zhParts: Map<number, string[]>, activePid: number, collapsed: Set<number>,
-  onActive: (pid: number) => void, zhScale: number, visible: boolean,
-  blockMeta: Map<number, { type: string; level: number }>,
-) {
-  layer.innerHTML = '';
-  if (!visible) return;
-  const eff = canvas.getBoundingClientRect().width / vp1.width;
-  const pageBottom = canvas.getBoundingClientRect().height / eff;
-  const idxMap = new Map<number, number>();
-  const sorted = pageBoxes.filter(b => b.pid).sort((a, b) => a.y - b.y || a.x - b.x);
-  for (let i = 0; i < sorted.length; i++) {
-    const box = sorted[i];
-    const parts = zhParts.get(box.pid);
-    if (!parts) continue;
-    const idx = Math.min(idxMap.get(box.pid) ?? 0, parts.length - 1);
-    idxMap.set(box.pid, idx + 1);
-    const zhPart = parts[idx];
-    const meta = blockMeta.get(box.pid);
-    const isHeading = meta?.type === 'heading';
-    // 排版基础：原文行距（屏幕像素）。多块同 pid（跨栏）共享同一 box 行距
-    const srcLineH = box.lineH * eff;
-    const baseFs = srcLineH * 0.78;          // 字号 ≈ 行高 78%（正文舒适比例）
-    const headFs = srcLineH * 0.92;          // 标题字号更大
-    const fs = (isHeading ? Math.max(headFs, baseFs) : baseFs) * zhScale;
-    const left = box.x * eff - 3, top = box.y * eff - 3, width = box.w * eff + 6;
-    const minH = box.h * eff + 5;
-    // 本块可用最大高度：到下一块顶部为止（留 5px 呼吸）
-    const nb = sorted[i + 1];
-    const nextTop = nb ? nb.y * eff - 5 : pageBottom;
-    const maxH = Math.max(minH, nextTop - top);
-    if (zhPart === undefined || zhPart === '') {
-      // 已匹配未译出：与正文同字号的浅灰占位（不打乱行距节奏）
-      const pending = document.createElement('div');
-      pending.className = 'dpv-pending';
-      pending.style.left = `${left + 2}px`;
-      pending.style.top = `${top + 2}px`;
-      pending.style.fontSize = `${fs * 0.82}px`;
-      pending.style.lineHeight = `${srcLineH}px`;
-      pending.textContent = '翻译中…';
-      layer.appendChild(pending);
-      continue;
-    }
-    const cap = document.createElement('div');
-    const isTitle = isHeading && (meta?.level ?? 9) <= 1;
-    cap.className = 'dpv-zhcap' + (isHeading ? ' heading' : '') + (isTitle ? ' center' : '') + (activePid === box.pid ? ' active' : '');
-    cap.dataset.pid = String(box.pid);
-    cap.style.left = `${left}px`;
-    cap.style.top = `${top}px`;
-    cap.style.width = `${width}px`;
-    cap.style.minHeight = `${minH}px`;
-    cap.style.fontSize = `${fs}px`;
-    cap.style.lineHeight = `${srcLineH}px`;  // 行距锁原文
-    // 中文论文习惯：长正文段首行缩进两字；标题/短行（图注公式）不缩进
-    if (!isHeading && zhPart.length >= 40) cap.style.textIndent = `${2 * fs}px`;
-    else cap.style.textIndent = '0';
-    cap.innerHTML = renderZhRich(zhPart, fs);
-    cap.onclick = () => onActive(box.pid);
-    layer.appendChild(cap);
-    // 自适应：正文过长先压行距（最低 82%），压不动再缩字号（最低 76%），仍溢出才折叠
-    let curFs = fs, curLH = srcLineH;
-    let guard = 0;
-    while (cap.scrollHeight > maxH && guard < 14) {
-      if (guard < 6 && curLH > srcLineH * 0.82) {
-        curLH *= 0.95; cap.style.lineHeight = `${curLH}px`;
-      } else if (curFs > baseFs * 0.76) {
-        curFs *= 0.94; cap.style.fontSize = `${curFs}px`;
-        cap.style.lineHeight = `${curLH}px`;
-      } else break;
-      guard++;
-    }
-    // 用户已点「展开」→ 胶囊保持折叠，点开弹出浮层卡片看全文（不动版面，避免覆盖下方内容）
-    if (cap.scrollHeight > maxH) {
-      cap.classList.add('collapsed');
-      cap.style.maxHeight = `${maxH}px`;
-      const more = document.createElement('span');
-      more.className = 'dpv-more';
-      more.style.fontSize = `${Math.max(9, fs * 0.9)}px`;
-      more.textContent = '展开全文';
-      // 主点击：激活段落；Ctrl/长文点击：浮层完整阅读
-      more.onclick = (ev) => { ev.stopPropagation(); showZhPopup(zhPart, fs, box.pid); };
-      cap.appendChild(more);
-    }
-  }
-}
-
-// 展开浮层：屏幕居中卡片，完整译文 + KaTeX，点击遮罩关闭
-function showZhPopup(fullZh: string, fs: number, pid: number) {
-  closeZhPopup();
-  const mask = document.createElement('div');
-  mask.className = 'dpv-popup-mask';
-  const card = document.createElement('div');
-  card.className = 'dpv-popup-card';
-  card.innerHTML = renderZhRich(fullZh, fs);
-  // 长公式块在浮层里恢复自然高度
-  card.querySelectorAll('.katex-display').forEach(el => (el as HTMLElement).style.margin = '0.4em 0');
-  const close = document.createElement('button');
-  close.className = 'dpv-popup-close';
-  close.textContent = '×';
-  close.onclick = closeZhPopup;
-  card.appendChild(close);
-  mask.appendChild(card);
-  mask.onclick = e => { if (e.target === mask) closeZhPopup(); };
-  document.body.appendChild(mask);
-  (window as any).__dpvPopupPid = pid;
-}
-function closeZhPopup() {
-  document.querySelector('.dpv-popup-mask')?.remove();
-  delete (window as any).__dpvPopupPid;
-}
-
-// 译文富文本：$...$/$$...$$ 用 KaTeX 渲染，其余转义
-function renderZhRich(s: string, fs: number): string {
-  const parts: { t: string; m: boolean; d: boolean }[] = [];
-  let rest = s;
-  const blockRe = /\$\$([\s\S]+?)\$\$/;
-  const inlineRe = /\$([^$\n]+?)\$/;
-  while (rest.length) {
-    const mb = rest.match(blockRe);
-    const mi = rest.match(inlineRe);
-    const bIdx = mb ? rest.indexOf(mb[0]) : -1;
-    const iIdx = mi ? rest.indexOf(mi[0]) : -1;
-    if (bIdx === -1 && iIdx === -1) { parts.push({ t: rest, m: false, d: false }); break; }
-    const useBlock = bIdx !== -1 && (iIdx === -1 || bIdx <= iIdx);
-    const m = useBlock ? mb! : mi!;
-    const idx = useBlock ? bIdx : iIdx;
-    if (idx > 0) parts.push({ t: rest.slice(0, idx), m: false, d: false });
-    parts.push({ t: m[1], m: true, d: useBlock });
-    rest = rest.slice(idx + m[0].length);
-  }
-  let html = '';
-  for (const p of parts) {
-    if (!p.m) { html += escapeZh(p.t); continue; }
-    try {
-      html += katex.renderToString(p.t, {
-        displayMode: p.d, throwOnError: false, strict: false,
-        trust: false, output: 'html',
-      });
-    } catch {
-      html += `<code>${escapeZh(p.t)}</code>`;
-    }
-  }
-  return html;
-}
-
-function setCollapsedGlobal(pid: number) {
-  window.dispatchEvent(new CustomEvent('dpv-expand', { detail: pid }));
-}
-
-function renderHl(layer: HTMLElement, pageBoxes: TextBlockBox[], canvas: HTMLCanvasElement, vp1: any, activePid: number) {
-  layer.innerHTML = '';
-  const eff = canvas.getBoundingClientRect().width / vp1.width;
-  for (const box of pageBoxes) {
-    if (box.pid !== activePid) continue;
-    const el = document.createElement('div');
-    el.className = 'dpv-hlbox';
-    el.style.left = `${box.x * eff - 4}px`;
-    el.style.top = `${box.y * eff - 4}px`;
-    el.style.width = `${box.w * eff + 8}px`;
-    el.style.height = `${box.h * eff + 8}px`;
-    layer.appendChild(el);
-  }
-}
-
-function escapeZh(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

@@ -44,6 +44,7 @@ interface Store {
   translating: boolean;
   translateProgress: { done: number; total: number } | null;
   fontSize: number;
+  lineHeight: number;   // 1.4–2.4，作用于文档流视图（translate/bilingual/zh）
   columnWidth: 'wide' | 'standard';
   immersive: boolean;
   paletteOpen: boolean;
@@ -57,6 +58,7 @@ interface Store {
   openPaper: (id: number) => Promise<void>;
   setLayout: (l: Store['layout']) => void;
   setFontSize: (n: number) => void;
+  setLineHeight: (n: number) => void;
   setColumnWidth: (w: 'wide' | 'standard') => void;
   setImmersive: (b: boolean) => void;
   setTranslating: (b: boolean, p?: { done: number; total: number } | null) => void;
@@ -78,6 +80,7 @@ export const useStore = create<Store>((set, get) => ({
   translating: false,
   translateProgress: null,
   fontSize: 15,
+  lineHeight: Number(localStorage.getItem('pr:lineHeight')) || 1.8,
   columnWidth: 'wide',
   immersive: false,
   paletteOpen: false,
@@ -99,6 +102,7 @@ export const useStore = create<Store>((set, get) => ({
   },
   setLayout: (l) => { localStorage.setItem('pr:layout', l); set({ layout: l }); },
   setFontSize: (n) => set({ fontSize: Math.max(12, Math.min(22, n)) }),
+  setLineHeight: (n) => { const v = Math.max(1.4, Math.min(2.4, Math.round(n * 10) / 10)); localStorage.setItem('pr:lineHeight', String(v)); set({ lineHeight: v }); },
   setColumnWidth: (w) => set({ columnWidth: w }),
   setImmersive: (b) => set({ immersive: b }),
   setTranslating: (b, p = null) => set({ translating: b, translateProgress: p }),

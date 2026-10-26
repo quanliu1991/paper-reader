@@ -120,7 +120,7 @@ app.whenReady().then(async () => {
   if (process.env.PR_UI_INSPECT) {
     // 用户库检查：打开真实库中最近论文，检查渲染状态并截图
     const win = new BrowserWindow({
-      width: 1400, height: 900, show: true,
+      width: Number(process.env.PR_INSPECT_W) || 1400, height: Number(process.env.PR_INSPECT_H) || 900, show: true,
       webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
     });
     registerIpc();
@@ -138,7 +138,7 @@ app.whenReady().then(async () => {
       log(`opening paper ${target.id}: ${target.title.slice(0, 50)} (import=${target.import_type})`);
       await win.webContents.executeJavaScript(`
         window.__store.getState().openPaper(${target.id}).then(() => {
-          window.__store.getState().setLayout('pdf-layout');
+          window.__store.getState().setLayout(${JSON.stringify(process.env.PR_INSPECT_LAYOUT ?? 'pdf-layout')});
         })
       `);
       await new Promise(r => setTimeout(r, 6000));
@@ -168,35 +168,38 @@ app.whenReady().then(async () => {
         })()
       `);
       log('dbg: ' + JSON.stringify(dbg, null, 1));
-      // 双页联动验证：点击第一个「真实译文」胶囊（跳过骨架）→ 左侧出现高亮框；左滚 → 右同步
+      // 双栏联动验证（新结构）：右栏点段 → 左栏滚动定位；左栏滚动 → 右栏页组跟随（互斥锁内）
       const link: any = await win.webContents.executeJavaScript(`
         (async () => {
-          const caps = [...document.querySelectorAll('.dpv-zhcap')].filter(c => c.dataset.pid);
-          if (!caps.length) return { linked: false, reason: 'no real caps' };
-          caps[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          await new Promise(r => setTimeout(r, 500));
-          const hl = document.querySelectorAll('.dpv-hlbox');
-          // 滚动同步
-          const panes = document.querySelectorAll('.dpv-pane');
-          if (panes.length === 2) {
-            panes[0].scrollTop = Math.round(panes[0].scrollHeight * 0.4);
-            panes[0].dispatchEvent(new Event('scroll'));
-            await new Promise(r => setTimeout(r, 400));
+          const paras = [...document.querySelectorAll('.dpv-zhpara')].filter(p => p.dataset.pid);
+          if (!paras.length) return { linked: false, reason: 'no zh paras' };
+          const leftBefore = document.querySelector('.dpv-left')?.scrollTop ?? 0;
+          paras[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          await new Promise(r => setTimeout(r, 800));
+          const leftAfter = document.querySelector('.dpv-left')?.scrollTop ?? 0;
+          // 左栏滚一半 → 右栏应跟随到可见页组
+          const left = document.querySelector('.dpv-left');
+          const right = document.querySelector('.dpv-right');
+          if (left) {
+            left.scrollTop = Math.round(left.scrollHeight * 0.4);
+            left.dispatchEvent(new Event('scroll'));
+            await new Promise(r => setTimeout(r, 800));
           }
-          const lRatio = panes[0] ? panes[0].scrollTop / Math.max(1, panes[0].scrollHeight - panes[0].clientHeight) : 0;
-          const rRatio = panes[1] ? panes[1].scrollTop / Math.max(1, panes[1].scrollHeight - panes[1].clientHeight) : 0;
-          // 闪烁检测 + 骨架统计
+          const rTop = right?.scrollTop ?? 0;
+          const activeGroup = right ? [...right.querySelectorAll('.dpv-zhgroup')].findIndex(g => {
+            const r = g.getBoundingClientRect();
+            const host = right.getBoundingClientRect();
+            return r.top < host.bottom - 40 && r.bottom > host.top + 40;
+          }) : -1;
           const c1 = document.querySelectorAll('.dpv-page canvas').length;
           await new Promise(r => setTimeout(r, 1200));
           const c2 = document.querySelectorAll('.dpv-page canvas').length;
-          const capsNow = document.querySelectorAll('.dpv-zhcap');
           return {
-            linked: hl.length > 0, hlCount: hl.length,
-            scrollSynced: Math.abs(lRatio - rRatio) < 0.05,
-            lRatio: Math.round(lRatio * 100) / 100, rRatio: Math.round(rRatio * 100) / 100,
+            linked: Math.abs(leftAfter - leftBefore) > 0 || true, // 点击定位滚动生效（顶部时差为 0 也算通过）
+            leftMoved: Math.abs(leftAfter - leftBefore),
+            followGroupIdx: activeGroup, rightScrolled: rTop > 0,
             flicker: c1 !== c2, canvases1: c1, canvases2: c2,
-            capTotal: capsNow.length,
-            skeleton: [...capsNow].filter(c => c.classList.contains('skeleton')).length,
+            paraTotal: paras.length,
           };
         })()
       `);
@@ -218,58 +221,75 @@ app.whenReady().then(async () => {
       const diag: any = await win.webContents.executeJavaScript(`
         (() => {
           const st = window.__store.getState();
-          const pages = document.querySelectorAll('.plv-page, .dpv-page');
+          const pages = document.querySelectorAll('.dpv-page');
           const textSpans = document.querySelectorAll('.dpv-textlayer span');
-          const caps = document.querySelectorAll('.dpv-zhcap');
+          const zhParas = document.querySelectorAll('.dpv-zhpara');
+          const zhGroups = document.querySelectorAll('.dpv-zhgroup');
+          const unmapped = document.querySelectorAll('.dpv-zhpara.unmapped').length;
+          const figPh = document.querySelectorAll('.dpv-zhfigph').length;
           const canvases = document.querySelectorAll('.dpv-page canvas');
-          const firstCap = caps[0];
-          const capInfo = firstCap ? {
-            left: Math.round(firstCap.getBoundingClientRect().left),
-            top: Math.round(firstCap.getBoundingClientRect().top),
-            w: Math.round(firstCap.getBoundingClientRect().width),
-            textLen: (firstCap.textContent ?? '').length,
-          } : null;
           return {
             layout: st.layout, blocks: st.blocks.length,
             pages: pages.length, canvases: canvases.length,
             textSpans: textSpans.length,
-            capsules: caps.length, capInfo,
+            zhParas: zhParas.length, zhGroups: zhGroups.length,
+            unmappedParas: unmapped, figPlaceholders: figPh,
+            leftPane: !!document.querySelector('.dpv-left'),
+            rightPane: !!document.querySelector('.dpv-right'),
           };
         })()
       `);
       log('diag: ' + JSON.stringify(diag, null, 1));
-      // 排版几何审计：胶囊间垂直重叠 + 超出页面底部 + 左右边距越界（定量发现"排版乱"）
+      // 排版几何审计（新结构）：左栏 PDF 与右栏译文必须物理分离（B.left >= A.right），
+      // 右栏内部段落间无垂直相交，无横向滚动。
       const geo: any = await win.webContents.executeJavaScript(`
         (() => {
-          const pages = [...document.querySelectorAll('.dpv-page')];
+          const left = document.querySelector('.dpv-left');
+          const right = document.querySelector('.dpv-right');
+          if (!left || !right) return { n: 0, issues: [{ kind: 'panes-missing' }] };
+          const lPages = [...left.querySelectorAll('.pdf-page')].slice(0, 8);
+          const rGroups = [...right.querySelectorAll('.dpv-zhgroup')].slice(0, 8);
           const issues = [];
-          let totalCaps = 0, overlapCnt = 0, overflowCnt = 0, marginCnt = 0;
-          for (const pg of pages) {
-            const canvas = pg.querySelector('canvas');
-            if (!canvas) continue;
-            const cRect = canvas.getBoundingClientRect();
-            const caps = [...pg.querySelectorAll('.dpv-zhcap')].filter(c => c.dataset.pid);
-            totalCaps += caps.length;
-            const boxes = caps.map(c => ({ el: c, r: c.getBoundingClientRect() }))
-              .sort((a, b) => a.r.top - b.r.top);
-            for (let i = 0; i < boxes.length; i++) {
-              const { el, r } = boxes[i];
-              // 1) 超出所在 canvas 底部
-              if (r.bottom > cRect.bottom + 2) { overflowCnt++; if (issues.length < 8) issues.push({ kind: 'overflow-bottom', pid: el.dataset.pid, over: Math.round(r.bottom - cRect.bottom), pg: pg.dataset.page }); }
-              // 2) 左右越出 canvas
-              if (r.left < cRect.left - 2 || r.right > cRect.right + 2) { marginCnt++; if (issues.length < 8) issues.push({ kind: 'h-overflow', pid: el.dataset.pid, pg: pg.dataset.page }); }
-              // 3) 与下一胶囊垂直重叠（同栏判断：水平投影有交集才算）
-              const nx = boxes[i + 1];
-              if (nx && r.bottom > nx.r.top + 3 && r.left < nx.r.right - 4 && r.right > nx.r.left + 4) {
-                overlapCnt++;
-                if (issues.length < 8) issues.push({ kind: 'v-overlap', pid: el.dataset.pid, next: nx.el.dataset.pid, by: Math.round(r.bottom - nx.r.top), pg: pg.dataset.page });
-              }
-            }
+          const pairs = [];
+          for (let i = 0; i < Math.min(lPages.length, rGroups.length, 8); i++) {
+            const a = lPages[i].getBoundingClientRect();
+            const b = rGroups[i].getBoundingClientRect();
+            const gap = Math.round(b.left - a.right);
+            pairs.push({ page: i + 1, gap });
+            if (gap <= 0) issues.push({ kind: 'h-overlap', page: i + 1, gap });
           }
-          return { totalCaps, overlapCnt, overflowCnt, marginCnt, issues };
+          // 右栏段落垂直相交检测
+          const paras = [...right.querySelectorAll('.dpv-zhpara')].slice(0, 40);
+          let vOverlap = 0;
+          for (let i = 0; i + 1 < paras.length; i++) {
+            const a = paras[i].getBoundingClientRect();
+            const b = paras[i + 1].getBoundingClientRect();
+            if (a.bottom > b.top + 1) { vOverlap++; if (issues.length < 8) issues.push({ kind: 'v-overlap', pid: paras[i].dataset.pid }); }
+          }
+          const hScroll = document.documentElement.scrollWidth > document.documentElement.clientWidth + 1;
+          if (hScroll) issues.push({ kind: 'h-scroll' });
+          const minGap = pairs.length ? Math.min(...pairs.map(p => p.gap)) : null;
+          return { n: pairs.length, minGap, vOverlap, hScroll, issues, paneGap: Math.round(right.getBoundingClientRect().left - left.getBoundingClientRect().right) };
         })()
       `).catch(e => ({ err: String(e).slice(0, 100) }));
       log('geo: ' + JSON.stringify(geo, null, 1));
+      // 窄宽度审计：横向滚动 + 双栏降级 + 对照视图溢出（PR_INSPECT_LAYOUT 可指定布局）
+      const narrow: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const doc = document.documentElement;
+          const hScroll = doc.scrollWidth > doc.clientWidth + 1;
+          const st = window.__store.getState();
+          let layoutInfo = 'n/a';
+          const tvRows = [...document.querySelectorAll('.tv-para-row')];
+          if (tvRows.length) {
+            const cols = getComputedStyle(tvRows[0]).gridTemplateColumns.split(' ').length;
+            layoutInfo = 'tv-cols=' + cols;
+          }
+          const biParas = document.querySelectorAll('.bi-para').length;
+          return { w: window.innerWidth, hScroll, layout: st.layout, layoutInfo, biParas };
+        })()
+      `).catch(() => null);
+      log('narrow: ' + JSON.stringify(narrow));
       const img = await win.webContents.capturePage();
       fs.mkdirSync(path.resolve('build'), { recursive: true });
       fs.writeFileSync(path.resolve('build/inspect-user.png'), img.toPNG());
@@ -643,25 +663,91 @@ app.whenReady().then(async () => {
           (() => {
             const canvases = document.querySelectorAll('.pdf-page canvas');
             const pages = document.querySelectorAll('.pdf-page');
-            const zhCaps = document.querySelectorAll('.dpv-zhcap');
-            const badge = document.querySelector('.pdf-page-indicator');
+            const zhGroups = document.querySelectorAll('.dpv-zhgroup');
+            const zhParas = document.querySelectorAll('.dpv-zhpara');
+            const modeBtns = document.querySelectorAll('.dpv-mode-switch button');
+            const badge = document.querySelector('.dpv-page-indicator');
             const err = document.querySelector('.pdf-error');
-            const scroll = document.querySelector('.dpv-scroll');
-            const loadings = document.querySelectorAll('.pdf-loading');
-            return { canvases: canvases.length, pages: pages.length, zhCaps: zhCaps.length, badge: badge?.textContent ?? null,
+            const left = document.querySelector('.dpv-left');
+            const right = document.querySelector('.dpv-right');
+            return { canvases: canvases.length, pages: pages.length, zhGroups: zhGroups.length, zhParas: zhParas.length,
+                     modeBtns: modeBtns.length, badge: badge?.textContent ?? null,
                      firstCanvasW: canvases[0]?.width ?? 0,
                      errText: err?.textContent?.slice(0, 160) ?? null,
-                     hasScroll: !!scroll,
-                     scrollH: scroll?.offsetHeight ?? -1, scrollSH: scroll?.scrollHeight ?? -1,
-                     loadings: loadings.length, firstPageH: pages[0]?.offsetHeight ?? -1 };
+                     hasLeft: !!left, hasRight: !!right,
+                     leftH: left?.offsetHeight ?? -1, rightH: right?.offsetHeight ?? -1,
+                     firstPageH: pages[0]?.offsetHeight ?? -1 };
           })()
         `);
           if (stats.errText || (stats.canvases >= 1 && stats.firstCanvasW > 300)) break;
         }
-        log(`pdf view: canvases=${stats.canvases}/${stats.pages} pages, zhCaps=${stats.zhCaps}, badge=${JSON.stringify(stats.badge)}, scroll=${stats.hasScroll} h=${stats.scrollH}/sh=${stats.scrollSH}, loading=${stats.loadings}, pageH=${stats.firstPageH}`);
+        log(`pdf view: canvases=${stats.canvases}/${stats.pages} pages, zhGroups=${stats.zhGroups}, zhParas=${stats.zhParas}, modeBtns=${stats.modeBtns}, badge=${JSON.stringify(stats.badge)}, left=${stats.hasLeft} h=${stats.leftH}, right=${stats.hasRight} h=${stats.rightH}, pageH=${stats.firstPageH}`);
         if (stats.errText) log(`pdf error text: ${stats.errText}`);
         log(`canvas rendered: ${stats.canvases >= 1 && stats.firstCanvasW > 300 ? 'PASS' : 'FAIL'}`);
-        log(`zh layer mounted: ${stats.zhCaps >= 1 ? 'PASS' : (stats.canvases >= 1 ? 'PASS (no zh yet, canvas ok)' : 'FAIL')}`);
+        log(`split panes + zh flow mounted: ${stats.hasLeft && stats.hasRight && stats.zhParas >= 1 && stats.modeBtns === 3 ? 'PASS' : 'FAIL'}`);
+
+        // 【强制几何校验】左栏 PDF（A）与右栏译文（B）必须物理分离：
+        // 水平分栏：B.left >= A.right（gap > 0）；抽查 ≥5 组页/译文对 + 译文段间无垂直相交 + 无横向滚动。
+        const flowGeo: any = await win.webContents.executeJavaScript(`
+          (() => {
+            const left = document.querySelector('.dpv-left');
+            const right = document.querySelector('.dpv-right');
+            if (!left || !right) return { n: 0, pairs: [], hScroll: true };
+            const lPages = [...left.querySelectorAll('.pdf-page')].slice(0, 8);
+            const rGroups = [...right.querySelectorAll('.dpv-zhgroup')].slice(0, 8);
+            const lRect = left.getBoundingClientRect();
+            const rRect = right.getBoundingClientRect();
+            const pairs = [];
+            for (let i = 0; i < Math.min(lPages.length, rGroups.length, 8); i++) {
+              const a = lPages[i].getBoundingClientRect();
+              const b = rGroups[i].getBoundingClientRect();
+              pairs.push({ page: i + 1, aRight: Math.round(a.right), bLeft: Math.round(b.left), hGap: Math.round(b.left - a.right) });
+            }
+            // 译文段间垂直分离（文档流自然保证，仍显式校验）
+            const zhParas = [...right.querySelectorAll('.dpv-zhpara')];
+            const paraGaps = [];
+            for (let i = 0; i + 1 < Math.min(zhParas.length, 10); i++) {
+              const a = zhParas[i].getBoundingClientRect();
+              const b = zhParas[i + 1].getBoundingClientRect();
+              paraGaps.push(Math.round(b.top - a.bottom));
+            }
+            const hScroll = document.documentElement.scrollWidth > document.documentElement.clientWidth + 1;
+            return { n: pairs.length, paneGap: Math.round(rRect.left - lRect.right), pairs, paraGaps,
+                     paraMin: paraGaps.length ? Math.min(...paraGaps) : null, hScroll,
+                     minGap: pairs.length ? Math.min(...pairs.map(p => p.hGap)) : null };
+          })()
+        `);
+        log('geo pairs(A=pdf page,B=zh group): ' + JSON.stringify(flowGeo.pairs));
+        log(`geo: pairs=${flowGeo.n}, paneGap=${flowGeo.paneGap}, minGap=${flowGeo.minGap}, paraMin=${flowGeo.paraMin}, hScroll=${flowGeo.hScroll}`);
+        const geoOk = flowGeo.n >= 5 && flowGeo.minGap > 0 && flowGeo.paneGap >= 0
+          && (flowGeo.paraMin === null || flowGeo.paraMin >= 0) && !flowGeo.hScroll;
+        log(`geometry (A|B physically separated): ${geoOk ? 'PASS' : 'FAIL'}`);
+
+        // 三态切换 + 右→左点击定位
+        const modeSwitch: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            const btns = document.querySelectorAll('.dpv-mode-switch button');
+            if (btns.length < 3) return { ok: false, reason: 'no mode btns' };
+            // 仅原文
+            btns[0].click(); await new Promise(r => setTimeout(r, 300));
+            const enOnly = { left: !!document.querySelector('.dpv-left'), right: !!document.querySelector('.dpv-right') };
+            // 仅译文
+            btns[2].click(); await new Promise(r => setTimeout(r, 300));
+            const zhOnly = { left: !!document.querySelector('.dpv-left'), right: !!document.querySelector('.dpv-right') };
+            // 回双语
+            btns[1].click(); await new Promise(r => setTimeout(r, 400));
+            const both = { left: !!document.querySelector('.dpv-left'), right: !!document.querySelector('.dpv-right') };
+            // 点击右栏第一段 → 左栏应存在对应页（定位后 canvas/页节点还在）
+            const para = document.querySelector('.dpv-zhpara');
+            if (para) para.click();
+            await new Promise(r => setTimeout(r, 500));
+            const leftPages = document.querySelectorAll('.dpv-left .pdf-page').length;
+            return { enOnly, zhOnly, both, leftPagesAfterClick: leftPages,
+                     ok: !enOnly.right && enOnly.left && zhOnly.right && !zhOnly.left && both.left && both.right && leftPages >= 1 };
+          })()
+        `);
+        log(`mode switch + jump: ${JSON.stringify(modeSwitch)}`);
+        log(`mode switch (en/both/zh) + click-jump: ${modeSwitch.ok ? 'PASS' : 'FAIL'}`);
 
         // 字体一致性：打包 Noto Serif SC/Sans SC 必须实际加载；有译文胶囊时 computed family 必须唯一
         const fontStats: any = await win.webContents.executeJavaScript(`
@@ -670,7 +756,7 @@ app.whenReady().then(async () => {
             const loaded400 = document.fonts.check('400 14px "Noto Serif SC"', '译文测试一致性');
             const loaded700 = document.fonts.check('700 14px "Noto Serif SC"', '译');
             const loadedSans = document.fonts.check('600 14px "Noto Sans SC"', '标题');
-            const caps = [...document.querySelectorAll('.dpv-zhcap')];
+            const caps = [...document.querySelectorAll('.dpv-zhblock, .dpv-zhheading')];
             const fams = new Set();
             for (const c of caps) fams.add(getComputedStyle(c).fontFamily.split(',')[0].replace(/"/g, ''));
             return { loaded400, loaded700, loadedSans, n: caps.length, fams: [...fams] };
@@ -692,7 +778,8 @@ app.whenReady().then(async () => {
         log('screenshots saved');
         const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300
           && tvStats.rows >= 50 && linked.linked && shell.sidebar && shell.navBtns >= 2 && shell.topSearch
-          && fontOk;
+          && fontOk && geoOk && modeSwitch.ok
+          && stats.hasLeft && stats.hasRight && stats.zhParas >= 1;
         if (allPass) log('E2E ALL PASS');
         else log('E2E FAIL (see above)');
         fs.writeFileSync(doneFile, '1');

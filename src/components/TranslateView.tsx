@@ -19,12 +19,14 @@ export default function TranslateView({
   const activeRef = useRef<number | null>(null);
   activeRef.current = activePid;
 
-  // 翻译流式刷新时自动滚动到第一个待翻译段落（跟读体验）
+  // 翻译流式刷新时的「跟读」体验：只在翻译刚开始时把第一个待翻译段带入视口，
+  // 之后不再劫持滚动（用户可能已经在读别处）。用户一旦手动滚动立即放弃。
   const containerRef = useRef<HTMLDivElement>(null);
+  const userScrolledRef = useRef(false);
   useEffect(() => {
-    if (!translating) return;
+    if (!translating) { userScrolledRef.current = false; return; }
     const host = containerRef.current;
-    if (!host) return;
+    if (!host || userScrolledRef.current) return;
     const firstPending = host.querySelector('.tv-pending-bar');
     if (firstPending) {
       const hostRect = host.getBoundingClientRect();
@@ -34,6 +36,14 @@ export default function TranslateView({
       }
     }
   }, [blocks, translating]);
+  useEffect(() => {
+    const host = containerRef.current?.parentElement;
+    if (!host) return;
+    const onScroll = () => { userScrolledRef.current = true; };
+    host.addEventListener('wheel', onScroll, { passive: true, once: true });
+    host.addEventListener('touchmove', onScroll, { passive: true, once: true });
+    return () => { host.removeEventListener('wheel', onScroll); host.removeEventListener('touchmove', onScroll); };
+  }, []);
 
   return (
     <div className={`translate-view fs-${fontSize}`} ref={containerRef} style={{ fontSize: `${fontSize}px` }}>
