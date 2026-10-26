@@ -340,7 +340,9 @@ export default function DualPdfView({
       // 直接跟随主导可见页（此前的 |prev-best|<=2 钳位会让逐页滚动时锚点永远停在旧页——正是失焦的根源）
       setVisiblePage(best);
       if (mode !== 'both') return;
-      // 右栏跟随：连续段落流模式——找 data-page=best 的第一个段落，不在视口则平滑滚过去
+      // 右栏跟随：连续段落流模式——找 data-page=best 的第一个段落，严格对齐到视口顶+12px。
+      // 验收标准：左右锚点误差 ≤50px。此前「已在视口就不滚」的跳过条件会让段落挂在视口中段
+      // （实测误差 224px），改为：与目标位偏差 >50px 就滚；≤50px 不动（防微调抖动/回环）。
       withSyncLock(() => {
         const right = rightScrollRef.current;
         if (!right) return;
@@ -348,7 +350,8 @@ export default function DualPdfView({
         if (!g) return;
         const rr = right.getBoundingClientRect();
         const gr = g.getBoundingClientRect();
-        if (gr.top < rr.top + 40 || gr.bottom > rr.bottom - 40) {
+        const targetTop = rr.top + 12;
+        if (Math.abs(gr.top - targetTop) > 50) {
           const top = Math.max(0, g.offsetTop - right.offsetTop - 12);
           progScrollRef.current = { side: 'right', top };
           right.scrollTo({ top, behavior: 'smooth' });
@@ -386,9 +389,14 @@ export default function DualPdfView({
           if (!left) return;
           const t = left.querySelector(`[data-page="${pg}"]`) as HTMLElement | null;
           if (t) {
-            const top = Math.max(0, t.offsetTop - left.offsetTop - 8);
-            progScrollRef.current = { side: 'left', top };
-            left.scrollTo({ top, behavior: 'smooth' });
+            // 与左→右同标准：目标位（视口顶+8px）偏差 >50px 才滚，≤50px 不动（防回环抖动）
+            const lr = left.getBoundingClientRect();
+            const tr = t.getBoundingClientRect();
+            if (Math.abs(tr.top - (lr.top + 8)) > 50) {
+              const top = Math.max(0, t.offsetTop - left.offsetTop - 8);
+              progScrollRef.current = { side: 'left', top };
+              left.scrollTo({ top, behavior: 'smooth' });
+            }
           }
         });
       }, 200);

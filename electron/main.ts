@@ -250,6 +250,16 @@ app.whenReady().then(async () => {
   // E2E 模式：加载测试脚本不创建窗口。
   // 防护：用户 shell 可能残留 PR_E2E/PR_PDF_E2E 变量（实测案例），
   // 入口文件不存在（打包版 asar 里没有）时直接落到正常启动，不再静默挂死。
+  if (process.env.PR_DEDUP_E2E) {
+    // 右栏重复检测 + 滚动同步误差 ≤50px 断言（npm run test:dedup-scroll）
+    const entry = path.join(__dirname, 'dedup-scroll-entry.js');
+    if (fs.existsSync(entry)) {
+      registerIpc(); // 测试要开窗口走真实 UI 链路，IPC 必须注册
+      const m = require(entry);
+      (m.runDedupScrollTest ?? m.default ?? m)();
+      return;
+    }
+  }
   if (process.env.PR_E2E) {
     const entry = path.join(__dirname, 'e2e-entry.js');
     if (fs.existsSync(entry)) {
@@ -1212,7 +1222,7 @@ function send(channel: string, payload: any) {
 }
 
 // ==================== IPC ====================
-function registerIpc() {
+export function registerIpc() {
   // ---------- papers ----------
   wrap('papers:list', () => db.listPapers());
   wrap('papers:get', (_e, id: number) => { db.touchPaper(id); return db.getPaper(id); });
