@@ -686,6 +686,16 @@ app.whenReady().then(async () => {
         log(`canvas rendered: ${stats.canvases >= 1 && stats.firstCanvasW > 300 ? 'PASS' : 'FAIL'}`);
         log(`split panes + zh flow mounted: ${stats.hasLeft && stats.hasRight && stats.zhParas >= 1 && stats.modeBtns === 3 ? 'PASS' : 'FAIL'}`);
 
+        // 等聚类完成（右栏页组齐备再做几何断言；上限 20s）
+        let clusterInfo: any = null;
+        for (let i = 0; i < 40; i++) {
+          clusterInfo = await win.webContents.executeJavaScript(`window.__dpvClusterDone ?? null`);
+          if (clusterInfo) break;
+          await new Promise(r => setTimeout(r, 500));
+        }
+        const zhGroupCount = await win.webContents.executeJavaScript(`document.querySelectorAll('.dpv-zhgroup[data-zhpage]').length`);
+        log(`cluster: done=${JSON.stringify(clusterInfo)}, zhGroups(mapped)=${zhGroupCount}`);
+
         // 【强制几何校验】左栏 PDF（A）与右栏译文（B）必须物理分离：
         // 水平分栏：B.left >= A.right（gap > 0）；抽查 ≥5 组页/译文对 + 译文段间无垂直相交 + 无横向滚动。
         const flowGeo: any = await win.webContents.executeJavaScript(`
@@ -749,6 +759,65 @@ app.whenReady().then(async () => {
         log(`mode switch + jump: ${JSON.stringify(modeSwitch)}`);
         log(`mode switch (en/both/zh) + click-jump: ${modeSwitch.ok ? 'PASS' : 'FAIL'}`);
 
+        // 字号缩放隔离：A+ 只动右栏 HTML 字号，左栏 PDF canvas 纹丝不动（原汁原味底线）
+        const zoomIso: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            // 轮询等 canvas 重渲染完（模式切换后懒渲染需要时间）
+            let c0 = null;
+            for (let i = 0; i < 20; i++) {
+              c0 = document.querySelector('.dpv-left .pdf-page canvas');
+              if (c0 && c0.getBoundingClientRect().width > 50) break;
+              await new Promise(r => setTimeout(r, 300));
+            }
+            const right = document.querySelector('.dpv-right');
+            if (!c0 || !right) return { ok: false, reason: 'panes missing' };
+            const w0 = c0.getBoundingClientRect().width, h0 = c0.getBoundingClientRect().height;
+            const fs0 = getComputedStyle(right).fontSize;
+            const zoomIn = [...document.querySelectorAll('.dpv-actions button')].find(b => (b.textContent ?? '').includes('+'));
+            if (!zoomIn) return { ok: false, reason: 'zoom btn missing' };
+            zoomIn.click(); zoomIn.click();
+            await new Promise(r => setTimeout(r, 300));
+            const c1 = document.querySelector('.dpv-left .pdf-page canvas');
+            const w1 = c1?.getBoundingClientRect().width ?? -1, h1 = c1?.getBoundingClientRect().height ?? -1;
+            const fs1 = getComputedStyle(right).fontSize;
+            return { w0: Math.round(w0), w1: Math.round(w1), h0: Math.round(h0), h1: Math.round(h1), fs0, fs1,
+                     ok: Math.abs(w1 - w0) < 0.5 && Math.abs(h1 - h0) < 0.5 && parseFloat(fs1) > parseFloat(fs0) };
+          })()
+        `);
+        log(`zoom isolation: w ${zoomIso.w0}->${zoomIso.w1}, h ${zoomIso.h0}->${zoomIso.h1}, right font ${zoomIso.fs0}->${zoomIso.fs1}`);
+        log(`zoom isolation (A+ affects right HTML only, PDF canvas untouched): ${zoomIso.ok ? 'PASS' : 'FAIL'}`);
+
+        // 视觉锚点联动：左滚到第 2 页中部 → 右栏该页组 page-active 锚线；右点段落（含 pending）→ 左栏 .dpv-flash 闪现后消失
+        const anchor: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            const L = document.querySelector('.dpv-left');
+            const R = document.querySelector('.dpv-right');
+            if (!L || !R) return { ok: false, reason: 'panes missing' };
+            const p2 = L.querySelector('[data-page="2"]');
+            if (!p2) return { ok: false, reason: 'page2 missing' };
+            L.scrollTop = p2.offsetTop + p2.offsetHeight / 2 - 100; L.dispatchEvent(new Event('scroll'));
+            await new Promise(r => setTimeout(r, 1200));
+            const activePages = [...R.querySelectorAll('.dpv-zhgroup.page-active')].map(g => g.dataset.zhpage);
+            // 找一段有映射（有 data-pid 且其 pid 有 box）的段落点击，pending 段也可（点击 p 本体走 jumpToPid）
+            const paras = [...R.querySelectorAll('.dpv-zhpara[data-pid]')];
+            let para = null;
+            for (const p of paras) {
+              const pid = Number(p.dataset.pid);
+              if (window.__dpvBoxesPids && window.__dpvBoxesPids.includes(pid)) { para = p; break; }
+            }
+            if (!para) para = paras[0];
+            if (!para) return { ok: false, reason: 'no para', activePages };
+            para.click();
+            await new Promise(r => setTimeout(r, 250));
+            const flashShown = !!L.querySelector('.dpv-flash');
+            await new Promise(r => setTimeout(r, 1000));
+            const flashGone = !L.querySelector('.dpv-flash');
+            return { activePages, flashShown, flashGone, ok: activePages.includes('2') && flashShown && flashGone };
+          })()
+        `);
+        log(`anchor sync: ${JSON.stringify(anchor)}`);
+        log(`anchor sync (page-active rail + click flash box): ${anchor.ok ? 'PASS' : 'FAIL'}`);
+
         // 字体一致性：打包 Noto Serif SC/Sans SC 必须实际加载；有译文胶囊时 computed family 必须唯一
         const fontStats: any = await win.webContents.executeJavaScript(`
           (async () => {
@@ -767,9 +836,20 @@ app.whenReady().then(async () => {
           && (fontStats.n === 0 || (fontStats.fams.length === 1 && fontStats.fams[0] === 'Noto Serif SC'));
         log(`font consistency: ${fontOk ? 'PASS' : 'FAIL'}`);
 
+        // 截图前复位到顶部（锚点测试滚到了第 2 页），保证截图是首屏干净状态
+        await win.webContents.executeJavaScript(`
+          (async () => {
+            const L = document.querySelector('.dpv-left');
+            const R = document.querySelector('.dpv-right');
+            if (L) { L.scrollTop = 0; L.dispatchEvent(new Event('scroll')); }
+            if (R) R.scrollTop = 0;
+            await new Promise(r => setTimeout(r, 600));
+          })()
+        `);
         const img = await win.webContents.capturePage();
         fs.mkdirSync(path.resolve('build'), { recursive: true });
         fs.writeFileSync(path.resolve('build/pdf-ui-e2e.png'), img.toPNG());
+        log(`screenshot: split view captured (zhGroups=${zhGroupCount}, cluster=${JSON.stringify(clusterInfo)})`);
         // translate 视图单独截图（切回去再截）
         await win.webContents.executeJavaScript(`window.__store.getState().setLayout('translate')`);
         await new Promise(r => setTimeout(r, 800));
@@ -778,8 +858,9 @@ app.whenReady().then(async () => {
         log('screenshots saved');
         const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300
           && tvStats.rows >= 50 && linked.linked && shell.sidebar && shell.navBtns >= 2 && shell.topSearch
-          && fontOk && geoOk && modeSwitch.ok
-          && stats.hasLeft && stats.hasRight && stats.zhParas >= 1;
+          && fontOk && geoOk && modeSwitch.ok && zoomIso.ok && anchor.ok
+          && stats.hasLeft && stats.hasRight && stats.zhParas >= 1
+          && clusterInfo && zhGroupCount >= 5;
         if (allPass) log('E2E ALL PASS');
         else log('E2E FAIL (see above)');
         fs.writeFileSync(doneFile, '1');
@@ -1141,6 +1222,12 @@ function registerIpc() {
         if (cancelled || ctl.signal.aborted) return;
         const item = queue.shift();
         if (!item) return;
+        // 守卫 1：空/超短 block 不送翻译（LLM 会回客套话污染译文库）
+        if (!item.en || item.en.replace(/\s+/g, '').length < 3) {
+          done++;
+          e.sender.send('tr:progress', { pid: item.pid, err: 'skipped-empty', done, total: arg.blocks.length });
+          continue;
+        }
         // 拿最新全篇状态（含本批刚译完的段落 → 术语承接）
         const blocksNow = (db.getBlocks(arg.paperId) as any[]).map((b: any) => ({
           pid: b.pid, seq: b.seq, type: b.type, level: b.level, en: b.en, zh: b.zh,
@@ -1160,7 +1247,10 @@ function registerIpc() {
           }
         }
         done++;
-        if (zh.ok) {
+        // 守卫 2：译文是客套话/拒答 → 不落库（视为失败，UI 显示待翻译占位）
+        if (zh.ok && looksLikeChitchat(item.en, zh.text ?? '')) {
+          e.sender.send('tr:progress', { pid: item.pid, err: 'chitchat-guard', done, total: arg.blocks.length });
+        } else if (zh.ok) {
           db.saveTranslation(arg.paperId, item.pid, zh.text!, providerCfg.name, providerCfg.model);
           e.sender.send('tr:progress', { pid: item.pid, zh: zh.text, done, total: arg.blocks.length });
         } else {
@@ -1215,6 +1305,21 @@ function registerIpc() {
       .replace(/\n?```\s*$/i, '')
       .replace(/^(?:译文|翻译)\s*[：:]\s*\n?/i, '')
       .trim();
+  }
+
+  // 客套话检测：LLM 对空输入/异常输入回复的「好的，请提供…」类文本，不是译文
+  const CHITCHAT_PATTERNS = [
+    /请(?:提供|发送|输入)(?:您)?(?:需要翻译|要翻译|的英文)/,
+    /请(?:提供|发送)(?:需要|要)?翻译的?(?:英文|段落|文本|内容)/,
+    /没有(?:提供|输入|收到).{0,12}(?:英文|文本|段落|内容)/,
+    /^(?:好的|当然|抱歉)[，,。].{0,25}(?:翻译|英文|段落)/,
+    /nothing to translate|no (?:english )?text (?:provided|to translate)/i,
+  ];
+  function looksLikeChitchat(en: string, zh: string): boolean {
+    const t = zh.trim();
+    if (!t) return true;
+    if (en.replace(/\s+/g, '').length >= 3 && t.length < 18 && /^(?:好的|当然|抱歉|明白了)/.test(t)) return true;
+    return CHITCHAT_PATTERNS.some(re => re.test(t));
   }
 
   function loadGlossaryForTranslation(): string {

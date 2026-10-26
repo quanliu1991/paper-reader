@@ -7,7 +7,7 @@ import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
 import BilingualView from './BilingualView';
 import DualPdfView from './DualPdfView';
-import { IconBack, IconExport, IconImmersive } from './icons';
+import { IconBack, IconExport, IconImmersive, IconMore } from './icons';
 
 const HL_COLORS = [
   { id: 'yellow', label: '黄', bg: '#fff3b0' },
@@ -45,6 +45,8 @@ export default function Reader() {
   const [, setSelectedPid] = useState<number | null>(null);
   // 翻译版 PDF 导出
   const [exporting, setExporting] = useState(false);
+  // 工具栏「更多」菜单
+  const [moreOpen, setMoreOpen] = useState(false);
   const isPdfLayout = layout === 'pdf-layout';
 
   // 打开论文时探测 PDF + 构建 pageMap
@@ -158,6 +160,7 @@ export default function Reader() {
         useStore.getState().setImmersive(!useStore.getState().immersive);
       } else if (e.key === 'Escape') {
         setPopover(null);
+        setMoreOpen(false);
         if (useStore.getState().immersive) useStore.getState().setImmersive(false);
       }
     };
@@ -309,20 +312,46 @@ export default function Reader() {
           </div>
           <div className="toolbar-actions">
             {layout !== 'pdf-layout' && (
-              <>
-                <button onClick={() => useStore.getState().setFontSize(fontSize - 1)} title="缩小字号">A-</button>
+              <div className="font-stepper" role="group" aria-label="字号">
+                <button onClick={() => useStore.getState().setFontSize(fontSize - 1)} title="缩小字号">A−</button>
+                <span className="font-val" title="当前字号（点击复位）" onClick={() => useStore.getState().setFontSize(16)}>{fontSize}</span>
                 <button onClick={() => useStore.getState().setFontSize(fontSize + 1)} title="放大字号">A+</button>
-                <button onClick={() => useStore.getState().setLineHeight(useStore.getState().lineHeight - 0.2)} title="收紧行距">⇕-</button>
-                <button onClick={() => useStore.getState().setLineHeight(useStore.getState().lineHeight + 0.2)} title="放宽行距">⇕+</button>
-                <button onClick={() => useStore.getState().setColumnWidth(columnWidth === 'wide' ? 'standard' : 'wide')} title="切换栏宽">
-                  {columnWidth === 'wide' ? '⇤⇥' : '⇤ ⇥'}
-                </button>
-              </>
+              </div>
             )}
-            <button className="icon-btn" onClick={() => useStore.getState().setImmersive(true)} title="沉浸模式 Ctrl+Shift+F"><IconImmersive /></button>
-            <button className="icon-btn" onClick={exportTranslatedPdf} title="导出翻译版 PDF" disabled={exporting}>
-              {exporting ? '…' : <IconExport />}
-            </button>
+            <div className={`more-menu ${moreOpen ? 'open' : ''}`}>
+              <button className="icon-btn" onClick={() => setMoreOpen(v => !v)} title="更多操作" aria-haspopup="menu" aria-expanded={moreOpen}>
+                <IconMore />
+              </button>
+              {moreOpen && (
+                <>
+                  <div className="more-backdrop" onClick={() => setMoreOpen(false)} />
+                  <div className="more-popover" role="menu">
+                    <button role="menuitem" onClick={() => { setMoreOpen(false); useStore.getState().setImmersive(true); }}>
+                      <IconImmersive /> 沉浸模式 <span className="kbd">Ctrl+Shift+F</span>
+                    </button>
+                    <button role="menuitem" onClick={() => { setMoreOpen(false); exportTranslatedPdf(); }} disabled={exporting}>
+                      <IconExport /> {exporting ? '导出中…' : '导出翻译版 PDF'}
+                    </button>
+                    {layout !== 'pdf-layout' && (
+                      <>
+                        <div className="more-sep" />
+                        <div className="more-row" role="group" aria-label="行距">
+                          <span>行距</span>
+                          <button onClick={() => useStore.getState().setLineHeight(useStore.getState().lineHeight - 0.2)} title="收紧行距">−</button>
+                          <button onClick={() => useStore.getState().setLineHeight(useStore.getState().lineHeight + 0.2)} title="放宽行距">+</button>
+                        </div>
+                        <div className="more-row" role="group" aria-label="栏宽">
+                          <span>栏宽</span>
+                          <button onClick={() => useStore.getState().setColumnWidth(columnWidth === 'wide' ? 'standard' : 'wide')}>
+                            {columnWidth === 'wide' ? '标准' : '加宽'}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
             {translating ? (
               <button className="danger" onClick={cancelTranslate} title="取消翻译">
                 翻译中 {progress?.done ?? 0}/{progress?.total ?? 0} · 取消

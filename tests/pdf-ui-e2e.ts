@@ -53,6 +53,10 @@ app.whenReady().then(async () => {
     `);
     await new Promise(r => setTimeout(r, 5000));
 
+    // 临时诊断：聚类匹配真实状态
+    const dbg = await win.webContents.executeJavaScript(`window.__dpvDebug ?? null`);
+    log(`dpv cluster debug: ${JSON.stringify(dbg)}`);
+
     // ---- 阶段 1：双栏结构 + canvas ----
     const stats = await win.webContents.executeJavaScript(`
       (() => {
@@ -159,6 +163,55 @@ app.whenReady().then(async () => {
     log(`mode switch + jump + sync: ${JSON.stringify(mode)}`);
     log(`mode switch (en/both/zh) + click-jump + scroll-follow + anti-loop: ${mode.ok ? 'PASS' : 'FAIL'}`);
 
+    // ---- 阶段 3b：字号缩放隔离（A+ 只动右栏 HTML，PDF canvas 纹丝不动）----
+    const zoomIso = await win.webContents.executeJavaScript(`
+      (async () => {
+        const c0 = document.querySelector('.dpv-left .pdf-page canvas');
+        const right = document.querySelector('.dpv-right');
+        if (!c0 || !right) return { ok: false, reason: 'panes missing' };
+        const w0 = c0.getBoundingClientRect().width, h0 = c0.getBoundingClientRect().height;
+        const fs0 = getComputedStyle(right).fontSize;
+        const zoomIn = [...document.querySelectorAll('.dpv-actions button')].find(b => b.textContent?.includes('+'));
+        if (!zoomIn) return { ok: false, reason: 'zoom btn missing' };
+        zoomIn.click(); zoomIn.click(); await new Promise(r => setTimeout(r, 300));
+        const c1 = document.querySelector('.dpv-left .pdf-page canvas');
+        const w1 = c1?.getBoundingClientRect().width ?? 0, h1 = c1?.getBoundingClientRect().height ?? 0;
+        const fs1 = getComputedStyle(right).fontSize;
+        // A+ 后：canvas 尺寸不变（<0.5px 视为不变），右栏字号变大
+        return { w0: Math.round(w0), w1: Math.round(w1), h0: Math.round(h0), h1: Math.round(h1), fs0, fs1,
+                 ok: Math.abs(w1 - w0) < 0.5 && Math.abs(h1 - h0) < 0.5 && parseFloat(fs1) > parseFloat(fs0) };
+      })()
+    `);
+    log(`zoom isolation: ${JSON.stringify(zoomIso)}`);
+    log(`zoom isolation (A+ affects right HTML only, canvas untouched): ${zoomIso.ok ? 'PASS' : 'FAIL'}`);
+
+    // ---- 阶段 3c：视觉锚点联动（左滚 → 右栏当前页组锚线；右点段 → 左栏闪烁框）----
+    const anchor = await win.webContents.executeJavaScript(`
+      (async () => {
+        const L = document.querySelector('.dpv-left');
+        const R = document.querySelector('.dpv-right');
+        if (!L || !R) return { ok: false, reason: 'panes missing' };
+        // 左栏滚到第 2 页附近 → 右栏出现 page-active 页组
+        const p2 = L.querySelector('[data-page="2"]');
+        if (!p2) return { ok: false, reason: 'page2 missing' };
+        L.scrollTop = p2.offsetTop - 8; L.dispatchEvent(new Event('scroll'));
+        await new Promise(r => setTimeout(r, 1000));
+        const activeGroups = [...R.querySelectorAll('.dpv-zhgroup.page-active')].map(g => g.dataset.zhpage);
+        // 右栏点一段有映射的译文 → 左栏出现 .dpv-flash 且 900ms 后消失
+        const para = [...R.querySelectorAll('.dpv-zhpara')].find(p => p.textContent?.trim() && !p.querySelector('.dpv-zhpending'));
+        if (!para) return { ok: false, reason: 'no zh para', activeGroups };
+        para.click();
+        await new Promise(r => setTimeout(r, 200));
+        const flashShown = !!L.querySelector('.dpv-flash');
+        await new Promise(r => setTimeout(r, 1000));
+        const flashGone = !L.querySelector('.dpv-flash');
+        return { activeGroups, flashShown, flashGone,
+                 ok: activeGroups.includes('2') && flashShown && flashGone };
+      })()
+    `);
+    log(`anchor sync: ${JSON.stringify(anchor)}`);
+    log(`anchor sync (page-active rail + click flash box): ${anchor.ok ? 'PASS' : 'FAIL'}`);
+
     // ---- 阶段 4：字体 ----
     const fontStats = await win.webContents.executeJavaScript(`
       (async () => {
@@ -179,7 +232,7 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.resolve('build/pdf-ui-e2e.png'), img.toPNG());
     log('screenshot saved');
 
-    const allPass = structOk && geoOk && mode.ok && fontOk;
+    const allPass = structOk && geoOk && mode.ok && zoomIso.ok && anchor.ok && fontOk;
     if (allPass) log('E2E ALL PASS');
     else log('E2E FAIL (see above)');
   } catch (e: any) {

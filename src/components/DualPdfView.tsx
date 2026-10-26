@@ -15,6 +15,7 @@ export interface TextBlockBox {
   pid: number;
   page: number;
   x: number; y: number; w: number; h: number;
+  pageW: number; pageH: number;
   textLen: number;
   lineH: number;
 }
@@ -35,6 +36,7 @@ export default function DualPdfView({
   const [numPages, setNumPages] = useState(0);
   const [error, setError] = useState('');
   const [boxes, setBoxes] = useState<TextBlockBox[]>([]);
+  const [clusterDone, setClusterDone] = useState(false);
   const [visiblePage, setVisiblePage] = useState(1);
   const [failedPages, setFailedPages] = useState<Set<number>>(new Set());
   const renderedRef = useRef<Set<number>>(new Set());
@@ -64,7 +66,7 @@ export default function DualPdfView({
   // 1) 换论文时加载 PDF 文档
   useEffect(() => {
     let cancelled = false;
-    setDoc(null); setError(''); setNumPages(0); setBoxes([]); setFailedPages(new Set());
+    setDoc(null); setError(''); setNumPages(0); setBoxes([]); setClusterDone(false); setFailedPages(new Set());
     renderedRef.current.clear();
     hostsRef.current.clear();
     requestedTx.current.clear();
@@ -87,20 +89,24 @@ export default function DualPdfView({
     [blocks],
   );
 
-  // 2) 文档就绪 → 聚类匹配（pid → page 映射）
+  // 2) 文档就绪 → 聚类匹配（pid → page 映射）。逐页增量 setBoxes：
+  // 右栏页组渐进出现，不等全部页聚类完（长文首屏更快，E2E 不再受全量耗时抖动）。
   useEffect(() => {
     if (!doc) return;
     let cancelled = false;
     (async () => {
       const blockNorms = blocksRef.current.filter(b => b.type !== 'fig')
         .map(b => ({ pid: b.pid, norm: normText(b.en) })).filter(x => x.norm.length >= 6);
-      const all: TextBlockBox[] = [];
+      let all: TextBlockBox[] = [];
       for (let p = 1; p <= Math.min(doc.numPages, 60); p++) {
         const page = await doc.getPage(p);
-        all.push(...clusterTextItems(await page.getTextContent(), page.getViewport({ scale: 1 }), p, blockNorms));
+        all = all.concat(clusterTextItems(await page.getTextContent(), page.getViewport({ scale: 1 }), p, blockNorms));
         if (cancelled) return;
+        setBoxes(all);
       }
-      if (!cancelled) setBoxes(all);
+      setClusterDone(true);
+      (window as any).__dpvClusterDone = { pages: Math.min(doc.numPages, 60), matched: all.filter(b => b.pid).length };
+      (window as any).__dpvBoxesPids = all.filter(b => b.pid).map(b => b.pid);
     })();
     return () => { cancelled = true; };
   }, [doc, enKey]);
@@ -226,9 +232,11 @@ export default function DualPdfView({
     }
   }, [translatePageIfNeeded]);
 
-  // 5) 左栏懒渲染：只观察视口 ±2 页（rootMargin 控制），canvas 已渲染页不重复
+  // 5) 左栏懒渲染：只观察视口 ±2 页（rootMargin 控制），canvas 已渲染页不重复。
+  // mode 从 zh 切回时左栏 DOM 重挂载（旧 canvas 丢失），必须清 renderedRef 让全部页重渲染。
   useEffect(() => {
     if (!doc || !numPages || mode === 'zh') return;
+    renderedRef.current.clear();
     const hosts = leftScrollRef.current?.querySelectorAll('[data-page]');
     if (!hosts?.length) return;
     const io = new IntersectionObserver(entries => {
@@ -245,6 +253,7 @@ export default function DualPdfView({
   // 右→左：仅点击触发（页头/段落），不自动跟随——避免两侧抢方向盘。
   const syncingRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const withSyncLock = (fn: () => void) => {
     if (syncingRef.current) return;
     syncingRef.current = true;
@@ -252,6 +261,27 @@ export default function DualPdfView({
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(() => { syncingRef.current = false; }, 150);
   };
+
+  // 右→左 段落级闪烁定位框：在左栏 canvas 上按 boxes 几何百分比画一个 800ms 渐隐高亮
+  // （半透明背景 + 呼吸边框，不遮挡文字——纯视觉反馈层）
+  const flashBoxAt = useCallback((pid: number) => {
+    const box = boxesRef.current.find(b => b.pid === pid);
+    const host = box ? hostsRef.current.get(box.page) : null;
+    if (!box || !host) return false;
+    host.querySelectorAll('.dpv-flash').forEach(el => el.remove());
+    const vp1W = box.pageW, vp1H = box.pageH;
+    if (!vp1W || !vp1H) return false;
+    const fl = document.createElement('div');
+    fl.className = 'dpv-flash';
+    fl.style.left = `${(box.x / vp1W) * 100}%`;
+    fl.style.top = `${(box.y / vp1H) * 100}%`;
+    fl.style.width = `${(box.w / vp1W) * 100}%`;
+    fl.style.height = `${(box.h / vp1H) * 100}%`;
+    host.appendChild(fl);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => fl.remove(), 900);
+    return true;
+  }, []);
 
   // 左栏可见页追踪 + 驱动右栏跟随 + 按需翻译
   useEffect(() => {
@@ -267,7 +297,8 @@ export default function DualPdfView({
         }
       }
       if (!best) return;
-      setVisiblePage(prev => (Math.abs(prev - best) > 2 ? best : prev));
+      // 直接跟随主导可见页（此前的 |prev-best|<=2 钳位会让逐页滚动时锚点永远停在旧页——正是失焦的根源）
+      setVisiblePage(best);
       if (mode !== 'both') return;
       // 右栏跟随：目标页组不在视口时滚过去（在视口则不动，防抖动）
       withSyncLock(() => {
@@ -297,9 +328,12 @@ export default function DualPdfView({
   }, []);
   const jumpToPid = useCallback((pid: number) => {
     const box = boxesRef.current.find(b => b.pid === pid);
-    if (box) jumpToPage(box.page);
+    if (box) {
+      jumpToPage(box.page);
+      flashBoxAt(pid);
+    }
     setActivePid(pid);
-  }, [jumpToPage]);
+  }, [jumpToPage, flashBoxAt]);
 
   // activePid 高亮：作用于右栏段落本身（背景色 + 左线，非悬浮层）
   useEffect(() => {
@@ -354,6 +388,8 @@ export default function DualPdfView({
               unmapped={unmapped}
               numPages={numPages}
               activePid={activePid}
+              activePage={mode === 'both' ? visiblePage : 0}
+              clusterDone={clusterDone}
               onJumpPage={jumpToPage}
               onJumpPid={jumpToPid}
               onRetry={retryTranslate}
@@ -368,13 +404,15 @@ export default function DualPdfView({
 // ---------- 右栏译文流（纯文档流） ----------
 
 const ZhFlow = memo(function ZhFlow({
-  blocks, pidsByPage, unmapped, numPages, activePid, onJumpPage, onJumpPid, onRetry,
+  blocks, pidsByPage, unmapped, numPages, activePid, activePage, clusterDone, onJumpPage, onJumpPid, onRetry,
 }: {
   blocks: BlockRow[];
   pidsByPage: Map<number, number[]>;
   unmapped: number[];
   numPages: number;
   activePid: number;
+  activePage: number;
+  clusterDone: boolean;
   onJumpPage: (p: number) => void;
   onJumpPid: (pid: number) => void;
   onRetry: (pid: number) => void;
@@ -406,7 +444,7 @@ const ZhFlow = memo(function ZhFlow({
         const figs = figByPage.get(pg) ?? [];
         if (!pids.length && !figs.length) return null;
         return (
-          <section key={pg} className="dpv-zhgroup" data-zhpage={pg}>
+          <section key={pg} className={`dpv-zhgroup${pg === activePage ? ' page-active' : ''}`} data-zhpage={pg}>
             <div className="dpv-zhgroup-head" onClick={() => onJumpPage(pg)} role="button" tabIndex={0}
               onKeyDown={e => { if (e.key === 'Enter') onJumpPage(pg); }} title="点击定位左栏该页">
               — 第 {pg} 页 —
@@ -424,8 +462,8 @@ const ZhFlow = memo(function ZhFlow({
           </section>
         );
       })}
-      {/* 未映射段落：不丢弃，统一收尾展示（保持全文连贯），弱视觉标识 */}
-      {unmapped.length > 0 && (
+      {/* 未映射段落：聚类全部完成后统一收尾展示（过程中段落还在页组间迁移，先不渲染避免闪烁） */}
+      {clusterDone && unmapped.length > 0 && (
         <section className="dpv-zhgroup unmapped-group">
           <div className="dpv-zhgroup-head">— 未定位页码的段落 —</div>
           {unmapped.map(pid => {
@@ -448,7 +486,33 @@ const ZhBlock = memo(function ZhBlock({
   onRetry: (pid: number) => void;
   unmapped?: boolean;
 }) {
+  // 渲染兜底：客套话/拒答类脏译文不当正文渲染（heading 回退原文，正文隐藏保干净）
+  const dirty = b.zh ? looksLikeChitchatZh(b.zh) : false;
+  const showZh = b.zh && !dirty;
   const cls = `dpv-zhpara ${b.type === 'heading' ? 'heading' : ''} ${active ? 'active' : ''} ${unmapped ? 'unmapped' : ''}`;
+  if (dirty && b.type === 'heading') {
+    return (
+      <p className={cls} data-pid={b.pid} onClick={() => onJump(b.pid)} title="点击定位左栏原文页">
+        <RichText text={b.en} />
+      </p>
+    );
+  }
+  if (!showZh) {
+    return (
+      <p
+        className={cls}
+        data-pid={b.pid}
+        onClick={() => onJump(b.pid)}
+        title={unmapped ? '该段未与 PDF 建立精准映射' : '点击定位左栏原文页'}
+      >
+        <span className="dpv-zhpending" onClick={e => { e.stopPropagation(); onRetry(b.pid); }}
+          role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); onRetry(b.pid); } }}
+          title="点击重试翻译">
+          <span className="dot" /><span className="dot" /><span className="dot" />待翻译
+        </span>
+      </p>
+    );
+  }
   return (
     <p
       className={cls}
@@ -456,16 +520,24 @@ const ZhBlock = memo(function ZhBlock({
       onClick={() => onJump(b.pid)}
       title={unmapped ? '该段未与 PDF 建立精准映射' : '点击定位左栏原文页'}
     >
-      {b.zh
-        ? <RichText text={b.zh} />
-        : <span className="dpv-zhpending" onClick={e => { e.stopPropagation(); onRetry(b.pid); }}
-            role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); onRetry(b.pid); } }}
-            title="点击重试翻译">
-            <span className="dot" /><span className="dot" /><span className="dot" />待翻译
-          </span>}
+      <RichText text={b.zh ?? ''} />
     </p>
   );
 });
+
+// 客套话检测（与 main.ts 守卫同规则的前端兜底）
+const ZH_CHITCHAT_RE = [
+  /请(?:提供|发送|输入)(?:您)?(?:需要翻译|要翻译|的英文)/,
+  /请(?:提供|发送)(?:需要|要)?翻译的?(?:英文|段落|文本|内容)/,
+  /没有(?:提供|输入|收到).{0,12}(?:英文|文本|段落|内容)/,
+  /^(?:好的|当然|抱歉|明白了)[，,。].{0,25}(?:翻译|英文|段落)/,
+  /nothing to translate|no (?:english )?text (?:provided|to translate)/i,
+];
+function looksLikeChitchatZh(zh: string): boolean {
+  const t = zh.trim();
+  if (!t) return true;
+  return ZH_CHITCHAT_RE.some(re => re.test(t));
+}
 
 // ---------- 文本归一化 + 聚类匹配（沿用既有算法） ----------
 
@@ -563,7 +635,7 @@ function clusterTextItems(tc: any, vp1: any, page: number, blockNorms: { pid: nu
     const right = Math.max(...c.items.map(i => i.transform[4] + i.width));
     const pdfTop = Math.max(...c.items.map(i => i.transform[5] + (i.height ?? 10)));
     const pdfBottom = Math.min(...c.items.map(i => i.transform[5]));
-    out.push({ pid, page, textLen: norm.length, x, y: vpH - pdfTop, w: right - x, h: Math.max(8, pdfTop - pdfBottom), lineH: Math.max(6, lineH) });
+    out.push({ pid, page, textLen: norm.length, x, y: vpH - pdfTop, w: right - x, h: Math.max(8, pdfTop - pdfBottom), pageW: vpW, pageH: vpH, lineH: Math.max(6, lineH) });
   }
   return out;
 }
