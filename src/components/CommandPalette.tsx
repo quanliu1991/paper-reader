@@ -42,6 +42,7 @@ export default function CommandPalette() {
     out.push(
       { id: 'act-import', label: '导入 arXiv 论文', hint: '动作', keywords: 'import arxiv 导入', run: () => { useStore.getState().setView('list'); setTimeout(() => document.querySelector<HTMLInputElement>('.import-row input')?.focus(), 100); } },
       { id: 'act-layout-dual', label: '切换到双栏对照', hint: '布局', keywords: 'layout dual 对照 双栏', run: () => useStore.getState().setLayout('dual') },
+      { id: 'act-layout-bilingual', label: '切换到双语书模式', hint: '布局', keywords: 'layout bilingual 双语 书 交错', run: () => useStore.getState().setLayout('bilingual') },
       { id: 'act-layout-en', label: '切换到仅原文', hint: '布局', keywords: 'layout en 原文', run: () => useStore.getState().setLayout('en') },
       { id: 'act-layout-zh', label: '切换到仅译文', hint: '布局', keywords: 'layout zh 译文', run: () => useStore.getState().setLayout('zh') },
       { id: 'act-ask', label: '打开问答侧栏', hint: '动作', keywords: 'ask qa 问答 提问', run: () => useStore.getState().setAskPanel(true) },

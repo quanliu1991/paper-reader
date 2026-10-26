@@ -458,6 +458,52 @@ mark.hl { animation: hl-in 0.3s ease; }
   display: flex; flex-direction: column; gap: 2px;
 }
 
+/* ===== 双语书模式（一段英、一段中，书页式交错） ===== */
+.bilingual-view {
+  max-width: 860px; margin: 0 auto; padding: 36px 28px 100px;
+  font-family: "Noto Serif SC", "Georgia", "Times New Roman", "SimSun", serif;
+  font-synthesis: none;
+}
+.bi-row { margin: 0; }
+.bi-para { margin-bottom: 18px; }
+.bi-en {
+  margin: 0; line-height: 1.75; text-align: justify; color: #2a2a2a;
+  font-family: "Georgia", "Times New Roman", "Noto Serif SC", serif;
+}
+.bi-zh {
+  margin: 6px 0 0; line-height: 1.9; text-align: justify; color: #3d3d3d;
+}
+/* 译文段与原文段的视觉区分：左侧细线 + 轻微暖底，不打断阅读流 */
+.bi-para .bi-zh {
+  padding-left: 14px; border-left: 2px solid rgba(251, 191, 36, 0.35);
+  background: linear-gradient(90deg, rgba(251, 191, 36, 0.04), transparent 60%);
+}
+.bi-heading .bi-en { font-weight: 700; color: #1a1a1a; line-height: 1.4; margin: 0; }
+.bi-heading .bi-en.l1 { font-size: 1.5em; margin: 28px 0 0; }
+.bi-heading .bi-en.l2 { font-size: 1.28em; margin: 22px 0 0; }
+.bi-heading .bi-en.l3 { font-size: 1.12em; margin: 18px 0 0; }
+.bi-heading .heading-sub { font-size: 0.86em; color: #6b7280; margin: 2px 0 0; line-height: 1.5; }
+.bi-fig { margin: 18px 0; text-align: center; }
+.bi-fig img { max-width: 100%; border-radius: 4px; }
+.bi-fig-ph { padding: 40px; background: var(--panel); border-radius: 6px; font-size: 28px; }
+.bi-fig figcaption { margin-top: 6px; font-size: 0.84em; color: #6b7280; line-height: 1.6; }
+.bi-fig figcaption .cap-en { display: block; }
+.bi-fig figcaption .cap-zh { display: block; }
+.bi-pending {
+  margin-top: 8px; padding-left: 14px; border-left: 2px solid rgba(148, 163, 184, 0.4);
+  display: flex; align-items: center; gap: 4px; color: #94a3b8; font-size: 0.86em;
+}
+.bi-pending .dot {
+  width: 5px; height: 5px; border-radius: 50%; background: #94a3b8;
+  animation: biPulse 1.2s ease-in-out infinite;
+}
+.bi-pending .dot:nth-child(2) { animation-delay: 0.2s; }
+.bi-pending .dot:nth-child(3) { animation-delay: 0.4s; }
+.bi-pending span:last-child { margin-left: 4px; }
+@keyframes biPulse {
+  0%, 100% { opacity: 0.3; } 50% { opacity: 1; }
+}
+
 /* 行：左右两格网格（结构性空间对应） */
 .tv-row {
   display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px;
@@ -534,6 +580,12 @@ mark.hl { animation: hl-in 0.3s ease; }
   .tv-heading { color: #eee; }
   .tv-fig figcaption { color: #aaa; }
   .tv-collapsed::after { background: linear-gradient(transparent, var(--panel)); }
+  .bi-en { color: #c8c6c2; }
+  .bi-zh { color: #e5e3df; }
+  .bi-para .bi-zh { border-left-color: rgba(251, 191, 36, 0.3); }
+  .bi-heading .bi-en { color: #eee; }
+  .bi-heading .heading-sub { color: #9ca3af; }
+  .bi-fig figcaption { color: #aaa; }
 }
 
 /* ==================== 原版式对照视图（PDF 底 + 可划词文本层 + 原位译文胶囊） ==================== */

@@ -249,6 +249,108 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  if (process.env.PR_BILINGUAL_UI_E2E) {
+    // 双语书模式 UI E2E：布局切换 + 英中交错 + 划词宿主 + 高亮（隔离 userData）
+    if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
+    const win = new BrowserWindow({
+      width: 1400, height: 900, show: true,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+    });
+    registerIpc();
+    const logFile = process.env.PR_E2E_LOG!;
+    const doneFile = process.env.PR_E2E_DONE!;
+    const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
+    try {
+      await win.loadURL(process.env.VITE_DEV_SERVER_URL!);
+      await new Promise(r => setTimeout(r, 1200));
+
+      // 导入本地 fixture（真实解析管线，无网络依赖）
+      const html = fs.readFileSync(path.resolve('tests/fixtures/2609.34683.html'), 'utf8');
+      const parsed = arxiv.parseArxivHtml(html, '2609.34683');
+      const paperId = db.insertPaper({ arxivId: '2609.34683', title: parsed.title, authors: parsed.authors, sourceUrl: '', importType: 'html' });
+      db.insertBlocks(paperId, parsed.blocks);
+      // 预填译文：前 3 个正文段落写入 zh，模拟翻译完成态
+      const paras = (db.getBlocks(paperId) as any[]).filter((b: any) => b.type === 'para');
+      let filled = 0;
+      for (const b of paras) {
+        if (filled >= 3) break;
+        db.saveTranslation(paperId, b.pid, `【译】${String(b.en).slice(0, 30)}`, 'test', 'test');
+        filled++;
+      }
+      log(`import: paper=${paperId}, blocks=${parsed.blocks.length}, zh pre-filled=${filled}`);
+
+      // 阶段 0：打开阅读器并切到 bilingual 布局
+      await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId})`);
+      await new Promise(r => setTimeout(r, 600));
+      const btn: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const b = document.querySelector('.mode-switch button[onclick*="bilingual"], .mode-switch button:nth-child(2)');
+          return { found: !!b, label: b?.textContent ?? '', active: b?.className?.includes('active') ?? false };
+        })()
+      `).catch(() => null);
+      log(`bilingual btn: found=${btn?.found}, label="${btn?.label}", preActive=${btn?.active}`);
+      await win.webContents.executeJavaScript(`window.__store.getState().setLayout('bilingual')`);
+      await new Promise(r => setTimeout(r, 600));
+
+      // 阶段 1：交错结构断言——每个 .bi-para 内 .bi-en 后紧跟 .bi-zh
+      const struct: any = await win.webContents.executeJavaScript(`
+        (() => {
+          const rows = [...document.querySelectorAll('.bi-para')];
+          const withZh = rows.filter(r => r.querySelector('.bi-zh'));
+          const ordered = withZh.filter(r => {
+            const en = r.querySelector('.bi-en'), zh = r.querySelector('.bi-zh');
+            return en && zh && (en.compareDocumentPosition(zh) & Node.DOCUMENT_POSITION_FOLLOWING);
+          });
+          const pending = document.querySelectorAll('.bi-pending').length;
+          const headings = document.querySelectorAll('.bi-heading').length;
+          return { rows: rows.length, withZh: withZh.length, ordered: ordered.length, pending, headings };
+        })()
+      `).catch(() => null);
+      log(`interleaved: rows=${struct?.rows}, en→zh ordered=${struct?.ordered}/${struct?.withZh}, pending=${struct?.pending}, headings=${struct?.headings}`);
+      const interleaveOk = struct && struct.rows >= 5 && struct.ordered === struct.withZh && struct.withZh >= 3 && struct.pending >= 1;
+      log(`interleave structure: ${interleaveOk ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 2：划词宿主挂载（onMouseUp 冒泡依赖 .bilingual-host 容器）
+      const host: any = await win.webContents.executeJavaScript(`
+        (() => ({ host: !!document.querySelector('.bilingual-host'), view: !!document.querySelector('.bilingual-view') }))()
+      `).catch(() => null);
+      log(`host mounted: ${host?.host && host?.view ? 'PASS' : 'FAIL'} (host=${host?.host}, view=${host?.view})`);
+
+      // 阶段 3：快捷键循环包含 bilingual（state 层面直接验证类型合法）
+      await win.webContents.executeJavaScript(`window.__store.getState().setLayout('zh')`);
+      await new Promise(r => setTimeout(r, 200));
+      await win.webContents.executeJavaScript(`window.__store.getState().setLayout('bilingual')`);
+      await new Promise(r => setTimeout(r, 300));
+      const back: any = await win.webContents.executeJavaScript(`window.__store.getState().layout`);
+      log(`layout round-trip: ${back === 'bilingual' ? 'PASS' : 'FAIL'} (${back})`);
+
+      // 阶段 4：高亮标记在英文段落渲染（写入一条高亮后断言 mark.hl 存在）
+      const firstPara = paras[0];
+      const hlText = String(firstPara.en).slice(0, 12);
+      db.addHighlight({ paperId, pid: firstPara.pid, textEn: hlText, color: 'yellow' });
+      await win.webContents.executeJavaScript(`
+        (async () => {
+          const hls = await window.api.listHighlights(${paperId});
+          window.__store.setState({ highlights: hls });
+        })()
+      `).catch(() => {});
+      await new Promise(r => setTimeout(r, 600));
+      const hl: any = await win.webContents.executeJavaScript(`
+        (() => ({ marks: document.querySelectorAll('.bi-en mark.hl').length }))()
+      `).catch(() => null);
+      log(`highlight render: marks=${hl?.marks} ${hl && hl.marks >= 1 ? 'PASS' : 'FAIL'}`);
+
+      const allPass = interleaveOk && host?.host && back === 'bilingual' && hl?.marks >= 1;
+      log(allPass ? 'ALL PASS' : 'HAS FAIL');
+      fs.writeFileSync(doneFile, '1');
+    } catch (e: any) {
+      log(`FATAL: ${e?.stack ?? e}`);
+      fs.writeFileSync(doneFile, '1');
+    } finally {
+      app.quit();
+    }
+    return;
+  }
   if (process.env.PR_PROFILE_UI_E2E) {
     // 读者画像 UI E2E：设置页画像卡 + 反馈信号 + 建议问题（隔离 userData，勿动真实库）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);

@@ -5,6 +5,7 @@ import AskPanel from './AskPanel';
 import CommandPalette from './CommandPalette';
 import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
+import BilingualView from './BilingualView';
 import DualPdfView from './DualPdfView';
 import { IconBack, IconExport, IconImmersive } from './icons';
 
@@ -113,7 +114,7 @@ export default function Reader() {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
         e.preventDefault();
-        const cycle = ['translate', 'pdf-layout', 'zh'] as const;
+        const cycle = ['translate', 'bilingual', 'pdf-layout', 'zh'] as const;
         const cur = useStore.getState().layout;
         const idx = cycle.indexOf(cur as any);
         useStore.getState().setLayout(cycle[(idx + 1) % cycle.length] as any);
@@ -265,6 +266,7 @@ export default function Reader() {
           <span className="title">{paper.title}</span>
           <div className="mode-switch">
             <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="左右对照：段落逐行双语">对照</button>
+            <button onClick={() => setLayout('bilingual')} className={layout === 'bilingual' ? 'active' : ''} title="双语书：一段英文下紧跟一段中文">双语</button>
             <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="PDF 阅读：原版排版，译文原位覆盖">PDF 阅读</button>
             <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''} title="纯中文译文">译文</button>
           </div>
@@ -303,6 +305,19 @@ export default function Reader() {
             fontSize={fontSize}
             hlByPid={hlByPid}
             translating={translating}
+          />
+        </div>
+      ) : layout === 'bilingual' ? (
+        <div
+          className={`reader-scroll bilingual-host ${columnWidth === 'standard' ? 'narrow' : ''}`}
+          ref={scrollRef}
+          onMouseUp={onMouseUp}
+          style={{ fontSize: `${fontSize}px` }}
+        >
+          <BilingualView
+            blocks={blocks}
+            fontSize={fontSize}
+            hlByPid={hlByPid}
           />
         </div>
       ) : (
