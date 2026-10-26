@@ -46,9 +46,13 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   protocol.handle('local-figure', (request) => {
-    const url = request.url.replace(/^local-figure:\/\//, '');
-    // url 形如 <paperId>/fig-N.ext；规范化 + 防目录穿越
-    const safe = path.normalize(decodeURIComponent(url)).replace(/^([.]{2}[\/\\])+/, '');
+    // url 形如 f/<paperId>/fig-N.ext（新格式，host 'f' 防纯数字被解析成 IPv4）
+    // 旧格式 <paperId>/fig-N.ext 的纯数字 host 会被 URL 解析成 0.0.0.x——pathname 兜底解析
+    const u = new URL(request.url);
+    let rel = decodeURIComponent(u.pathname.replace(/^\/+/, ''));
+    if (!/^\d+\//.test(rel) && /^\d+$/.test(u.hostname)) rel = u.hostname + '/' + rel; // 旧格式兜底
+    // 规范化 + 防目录穿越
+    const safe = path.normalize(rel).replace(/^([.]{2}[\/\\])+/, '');
     const filePath = path.join(app.getPath('userData'), 'figures', safe);
     return net.fetch('file:///' + filePath.replace(/\\/g, '/'));
   });
@@ -77,7 +81,15 @@ app.whenReady().then(async () => {
       fs.mkdirSync(pdfsDir, { recursive: true });
       const seedPdf = path.resolve('build/test-paper.pdf');
       if (fs.existsSync(seedPdf)) fs.copyFileSync(seedPdf, path.join(pdfsDir, `${paperId}.pdf`));
-      log(`seed: paper=${paperId}, blocks=${parsed.blocks.length}, pdf=${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`))}`);
+      // 图表种子：1x1 测试 PNG 写入 figures/<paperId>/fig-1.png，并把首个 fig 块 fig_path 指到本地形态
+      // （模拟下载完成态，guard 才能断言右栏真图渲染 + 原位准确性）
+      const figsDir = path.join(app.getPath('userData'), 'figures', String(paperId));
+      fs.mkdirSync(figsDir, { recursive: true });
+      const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+      fs.writeFileSync(path.join(figsDir, 'fig-1.png'), PNG_1PX);
+      const figBlock = (db.getBlocks(paperId) as any[]).find(b => b.type === 'fig');
+      if (figBlock) db.getDb().prepare('UPDATE blocks SET fig_path=? WHERE pid=?').run(`${paperId}/fig-1.png`, figBlock.pid);
+      log(`seed: paper=${paperId}, blocks=${parsed.blocks.length}, pdf=${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`))}, figSeed=${!!figBlock}`);
 
       const win = new BrowserWindow({
         width: 1400, height: 900, show: true,
@@ -237,7 +249,55 @@ app.whenReady().then(async () => {
       fs.writeFileSync(path.resolve('build/guard-click-jump.png'), img3.toPNG());
       log('  saved build/guard-click-jump.png');
 
-      const allOk = aOk && bOk && scrollLock.ok && !narrowDiag.hScroll;
+      // ---------- E. 图表原位断言 ----------
+      log('[E] 图表原位断言（真图加载 + seq 原位 + 无死链）');
+      const figDiag: any = await win.webContents.executeJavaScript(`
+        (async () => {
+          const proto = await fetch('local-figure://f/${paperId}/fig-1.png').then(r => r.status).catch(e => 'ERR:' + e.message);
+          return { proto };
+        })()
+      `);
+      log(`  协议探测: local-figure://f/${paperId}/fig-1.png → ${figDiag.proto}`);
+      const figE: any = await win.webContents.executeJavaScript(`
+        (async () => {
+          // lazy 图要先滚进视口才加载：先滚到第一个带 img 的 fig
+          const R = document.querySelector('.dpv-right');
+          const firstImgFig = [...document.querySelectorAll('.dpv-right figure.dpv-zhfig img')][0]?.closest('figure');
+          if (firstImgFig && R) {
+            R.scrollTop = firstImgFig.offsetTop - R.offsetTop - 60;
+            await new Promise(r => setTimeout(r, 800));
+          }
+          const st = window.__store.getState();
+          const figs = st.blocks.filter(b => b.type === 'fig');
+          const els = [...document.querySelectorAll('.dpv-right figure.dpv-zhfig')];
+          const imgs = els.map(f => f.querySelector('img')).filter(Boolean);
+          const loaded = imgs.filter(im => im.complete && im.naturalWidth > 0).length;
+          const deadLinks = els.filter(f => {
+            const im = f.querySelector('img');
+            return im && im.src.startsWith('local-figure://') === false;
+          }).length;
+          // 原位单调性：右栏 DOM 顺序中，fig 元素的前一个/后一个文本段 seq 必须夹住 fig 的 seq
+          // （fig 渲染在论文原文位置，不漂移到文末/文首）
+          let orderOk = true, orderChecked = 0;
+          const flow = [...document.querySelectorAll('.dpv-right .dpv-zhflow > *')];
+          const byPid = new Map(st.blocks.map(b => [b.pid, b]));
+          flow.forEach((el, idx) => {
+            const pid = Number(el.dataset.pid);
+            const blk = byPid.get(pid);
+            if (!blk || blk.type !== 'fig') return;
+            const prevBlk = () => { for (let k = idx - 1; k >= 0; k--) { const b2 = byPid.get(Number(flow[k].dataset.pid)); if (b2 && b2.type !== 'fig') return b2; } return null; };
+            const nextBlk = () => { for (let k = idx + 1; k < flow.length; k++) { const b2 = byPid.get(Number(flow[k].dataset.pid)); if (b2 && b2.type !== 'fig') return b2; } return null; };
+            const prev = prevBlk(), next = nextBlk();
+            if (prev && next) { orderChecked++; if (!(prev.seq < blk.seq && blk.seq < next.seq)) orderOk = false; }
+          });
+          return { figBlocks: figs.length, rendered: els.length, imgs: imgs.length, loaded, deadLinks, orderOk, orderChecked };
+        })()
+      `);
+      log(`  fig块=${figE.figBlocks}, 渲染=${figE.rendered}, img=${figE.imgs}, 加载成功=${figE.loaded}, 死链=${figE.deadLinks}, 原位检查=${figE.orderChecked}组 orderOk=${figE.orderOk}`);
+      const eOk = figE.figBlocks > 0 && figE.rendered === figE.figBlocks && figE.loaded === figE.imgs && figE.imgs > 0 && figE.deadLinks === 0 && figE.orderOk;
+      log(`[E] 图表原位: ${eOk ? 'PASS' : 'FAIL'}`);
+
+      const allOk = aOk && bOk && scrollLock.ok && !narrowDiag.hScroll && eOk;
       log(allOk ? 'GUARD ALL PASS' : 'GUARD FAIL');
     } catch (e: any) {
       log(`FATAL: ${e?.stack ?? e}`);
@@ -1967,12 +2027,12 @@ ${strategy.vocabRule}${profile.bg ? `\n用户自述背景：${profile.bg.slice(0
   wrap('pdf:exportTranslated', async (_e, arg: { paperId: number; html: string; title: string }) => {
     const paper = db.getPaper(arg.paperId) as any;
     const title = arg.title || paper?.title || 'translation';
-    // local-figure:// 引用转 base64 内联（离线打印窗口没有自定义协议）
+    // local-figure://f/<paperId>/fig-N.ext 引用转 base64 内联（离线打印窗口没有自定义协议）
     const figDir = path.join(app.getPath('userData'), 'figures');
-    let html = arg.html.replace(/local-figure:\/\/([^"'\s)]+)/g, (_m, rel: string) => {
+    let html = arg.html.replace(/local-figure:\/\/(?:f\/)?([^"'\s)]+)/g, (_m, rel: string) => {
       try {
-        const name = rel.split('/').pop() ?? '';
-        const p = path.join(figDir, path.basename(decodeURIComponent(name)));
+        const relPath = rel.replace(/^f\//, '');
+        const p = path.join(figDir, path.normalize(decodeURIComponent(relPath)));
         const buf = fs.readFileSync(p);
         const ext = (p.match(/\.(png|jpg|jpeg|gif)$/i) || [, 'png'])[1] as string;
         return `data:image/${ext};base64,${buf.toString('base64')}`;

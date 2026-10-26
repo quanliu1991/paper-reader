@@ -770,7 +770,21 @@ img, figure { max-width: 100%; }
 /* 未映射段落：左侧灰细线弱标识，文字不丢 */
 .dpv-zhpara.unmapped { border-left: 2px solid var(--border); padding-left: 10px; text-indent: 0; }
 .dpv-zhpara.unmapped:hover { border-left-color: var(--muted); }
-/* 图表占位：提示看左栏原版，不试图重绘图 */
+/* 图表原位内联（PDF 对照右栏）：本地已落地 → 真图 + 图注；未落地 → 占位框 */
+.dpv-zhfig {
+  margin: 14px 0; padding: 10px 12px; text-align: center;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  cursor: pointer; text-indent: 0;
+}
+.dpv-zhfig img {
+  max-width: 100%; height: auto; display: block; margin: 0 auto;
+  border-radius: 4px;
+}
+.dpv-zhfig figcaption {
+  margin-top: 8px; font-size: 0.82em; color: var(--muted); line-height: 1.5; text-indent: 0;
+}
+.dpv-zhfig:hover { border-color: var(--accent); }
+/* 未落地占位（下载完成 fig:updated 后自动替换为真图） */
 .dpv-zhfigph {
   margin: 10px 0; padding: 12px 16px; text-align: center; font-size: 0.88em;
   color: var(--muted); background: var(--panel); border: 1px dashed var(--border);

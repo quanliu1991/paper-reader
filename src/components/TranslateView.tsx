@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import RichText from './RichText';
 import type { BlockRow } from '../store';
+import { figSrc } from '../figsrc';
 
 // 豆包式「翻译全文」双栏同构对照视图：
 // - 行级网格：每行左英文格 + 右中文格，天然空间对应（无需滚动同步算法）
@@ -83,13 +84,13 @@ const TvRow = memo(function TvRow({
   }
   // 图表行：同一张图跨中缝居中 + 双语标题
   if (b.type === 'fig') {
-    const figUrl = b.fig_path ? `local-figure://${b.fig_path}` : null;
+    const figUrl = figSrc(b.fig_path); // 仅本地落地形态出图，防死链
     return (
       <div className={`tv-row tv-fig-row ${active ? 'active' : ''}`} data-pid={b.pid} onClick={onActivate}>
         <figure className="tv-fig">
           {figUrl
             ? <img src={figUrl} alt={b.en.slice(0, 60)} loading="lazy" />
-            : <div className="tv-fig-placeholder">{b.fig_kind === 'table' ? '📊' : '🖼'}</div>}
+            : <div className="tv-fig-placeholder">{b.fig_kind === 'table' ? '📊' : '🖼'} 图片下载中</div>}
           <figcaption>
             <span className="cap-en"><RichText text={b.en} /></span>
             {b.zh && <span className="cap-zh"><RichText text={b.zh} /></span>}

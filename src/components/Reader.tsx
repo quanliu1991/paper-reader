@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { useStore } from '../store';
 import RichText from './RichText';
+import { figSrc } from '../figsrc';
 import AskPanel from './AskPanel';
 import CommandPalette from './CommandPalette';
 import TranslatedPanel from './TranslatedPanel';
@@ -257,7 +258,7 @@ export default function Reader() {
         if (b.type === 'heading') {
           parts.push(`<h${Math.min(3, b.level + 1)}>${escHtml(b.zh ?? b.en)}</h${Math.min(3, b.level + 1)}>`);
         } else if (b.type === 'fig') {
-          if (b.fig_path) parts.push(`<figure><img src="local-figure://${b.fig_path}"><figcaption>${escHtml((b.fig_kind === 'table' ? '表：' : '图：') + (b.zh ?? b.en))}</figcaption></figure>`);
+          if (b.fig_path && figSrc(b.fig_path)) parts.push(`<figure><img src="${figSrc(b.fig_path)}"><figcaption>${escHtml((b.fig_kind === 'table' ? '表：' : '图：') + (b.zh ?? b.en))}</figcaption></figure>`);
         } else {
           parts.push(`<p>${zhToHtml(b.zh ?? '')}</p>`);
         }
@@ -489,7 +490,7 @@ const BlockRowView = memo(function BlockRowView({ b, layout, hlItems }: {
 
 function FigureView({ b, side }: { b: import('../store').BlockRow; side: 'en' | 'zh' }) {
   const [zoom, setZoom] = useState(false);
-  const figUrl = b.fig_path ? `local-figure://${b.fig_path}` : null;
+  const figUrl = figSrc(b.fig_path); // 仅本地落地形态出图，防死链
   const caption = side === 'zh' && b.zh ? b.zh : b.en;
   return (
     <figure className="paper-fig">

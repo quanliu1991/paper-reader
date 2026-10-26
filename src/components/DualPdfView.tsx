@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import RichText from './RichText';
 import type { BlockRow } from '../store';
+import { figSrc } from '../figsrc';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -526,11 +527,23 @@ const ZhFlow = memo(function ZhFlow({
     <div className="dpv-zhflow">
       {blocks.map((b, i) => {
         if (b.type === 'fig') {
-          const cap = b.zh ? b.zh.slice(0, 40) : (b.en ?? '').slice(0, 40);
+          // 图表按论文原位内联（seq 即文档流位置）：本地已落地 → 真图 + 中文图注 + 点击跳左栏；
+          // 未落地 → 占位框（下载完成 fig:updated 自动变真图）
+          const src = figSrc(b.fig_path);
+          const cap = b.zh ?? b.en ?? '';
           return (
-            <div key={`f${b.pid}`} className="dpv-zhfigph" data-pid={b.pid}>
-              📊 {cap ? `[${cap}…] ` : ''}图表 · 请看左栏原版
-            </div>
+            <figure
+              key={`f${b.pid}`}
+              className={`dpv-zhfig ${src ? '' : 'pending'}`}
+              data-pid={b.pid}
+              onClick={() => onJumpPid(b.pid)}
+              title="点击定位左栏原文页"
+            >
+              {src
+                ? <img src={src} alt={b.en.slice(0, 60)} loading="lazy" />
+                : <div className="dpv-zhfigph">{b.fig_kind === 'table' ? '📊' : '🖼'} {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 图片下载中</div>}
+              {src && cap && <figcaption><RichText text={cap} /></figcaption>}
+            </figure>
           );
         }
         const pg = pageOfPid.get(b.pid);

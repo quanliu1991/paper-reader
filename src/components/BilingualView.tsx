@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import RichText from './RichText';
 import type { BlockRow } from '../store';
+import { figSrc } from '../figsrc';
 
 // 双语书模式：单栏流式，每段英文原文下方紧跟中文译文（段落交错，像双语书籍排版）。
 // 与左右对照（TranslateView）互补：窄窗口/长段落连读场景更自然，视线不用左右横跳。
@@ -38,12 +39,12 @@ const BiRow = memo(function BiRow({
   }
   // 图表：图 + 双语图注（英文在上中文在下）
   if (b.type === 'fig') {
-    const figUrl = b.fig_path ? `local-figure://${b.fig_path}` : null;
+    const figUrl = figSrc(b.fig_path); // 仅本地落地形态出图，防死链
     return (
       <figure className="bi-row bi-fig" data-pid={b.pid}>
         {figUrl
           ? <img src={figUrl} alt={b.en.slice(0, 60)} loading="lazy" />
-          : <div className="bi-fig-ph">{b.fig_kind === 'table' ? '📊' : '🖼'}</div>}
+          : <div className="bi-fig-ph">{b.fig_kind === 'table' ? '📊' : '🖼'} 图片下载中</div>}
         <figcaption>
           <span className="cap-en"><RichText text={b.en} /></span>
           {b.zh && <span className="cap-zh"><RichText text={b.zh} /></span>}
