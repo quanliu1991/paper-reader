@@ -11,7 +11,8 @@
     "electron:build": "npm run build && electron-builder",
     "preview": "vite preview",
     "guard": "node tests/visual-guard.test.mjs",
-    "test:dedup-scroll": "node tests/dedup-scroll.test.mjs"
+    "test:dedup-scroll": "node tests/dedup-scroll.test.mjs",
+    "release": "node scripts/release.mjs"
   },
   "build": {
     "appId": "com.paperreader.app",
