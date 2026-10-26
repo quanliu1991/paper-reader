@@ -64,7 +64,44 @@ npm run electron:dev # 开发模式（vite dev server + electron 热加载）
 npm run electron:build   # Windows NSIS 安装包 → release/
 ```
 
-Mac：`package.json` 已配 dmg target，需在 macOS 上构建（better-sqlite3 原生模块 ABI）。
+### Mac（macOS 12+，Apple Silicon 或 Intel）
+
+Windows 上打出的安装包**不能**给 Mac 用（`better-sqlite3` 是原生模块，必须在本平台编译）。两种方式：
+
+**方式一：Mac 上从源码构建（推荐，可控可更新）**
+
+```bash
+# 1. 装 Node 20+（推荐 nvm：brew install nvm && nvm install 20）
+# 2. 克隆仓库
+git clone https://github.com/quanliu1991/paper-reader.git
+cd paper-reader
+# 3. 安装依赖（原生模块自动按本机架构编译）
+npm install
+# 4. 打 DMG 安装包 → release/ 目录，双击安装
+npm run electron:build
+```
+
+Apple Silicon（M1/M2/M3/M4）打 arm64 包；Intel 机打 x64 包，electron-builder 按 `process.arch` 自动选。
+
+**方式二：不打包直接开发模式跑**
+
+```bash
+npm install
+npm run electron:dev    # 起开发窗口，日常阅读够用
+```
+
+**首次打开注意（macOS Gatekeeper）**：未签名/未公正（无 Apple 开发者账号）的 app 首次打开会被拦，右键 app →「打开」→ 再点「打开」；或系统设置 → 隐私与安全性 → 「仍要打开」。代码本身全平台兼容（Key 加密用 AES-GCM 随机主密钥而非 Windows DPAPI，数据目录在 `~/Library/Application Support/paper-reader-app/`）。
+
+**方式三：让 Windows 机器交叉构建 Mac 包**——需要 Mac 签名/公正环节，没有 Apple 开发者账号意义不大，不推荐；有需要再补 CI（GitHub Actions macos-latest 出包）。
+
+### 快捷键在 Mac 上
+
+| Win/Linux | Mac | 功能 |
+|---|---|---|
+| Ctrl+K | Cmd+K | 命令面板 |
+| Ctrl+Shift+L | Cmd+Shift+L | 循环切换 对照/PDF/译文 |
+| Ctrl+Shift+K | Cmd+Shift+K | 问答侧栏 |
+| Ctrl+Shift+F | Cmd+Shift+F | 沉浸模式（Esc 退出） |
 
 ## 测试
 

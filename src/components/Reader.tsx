@@ -142,20 +142,21 @@ export default function Reader() {
     return () => clearTimeout(timer);
   }, [layout, paper.id]);
 
-  // 快捷键（含 PDF 模式循环）
+  // 快捷键（含 PDF 模式循环）。mod = Ctrl（Win/Linux）或 Cmd（mac，metaKey）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
         e.preventDefault();
         const cycle = ['translate', 'bilingual', 'pdf-layout', 'zh'] as const;
         const cur = useStore.getState().layout;
         const idx = cycle.indexOf(cur as any);
         useStore.getState().setLayout(cycle[(idx + 1) % cycle.length] as any);
-      } else if (e.ctrlKey && e.shiftKey && (e.key === 'K' || e.key === 'k')) {
+      } else if (mod && e.shiftKey && (e.key === 'K' || e.key === 'k')) {
         e.preventDefault();
         const st = useStore.getState();
         st.setAskPanel(!st.askPanelOpen);
-      } else if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+      } else if (mod && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
         e.preventDefault();
         useStore.getState().setImmersive(!useStore.getState().immersive);
       } else if (e.key === 'Escape') {
