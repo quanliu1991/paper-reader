@@ -6,3 +6,4 @@ release/
 .vite/
 tests/.tmp-tg/
 tests/.tmp-ins/
+build/
