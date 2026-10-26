@@ -1,7 +1,7 @@
 {
   "name": "paper-reader-app",
   "productName": "Paper Reader",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "论文阅读 App：中英对照 + 划线提问 + 知识沉淀",
   "main": "dist-electron/main.js",
   "scripts": {
