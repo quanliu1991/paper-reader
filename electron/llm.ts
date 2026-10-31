@@ -72,6 +72,13 @@ export async function chatStream(
 ): Promise<void> {
   const temperature = opts?.temperature ?? 0.3;
   const maxTokens = opts?.maxTokens ?? 4096;
+  // E2E fake-LLM：环境变量开启时返回确定性 canned 流，不烧 token。
+  // 守卫遵循 DEVELOPMENT.md E2E 泄漏陷阱规范：仅当显式设置 PR_FAKE_LLM=1 时生效，
+  // 打包版宿主 shell 残留变量时因无测试上下文最多影响一次非流式调用（测试用隔离 userData，不触真实用户库）。
+  if (process.env.PR_FAKE_LLM === '1') {
+    fakeChatStream(messages, handlers);
+    return;
+  }
   try {
     if (provider.protocol === 'anthropic') {
       await streamAnthropic(provider, messages, handlers, temperature, maxTokens, opts?.signal);
@@ -82,6 +89,29 @@ export async function chatStream(
     if (e?.name === 'AbortError') { handlers.onDone(''); return; }
     handlers.onError(String(e?.message ?? e));
   }
+}
+
+// fake 流：按用户消息内容生成确定性回复（问答带【段落 #N】引用格式，摘要/翻译给固定中文）
+// 让上层「引用解析 / QC / 摘要卡渲染」逻辑可被真实地走一遍
+function fakeChatStream(messages: ChatMessage[], h: StreamHandlers) {
+  const lastUser = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
+  let reply: string;
+  if (/摘要|一句话|summary/i.test(lastUser)) {
+    reply = '【一句话】本文提出一种条件无发定理，证明 Transformer 在特定条件下收敛到不动点。\n【问题】Transformer 是否存在不动点收敛结构。\n【方法】构造条件证明。\n【结果】在两类注意力下成立。';
+  } else if (/翻译|translate/i.test(lastUser)) {
+    reply = '这是一段用于测试的预填译文，内容与原文等长且完整，符合质检长度比要求。';
+  } else {
+    // 问答：引用最后提到的段落编号（若有），否则引 #1
+    const m = lastUser.match(/段落\s*#?(\d+)|#(\d+)/);
+    const ref = m ? (m[1] ?? m[2]) : '1';
+    reply = `这是针对该问题的确定性测试回答。依据【段落 #${ref}】，可以解释为核心机制的直接推论。`;
+  }
+  // 按 8 字符分片模拟流
+  const chunks = reply.match(/[\s\S]{1,8}/g) ?? [reply];
+  setImmediate(() => {
+    for (const c of chunks) h.onDelta(c);
+    h.onDone(reply);
+  });
 }
 
 // OpenAI 兼容：OpenAI / GLM / DeepSeek / Qwen / Ollama / vLLM ...

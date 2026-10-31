@@ -12,6 +12,8 @@ const LAYERS = [
   { name: 'translate-qc（翻译 QC 离线）', cmd: ['node', 'tests/translate-qc.test.mjs'], timeout: 60000, offline: true },
   { name: 'topic-graph（分层引擎单元）', cmd: ['node', 'tests/topic-graph.test.mjs'], timeout: 60000, offline: true },
   { name: 'e2e（黄金路径主进程）', cmd: ['node', 'tests/e2e.test.mjs'], timeout: 120000, offline: true },
+  { name: 'features-e2e（问答/复习/Provider/导出/笔记）', cmd: ['node', 'tests/features-e2e.test.mjs'], timeout: 120000, offline: true },
+  { name: 'interact-ui（命令面板/复习/问答/设置 UI）', cmd: ['node', 'tests/interact-ui-e2e.test.mjs'], timeout: 240000, offline: true },
   { name: 'dedup-scroll（滚动同步 UI）', cmd: ['node', 'tests/dedup-scroll.test.mjs'], timeout: 240000, offline: true },
   { name: 'bilingual-ui（双语书 UI）', cmd: ['node', 'tests/bilingual-ui-e2e.test.mjs'], timeout: 240000, offline: true },
   { name: 'pdf-ui（PDF 原位翻译 UI）', cmd: ['node', 'tests/pdf-ui-e2e.test.mjs'], timeout: 240000, offline: true },

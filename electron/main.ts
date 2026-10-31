@@ -402,6 +402,14 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  if (process.env.PR_FEATURES_E2E) {
+    // 功能覆盖 E2E：问答/闪卡复习/Provider/导出/笔记（fake-LLM，主进程级）
+    const entry = path.join(__dirname, 'features-e2e-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
+  }
   if (process.env.PR_TR_QUALITY_E2E) {
     const entry = path.join(__dirname, 'translate-quality-entry.js');
     if (fs.existsSync(entry)) {
@@ -956,6 +964,15 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  if (process.env.PR_INTERACT_UI_E2E) {
+    // 交互功能 UI E2E：命令面板/闪卡复习/问答(fake-LLM)/设置（入口自带全部逻辑；隔离 userData）
+    const entry = path.join(__dirname, 'interact-ui-e2e.js');
+    if (fs.existsSync(entry)) {
+      registerIpc(); // 测试走真实 UI + IPC 链路
+      require(entry);
+      return;
+    }
+  }
   if (process.env.PR_PDF_UI_E2E) {
     // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议；隔离 userData）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
@@ -968,8 +985,7 @@ app.whenReady().then(async () => {
     const doneFile = process.env.PR_E2E_DONE!;
     const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
     try {
-      win.webContents.on('did-finish-load', async () => {
-        await new Promise(r => setTimeout(r, 1200));
+      win.webContents.on('did-finish-load', async () => {        await new Promise(r => setTimeout(r, 1200));
         const html = fs.readFileSync(path.resolve('tests/fixtures/2609.34683.html'), 'utf8');
         const parsed = arxiv.parseArxivHtml(html, '2609.34683');
         const paperId = db.insertPaper({ arxivId: '2609.34683', title: parsed.title, authors: parsed.authors, sourceUrl: '', importType: 'html' });
