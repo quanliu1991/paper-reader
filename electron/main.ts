@@ -12,6 +12,10 @@ import fs from 'fs';
 
 let win: BrowserWindow | null = null;
 
+// E2E 总开关：打包版永不进入任何测试分支（用户 shell 残留 PR_* 变量也不可能触发）。
+// 双层防护：①此处 isPackaged 守卫；②各分支入口文件不存在（打包 asar 里没有）时回落正常启动。
+const e2eEnabled = !app.isPackaged;
+
 // 在途任务注册表（取消 + 退出清理）
 const activeAbort = new Set<AbortController>();
 
@@ -75,7 +79,7 @@ app.whenReady().then(async () => {
     }
     return net.fetch('file:///' + filePath.replace(/\\/g, '/'));
   });
-  if (process.env.PR_ASSERT_E2E) {
+  if (e2eEnabled && process.env.PR_ASSERT_E2E) {
     // 强制门禁：物理重叠 / 内容去重完整性 / 滚动锁定 / 三态截图（npm run guard）
     const logFile = process.env.PR_E2E_LOG!;
     const doneFile = process.env.PR_E2E_DONE!;
@@ -382,10 +386,8 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  // E2E 模式：加载测试脚本不创建窗口。
-  // 防护：用户 shell 可能残留 PR_E2E/PR_PDF_E2E 变量（实测案例），
-  // 入口文件不存在（打包版 asar 里没有）时直接落到正常启动，不再静默挂死。
-  if (process.env.PR_DEDUP_E2E) {
+  // E2E 模式：加载测试脚本不创建窗口（e2eEnabled 已在文件头声明）。
+  if (e2eEnabled && process.env.PR_DEDUP_E2E) {
     // 右栏重复检测 + 滚动同步误差 ≤50px 断言（npm run test:dedup-scroll）
     const entry = path.join(__dirname, 'dedup-scroll-entry.js');
     if (fs.existsSync(entry)) {
@@ -395,14 +397,14 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  if (process.env.PR_E2E) {
+  if (e2eEnabled && process.env.PR_E2E) {
     const entry = path.join(__dirname, 'e2e-entry.js');
     if (fs.existsSync(entry)) {
       require(entry);
       return;
     }
   }
-  if (process.env.PR_FEATURES_E2E) {
+  if (e2eEnabled && process.env.PR_FEATURES_E2E) {
     // 功能覆盖 E2E：问答/闪卡复习/Provider/导出/笔记（fake-LLM，主进程级）
     const entry = path.join(__dirname, 'features-e2e-entry.js');
     if (fs.existsSync(entry)) {
@@ -410,14 +412,14 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  if (process.env.PR_TR_QUALITY_E2E) {
+  if (e2eEnabled && process.env.PR_TR_QUALITY_E2E) {
     const entry = path.join(__dirname, 'translate-quality-entry.js');
     if (fs.existsSync(entry)) {
       require(entry);
       return;
     }
   }
-  if (process.env.PR_PDF_E2E) {
+  if (e2eEnabled && process.env.PR_PDF_E2E) {
     // 完整链路（dev 有 dist-electron/pdf-e2e-entry.js）；打包版走内联冒烟
     const entry = path.join(__dirname, 'pdf-e2e-entry.js');
     if (fs.existsSync(entry)) {
@@ -456,7 +458,7 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  if (process.env.PR_REIMPORT) {
+  if (e2eEnabled && process.env.PR_REIMPORT) {
     // 一次性数据修复：重新解析 HTML 论文，覆盖旧版解析器的污染 blocks（噪声头/标题摘要丢失）
     const rows = db.getDb().prepare("SELECT id, arxiv_id FROM papers WHERE import_type='html'").all() as any[];
     console.log(`[reimport] html papers: ${rows.length}`);
@@ -485,8 +487,26 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
-  if (process.env.PR_UI_INSPECT) {
-    // 用户库检查：打开真实库中最近论文，检查渲染状态并截图
+  if (e2eEnabled && process.env.PR_UI_INSPECT) {
+    // 用户库检查：打开真实库中最近论文，检查渲染状态并截图。
+    // 安全：默认改用真实库的临时副本（防 translateAll 等写操作污染真实库——
+    // 2026-11 事故：shell 残留 PR_FAKE_LLM=1 时 inspect 把 89 条假译文写入真实库）。
+    // PR_INSPECT_REAL=1 显式要求时才连真库（只读诊断场景）。
+    if (!process.env.PR_INSPECT_REAL && process.env.PR_E2E_USER_DATA) {
+      const ud = process.env.PR_E2E_USER_DATA;
+      app.setPath('userData', ud);
+      try {
+        const fsMod = await import('fs');
+        fsMod.mkdirSync(ud, { recursive: true });
+        const realDb = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader/paper-reader.db');
+        if (fsMod.existsSync(realDb)) fsMod.copyFileSync(realDb, path.join(ud, 'paper-reader.db'));
+        for (const sub of ['figures', 'pdfs']) {
+          const src = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader', sub);
+          if (fsMod.existsSync(src)) fsMod.cpSync(src, path.join(ud, sub), { recursive: true });
+        }
+        console.log('[inspect] using ISOLATED COPY of real library');
+      } catch (e) { console.log(`[inspect] copy failed, empty userData: ${e}`); }
+    }
     const win = new BrowserWindow({
       width: Number(process.env.PR_INSPECT_W) || 1400, height: Number(process.env.PR_INSPECT_H) || 900, show: true,
       webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
@@ -572,10 +592,14 @@ app.whenReady().then(async () => {
         })()
       `);
       log('link: ' + JSON.stringify(link, null, 1));
-      // 触发前 3 个 para block 翻译（主进程直接构造参数），验证胶囊链路
-      const firstParas: any[] = await win.webContents.executeJavaScript(`
+      // 触发前 3 个 para block 翻译（主进程直接构造参数），验证胶囊链路。
+      // 无 Provider（真实用户库副本常见）时跳过——inspect 是诊断不是翻译测试。
+      let hasProvider = false;
+      try { hasProvider = !!db.getDb().prepare('SELECT id FROM providers WHERE is_default=1').get(); } catch { /* providers 表缺失 */ }
+      const firstParas: any[] = hasProvider ? await win.webContents.executeJavaScript(`
         window.__store.getState().blocks.filter(b => b.type === 'para').slice(0, 3).map(b => ({ pid: b.pid, en: b.en }))
-      `);
+      `) : [];
+      if (!hasProvider) log('no provider configured → skip translate probe');
       if (firstParas.length) {
         await win.webContents.executeJavaScript(`
           window.api.translateAll({
@@ -687,7 +711,7 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  if (process.env.PR_BILINGUAL_UI_E2E) {
+  if (e2eEnabled && process.env.PR_BILINGUAL_UI_E2E) {
     // 双语书模式 UI E2E：布局切换 + 英中交错 + 划词宿主 + 高亮（隔离 userData）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
     const win = new BrowserWindow({
@@ -789,7 +813,7 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  if (process.env.PR_PROFILE_UI_E2E) {
+  if (e2eEnabled && process.env.PR_PROFILE_UI_E2E) {
     // 读者画像 UI E2E：设置页画像卡 + 反馈信号 + 建议问题（隔离 userData，勿动真实库）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
     const win = new BrowserWindow({
@@ -874,7 +898,7 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  if (process.env.PR_TOPIC_UI_E2E) {
+  if (e2eEnabled && process.env.PR_TOPIC_UI_E2E) {
     // 主题依赖库 UI E2E：真实网络构建 → 断言分层列表 + 阅读顺序（隔离 userData）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
     const win = new BrowserWindow({
@@ -964,7 +988,7 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  if (process.env.PR_INTERACT_UI_E2E) {
+  if (e2eEnabled && process.env.PR_INTERACT_UI_E2E) {
     // 交互功能 UI E2E：命令面板/闪卡复习/问答(fake-LLM)/设置（入口自带全部逻辑；隔离 userData）
     const entry = path.join(__dirname, 'interact-ui-e2e.js');
     if (fs.existsSync(entry)) {
@@ -973,7 +997,7 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  if (process.env.PR_UX_AUDIT) {
+  if (e2eEnabled && process.env.PR_UX_AUDIT) {
     // UX 审计：黄金旅程 + 探针 + 截图（入口自带全部逻辑；隔离 userData）
     const entry = path.join(__dirname, 'ux-audit-entry.js');
     if (fs.existsSync(entry)) {
@@ -982,7 +1006,7 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  if (process.env.PR_FIG_VERIFY) {
+  if (e2eEnabled && process.env.PR_FIG_VERIFY) {
     // 图表修复验证：真实库副本 → 逐布局断言真图加载 + 无「下载中」残留（入口自带逻辑）
     const entry = path.join(__dirname, 'fig-verify-entry.js');
     if (fs.existsSync(entry)) {
@@ -992,7 +1016,7 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  if (process.env.PR_LLM_JUDGE) {
+  if (e2eEnabled && process.env.PR_LLM_JUDGE) {
     // LLM 体验评估：摘要/翻译/问答接地性打分（本地优先/云端兜底；隔离 userData）
     const entry = path.join(__dirname, 'llm-judge-entry.js');
     if (fs.existsSync(entry)) {
@@ -1000,7 +1024,7 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  if (process.env.PR_VISUAL_JUDGE) {
+  if (e2eEnabled && process.env.PR_VISUAL_JUDGE) {
     // 视觉检验：ux-audit 截图 → 视觉模型断言（本地多模态优先/云端兜底）
     const entry = path.join(__dirname, 'visual-judge-entry.js');
     if (fs.existsSync(entry)) {
@@ -1008,7 +1032,7 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  if (process.env.PR_PDF_UI_E2E) {
+  if (e2eEnabled && process.env.PR_PDF_UI_E2E) {
     // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议；隔离 userData）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
     const win = new BrowserWindow({
@@ -1368,7 +1392,7 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  if (process.env.PR_SOAK) {
+  if (e2eEnabled && process.env.PR_SOAK) {
     require(path.join(__dirname, 'soak-entry.js'));
     return;
   }

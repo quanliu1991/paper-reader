@@ -416,60 +416,63 @@ export default function Reader() {
           </div>
         </div>
       )}
-      {layout === 'pdf-layout' ? (
-        pdfReady
-          ? <DualPdfView paperId={paper.id} blocks={blocks} onMouseUp={onMouseUp} />
-          : <div className="reader-scroll"><div className="pdf-loading" style={{ padding: '120px 0', textAlign: 'center' }}>PDF 下载中…（首次导入论文时后台自动下载，稍后重开）</div></div>
-      ) : layout === 'translate' ? (
-        <div
-          className="reader-scroll translate-host"
-          ref={scrollRef}
-          onMouseUp={onMouseUp}
-          style={{ fontSize: `${fontSize}px`, '--reading-lh': lineHeight } as React.CSSProperties}
-        >
-          <TranslateView
-            blocks={blocks}
-            fontSize={fontSize}
-            hlByPid={hlByPid}
-            translating={translating}
-            paperId={paper.id}
-            notesByPid={notesByPid}
-          />
-        </div>
-      ) : layout === 'bilingual' ? (
-        <div
-          className={`reader-scroll bilingual-host ${columnWidth === 'standard' ? 'narrow' : ''}`}
-          ref={scrollRef}
-          onMouseUp={onMouseUp}
-          style={{ fontSize: `${fontSize}px`, '--reading-lh': lineHeight } as React.CSSProperties}
-        >
-          <BilingualView
-            blocks={blocks}
-            fontSize={fontSize}
-            hlByPid={hlByPid}
-            paperId={paper.id}
-            notesByPid={notesByPid}
-          />
-        </div>
-      ) : (
-        <div
-          className={`reader-scroll ${columnWidth === 'standard' ? 'narrow' : ''} fs-${fontSize}`}
-          ref={scrollRef}
-          onMouseUp={onMouseUp}
-          style={{ fontSize: `${fontSize}px` }}
-        >
-          {blocks.map(b => (
-            <Fragment key={b.pid}>
-              <BlockRowView b={b} layout={layout} hlItems={hlByPid.get(b.pid) ?? []} />
-              <ParaNotes notes={notesByPid.get(b.pid) ?? []} paperId={paper.id} />
-            </Fragment>
-          ))}
-        </div>
-      )}
+      {/* 内容 + 问答侧栏：横向 flex——AskPanel 占右侧 420px，不再叠压/挤压正文（视觉审计 03-ask-panel 修复） */}
+      <div className={`reader-body-row ${askPanelOpen ? 'with-ask' : ''}`}>
+        {layout === 'pdf-layout' ? (
+          pdfReady
+            ? <DualPdfView paperId={paper.id} blocks={blocks} onMouseUp={onMouseUp} />
+            : <div className="reader-scroll"><div className="pdf-loading" style={{ padding: '120px 0', textAlign: 'center' }}>PDF 下载中…（首次导入论文时后台自动下载，稍后重开）</div></div>
+        ) : layout === 'translate' ? (
+          <div
+            className="reader-scroll translate-host"
+            ref={scrollRef}
+            onMouseUp={onMouseUp}
+            style={{ fontSize: `${fontSize}px`, '--reading-lh': lineHeight } as React.CSSProperties}
+          >
+            <TranslateView
+              blocks={blocks}
+              fontSize={fontSize}
+              hlByPid={hlByPid}
+              translating={translating}
+              paperId={paper.id}
+              notesByPid={notesByPid}
+            />
+          </div>
+        ) : layout === 'bilingual' ? (
+          <div
+            className={`reader-scroll bilingual-host ${columnWidth === 'standard' ? 'narrow' : ''}`}
+            ref={scrollRef}
+            onMouseUp={onMouseUp}
+            style={{ fontSize: `${fontSize}px`, '--reading-lh': lineHeight } as React.CSSProperties}
+          >
+            <BilingualView
+              blocks={blocks}
+              fontSize={fontSize}
+              hlByPid={hlByPid}
+              paperId={paper.id}
+              notesByPid={notesByPid}
+            />
+          </div>
+        ) : (
+          <div
+            className={`reader-scroll ${columnWidth === 'standard' ? 'narrow' : ''} fs-${fontSize}`}
+            ref={scrollRef}
+            onMouseUp={onMouseUp}
+            style={{ fontSize: `${fontSize}px` }}
+          >
+            {blocks.map(b => (
+              <Fragment key={b.pid}>
+                <BlockRowView b={b} layout={layout} hlItems={hlByPid.get(b.pid) ?? []} />
+                <ParaNotes notes={notesByPid.get(b.pid) ?? []} paperId={paper.id} />
+              </Fragment>
+            ))}
+          </div>
+        )}
+        {askPanelOpen && <AskPanel />}
+      </div>
       {immersive && (
         <div className="immersive-hint">Esc 退出沉浸模式 · 已读 {readPct}%</div>
       )}
-      {askPanelOpen && <AskPanel />}
       {popover && (
         <div
           className="sel-popover glass"

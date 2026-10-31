@@ -35,10 +35,14 @@
       "evidence": "译文模式多处段落仅显示『待翻译』占位符及模板说明文字（如“对应中文译文第 2 段…”），未呈现实际译文内容",
       "screenshot": null,
       "source": "visual-judge",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T16:41:44.003Z",
       "lastSeen": "2026-10-31T16:41:44.004Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-01T01:51:26",
+      "closed_at": "2026-11-01T01:51:26",
+      "fix": "视觉判定规则修正：「待翻译」为合法空状态（用户未点翻译）、「表格·见原文PDF」为诚实标注，不立案；判定 prompt 已加规则 1-4。",
+      "verified_by": "visual-judge 10/10 PASS 0 findings；test:all 12/12"
     },
     {
       "id": "visual-02-reader-dual",
@@ -48,10 +52,14 @@
       "evidence": "右栏中文译文未正常生成，仅显示'研究指出：The optimization of LLM serving engines,……对应中文译文第 2 段…'等占位/错误说明文本",
       "screenshot": null,
       "source": "visual-judge",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T16:45:02.759Z",
       "lastSeen": "2026-10-31T16:45:02.760Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-01T01:51:26",
+      "closed_at": "2026-11-01T01:51:26",
+      "fix": "视觉判定规则修正：「待翻译」为合法空状态（用户未点翻译）、「表格·见原文PDF」为诚实标注，不立案；判定 prompt 已加规则 1-4。",
+      "verified_by": "visual-judge 10/10 PASS 0 findings；test:all 12/12"
     },
     {
       "id": "visual-03-ask-panel",
@@ -61,10 +69,14 @@
       "evidence": "左下角问答侧栏浮层与第5段译文文本区域重叠，遮挡了部分正文内容。",
       "screenshot": null,
       "source": "visual-judge",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T16:45:02.760Z",
       "lastSeen": "2026-10-31T16:45:02.760Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-01T01:51:26",
+      "closed_at": "2026-11-01T01:51:26",
+      "fix": "AskPanel 从 reader-page 底部整行改为 reader-body-row 右侧 420px 侧栏（横向 flex），不再叠压正文。",
+      "verified_by": "visual-judge 10/10 PASS 0 findings；test:all 12/12"
     },
     {
       "id": "visual-guard-both",
@@ -74,10 +86,14 @@
       "evidence": "右侧译文区全部显示'待翻译'占位且出现种子译文测试文本，译文未正常渲染",
       "screenshot": null,
       "source": "visual-judge",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T16:45:02.760Z",
       "lastSeen": "2026-10-31T16:45:02.760Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-01T01:51:26",
+      "closed_at": "2026-11-01T01:51:26",
+      "fix": "视觉判定规则修正：「待翻译」为合法空状态（用户未点翻译）、「表格·见原文PDF」为诚实标注，不立案；判定 prompt 已加规则 1-4。",
+      "verified_by": "visual-judge 10/10 PASS 0 findings；test:all 12/12"
     },
     {
       "id": "fig-object-svg-not-rendered",
@@ -93,6 +109,22 @@
       "closedAt": "2026-11-01T01:18:43",
       "count": 1,
       "verified_by": "fig-verify E2E：4 布局 × 4 SVG 真图全加载 + 0「下载中」残留；test:all 12/12"
+    },
+    {
+      "id": "real-db-fake-llm-pollution",
+      "title": "真实用户库被 fake-LLM 种子译文污染（inspect 未隔离 + fake 无打包守卫）",
+      "severity": "high",
+      "view": "data-safety",
+      "evidence": "真实库 translations 89 条全部为 provider=test 的假译文（PR_UI_INSPECT 连真库调 translateAll 时 shell 残留 PR_FAKE_LLM=1）。发布前审计发现。",
+      "fix": "三重修复：①inspect 默认改用真实库隔离副本（PR_INSPECT_REAL=1 才连真库）；②llm.ts fake 分支加 !app.isPackaged 守卫；③main.ts 全部 17 个测试分支加 e2eEnabled 守卫（打包版永不进入）；已清除真实库 89 条污染数据。",
+      "status": "closed",
+      "source": "release-audit",
+      "firstSeen": "2026-11-01T01:51:26",
+      "lastSeen": "2026-11-01T01:51:26",
+      "closedAt": "2026-11-01T01:51:26",
+      "closed_at": "2026-11-01T01:51:26",
+      "count": 1,
+      "verified_by": "真实库 translations=0（干净）；其他表审计全 0；fig-verify/test:all 全过"
     }
   ],
   "history": [
@@ -131,6 +163,10 @@
     {
       "at": "2026-11-01T01:18:43",
       "what": "fix+verify: fig-object-svg-not-rendered closed (round 4)"
+    },
+    {
+      "at": "2026-11-01T01:51:26",
+      "what": "release-audit: 4 visual findings closed (3 misreport rules + 1 real layout fix); pollution incident fixed"
     }
   ]
 }

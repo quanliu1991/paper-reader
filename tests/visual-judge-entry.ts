@@ -75,8 +75,14 @@ app.whenReady().then(async () => {
       const ask = [
         { role: 'user', content: [
           { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } },
-          { type: 'text', text: `这是论文阅读 App「${check.desc}」视图截图（注意：这是测试环境，种子论文段落较少，页面下方留白属正常排版，不算问题）。只报告真正的渲染异常。${pdfRule} 只输出 JSON：
-{"render_ok": 布尔(内容是否正常渲染), "content_truncated": 布尔(内容是否被截断/加载失败/显示错误占位), "tofu_boxes": 布尔(是否有乱码方块/未渲染字符), "layout_broken": 布尔(布局是否明显错位/重叠/元素溢出), "confidence": 0-1(判定置信度), "note": "一句话异常描述或空"}` },
+          { type: 'text', text: `这是论文阅读 App「${check.desc}」视图截图。判定规则（严格遵守，只报告真正的渲染缺陷）：
+1. 「待翻译」占位是合法空状态（用户还没点翻译），不算异常，不要报 content_truncated；
+2. 「📊 表格 · 见原文 PDF」是表格的诚实标注，不算异常；
+3. 种子论文段落少、页面下方留白属正常排版，不算问题；
+4. 侧栏/浮层按设计会占据一侧，与正文并排不是重叠缺陷；
+5. 真正要报的：乱码方块（豆腐块）、整块灰白/加载失败、文字明显截断为省略号或错位叠字、图片裂图图标、布局崩坏（元素溢出容器/重叠成一团）。
+${pdfRule} 只输出 JSON：
+{"render_ok": 布尔(内容是否正常渲染), "content_truncated": 布尔(仅指内容加载失败/显示错误占位/文字被截断叠加，不含「待翻译」空状态), "tofu_boxes": 布尔(是否有乱码方块/未渲染字符), "layout_broken": 布尔(布局是否明显错位/重叠成一团/元素溢出), "confidence": 0-1(判定置信度), "note": "一句话异常描述或空"}` },
         ] },
       ];
       const r = await chatJson(provider, ask, { maxTokens: 400, timeoutMs: 120000 });

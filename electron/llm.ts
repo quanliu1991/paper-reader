@@ -73,9 +73,9 @@ export async function chatStream(
   const temperature = opts?.temperature ?? 0.3;
   const maxTokens = opts?.maxTokens ?? 4096;
   // E2E fake-LLM：环境变量开启时返回确定性 canned 流，不烧 token。
-  // 守卫遵循 DEVELOPMENT.md E2E 泄漏陷阱规范：仅当显式设置 PR_FAKE_LLM=1 时生效，
-  // 打包版宿主 shell 残留变量时因无测试上下文最多影响一次非流式调用（测试用隔离 userData，不触真实用户库）。
-  if (process.env.PR_FAKE_LLM === '1') {
+  // 守卫遵循 DEVELOPMENT.md E2E 泄漏陷阱规范：仅当显式设置 PR_FAKE_LLM=1 时生效；
+  // 打包版（app.isPackaged）永不启用——用户 shell 残留变量也不可能在生产触发假流。
+  if (process.env.PR_FAKE_LLM === '1' && !app.isPackaged) {
     fakeChatStream(messages, handlers);
     return;
   }
