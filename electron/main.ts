@@ -973,6 +973,15 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  if (process.env.PR_UX_AUDIT) {
+    // UX 审计：黄金旅程 + 探针 + 截图（入口自带全部逻辑；隔离 userData）
+    const entry = path.join(__dirname, 'ux-audit-entry.js');
+    if (fs.existsSync(entry)) {
+      registerIpc();
+      require(entry);
+      return;
+    }
+  }
   if (process.env.PR_PDF_UI_E2E) {
     // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议；隔离 userData）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);

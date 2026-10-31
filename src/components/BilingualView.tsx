@@ -78,14 +78,14 @@ function markHighlights(en: string, items: Array<{ text: string; color: string }
   for (const it of items) {
     const esc = escapeHtml(it.text.trim()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     try {
-      html = html.replace(new RegExp(esc), m =>
+      html = html.replace(new RegExp(esc), m => // ux-lint-allow: 高亮色板应用（业务数据）
         `<mark class="hl" style="background:${COLORS[it.color] ?? '#fff3b0'}">${m}</mark>`);
     } catch { /* skip */ }
   }
   return html;
 }
 
-const COLORS: Record<string, string> = {
+const COLORS: Record<string, string> = { // ux-lint-allow: 高亮功能色板（业务数据非主题色）
   yellow: '#fff3b0', green: '#c8e6c9', blue: '#bbdefb', pink: '#f8bbd0',
 };
 

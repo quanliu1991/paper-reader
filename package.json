@@ -18,6 +18,8 @@
     "guard": "node tests/visual-guard.test.mjs",
     "test:dedup-scroll": "node tests/dedup-scroll.test.mjs",
     "test:all": "node scripts/test-all.mjs",
+    "ux:audit": "node tests/ux-audit.test.mjs && node scripts/ux-lint.mjs",
+    "ux:lint": "node scripts/ux-lint.mjs",
     "test:all:full": "node scripts/test-all.mjs --full",
     "release": "node scripts/release.mjs"
   },

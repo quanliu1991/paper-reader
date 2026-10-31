@@ -12,7 +12,7 @@ import ParaNotes from './ParaNotes';
 import type { NoteRow } from '../store';
 import { IconBack, IconExport, IconImmersive, IconMore } from './icons';
 
-const HL_COLORS = [
+const HL_COLORS = [ // ux-lint-allow: 高亮功能色板（业务数据非主题色）
   { id: 'yellow', label: '黄', bg: '#fff3b0' },
   { id: 'green', label: '绿', bg: '#c8e6c9' },
   { id: 'blue', label: '蓝', bg: '#bbdefb' },
@@ -613,6 +613,6 @@ function markHighlights(en: string, items: Array<{ text: string; color: string }
   return html;
 }
 
-function colorOf(id: string): string {
+function colorOf(id: string): string { // ux-lint-allow: 高亮色板兜底色
   return HL_COLORS.find(c => c.id === id)?.bg ?? '#fff3b0';
 }
