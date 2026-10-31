@@ -8,6 +8,7 @@ export interface ParsedBlock {
   en: string;          // 文本（含 $...$ / $$...$$ LaTeX 占位）
   figPath?: string;    // figure 本地文件路径（下载后）
   figKind?: 'figure' | 'table';
+  figHtmlTable?: boolean; // HTML 表格实体（LaTeXML ltx_tabular span 结构）：无需下载图片，渲染层直接展示
 }
 
 export interface ParsedPaper {
@@ -112,17 +113,23 @@ export function parseArxivHtml(html: string, arxivId: string): ParsedPaper {
       const kind: 'figure' | 'table' = /ltx_table/.test(figClass) ? 'table' : 'figure';
       const capMatch = figHtml.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i);
       const cap = capMatch ? stripTags(replaceMath(capMatch[1])).trim() : '';
-      // 图片：优先 graphics/img 的 href|src；inline svg 无 src 则占位（下载阶段处理）
-      const imgMatch = figHtml.match(/<(?:img|graphics)[^>]*(?:xlink:href|src)="([^"]+)"[^>]*>/i);
+      // 图片：优先 graphics/img 的 href|src；LaTeXML 主力形态 <object type="image/svg+xml" data="...">（实测 2609.34683 的 4 张图全是）；inline svg 无 src 则占位（下载阶段处理）
+      const imgMatch = figHtml.match(/<(?:img|graphics)[^>]*(?:xlink:href|src)="([^"]+)"[^>]*>/i)
+        || figHtml.match(/<object[^>]*type="image\/svg\+xml"[^>]*data="([^"]+)"[^>]*>/i)
+        || figHtml.match(/<object[^>]*data="([^"]+\.svg)"[^>]*>/i);
       let img = imgMatch ? imgMatch[1] : '';
       if (img && !/^data:/.test(img)) img = absolutizeImg(img, arxivId);
       const hasSvg = /<svg/i.test(figHtml);
+      // HTML 表格实体（ltx_tabular span 结构）：无图源时标记 fig_kind=table 且无占位需求——
+      // 表格本身就是文本内容，渲染层直接展示图注即可，不应显示「图片下载中」
+      const hasTabular = /ltx_tabular/i.test(figHtml);
       if ((cap && !NOISE.test(cap)) || img || hasSvg) {
         blocks.push({
           seq: seq++, type: 'fig', level: 0,
           en: cap || (kind === 'table' ? '表格' : '图'),
           figPath: img || undefined,
           figKind: kind,
+          figHtmlTable: (!img && !hasSvg && hasTabular) || undefined,
         });
       }
     }
@@ -169,6 +176,10 @@ async function downloadToFile(url: string, dest: string) {
 function absolutizeImg(src: string, arxivId: string): string {
   if (/^https?:\/\//.test(src)) return src;
   const p = src.replace(/^\.\//, '').replace(/^\//, '');
+  // LaTeXML object data 常带版本目录前缀（2609.34683v1/x.svg）——资源实际挂在版本化路径下，
+  // 拼到无版本 base 会 404。识别 <arxivId>vN/ 前缀时改用版本化 base。
+  const vm = p.match(new RegExp(`^(${arxivId}v\\d+)/(.+)$`, 'i'));
+  if (vm) return `https://arxiv.org/html/${vm[1]}/${vm[2]}`;
   return `https://arxiv.org/html/${arxivId}/${p}`;
 }
 

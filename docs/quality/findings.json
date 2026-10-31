@@ -78,6 +78,21 @@
       "firstSeen": "2026-10-31T16:45:02.760Z",
       "lastSeen": "2026-10-31T16:45:02.760Z",
       "count": 1
+    },
+    {
+      "id": "fig-object-svg-not-rendered",
+      "title": "非 PDF 视图图表全不显示（object SVG 解析缺口 + 版本化 URL 404 + 表格假占位）",
+      "severity": "high",
+      "view": "reader-all-layouts",
+      "evidence": "用户反馈：非 PDF 处无图。真实库诊断：论文 1 的 18 个 fig 块 fig_path 全 NULL、磁盘无 figures 目录。根因链：①LaTeXML 新版图表用 <object type=\"image/svg+xml\" data> 引用（非 <img>/<svg>），解析器不识别→fig_path=NULL；②downloadFiguresFor 兜底只找内联 <svg>→永远空；③object data 带版本前缀（2609.34683v1/x.svg），拼无版本 base 404；④14 个 HTML 表格（ltx_tabular）被当图片显示「图片下载中」假占位；⑤下载失败无重试。",
+      "fix": "①arxiv.ts 解析器识别 <object> data 属性产出远端 URL；②absolutizeImg/getInlineFigs 识别版本前缀用版本化 base；③db 新增 fig_html_table 列，HTML 表格标记后渲染层只显示「表格·见原文 PDF」诚实标注；④main.ts 新增 repairMissingFigures 启动自愈（重解析补 URL+kind+标记→重下载，幂等）；⑤downloadFiguresFor 增加失败日志。",
+      "status": "closed",
+      "source": "user-report",
+      "firstSeen": "2026-11-01T01:18:43",
+      "lastSeen": "2026-11-01T01:18:43",
+      "closedAt": "2026-11-01T01:18:43",
+      "count": 1,
+      "verified_by": "fig-verify E2E：4 布局 × 4 SVG 真图全加载 + 0「下载中」残留；test:all 12/12"
     }
   ],
   "history": [
@@ -112,6 +127,10 @@
     {
       "at": "2026-10-31T16:45:02.760Z",
       "what": "audit: +3 new / 3 total signals"
+    },
+    {
+      "at": "2026-11-01T01:18:43",
+      "what": "fix+verify: fig-object-svg-not-rendered closed (round 4)"
     }
   ]
 }

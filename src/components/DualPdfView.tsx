@@ -569,7 +569,9 @@ const ZhFlow = memo(function ZhFlow({
             >
               {src
                 ? <img src={src} alt={b.en.slice(0, 60)} loading="lazy" />
-                : <div className="dpv-zhfigph">{b.fig_kind === 'table' ? '📊' : '🖼'} {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 图片下载中</div>}
+                : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
+                  ? <div className="dpv-zhfigph">📊 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 表格见左栏</div>
+                  : <div className="dpv-zhfigph">🖼 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 图片下载中</div>}
               {src && cap && <figcaption><RichText text={cap} /></figcaption>}
             </figure>
           );

@@ -92,10 +92,11 @@ function parseArxivHtml(html, arxivId) {
       const kind = /ltx_table/.test(figClass) ? "table" : "figure";
       const capMatch = figHtml.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i);
       const cap = capMatch ? stripTags(replaceMath(capMatch[1])).trim() : "";
-      const imgMatch = figHtml.match(/<(?:img|graphics)[^>]*(?:xlink:href|src)="([^"]+)"[^>]*>/i);
+      const imgMatch = figHtml.match(/<(?:img|graphics)[^>]*(?:xlink:href|src)="([^"]+)"[^>]*>/i) || figHtml.match(/<object[^>]*type="image\/svg\+xml"[^>]*data="([^"]+)"[^>]*>/i) || figHtml.match(/<object[^>]*data="([^"]+\.svg)"[^>]*>/i);
       let img = imgMatch ? imgMatch[1] : "";
       if (img && !/^data:/.test(img)) img = absolutizeImg(img, arxivId);
       const hasSvg = /<svg/i.test(figHtml);
+      const hasTabular = /ltx_tabular/i.test(figHtml);
       if (cap && !NOISE.test(cap) || img || hasSvg) {
         blocks.push({
           seq: seq++,
@@ -103,7 +104,8 @@ function parseArxivHtml(html, arxivId) {
           level: 0,
           en: cap || (kind === "table" ? "\u8868\u683C" : "\u56FE"),
           figPath: img || void 0,
-          figKind: kind
+          figKind: kind,
+          figHtmlTable: !img && !hasSvg && hasTabular || void 0
         });
       }
     }
@@ -146,6 +148,8 @@ async function downloadToFile(url, dest) {
 function absolutizeImg(src, arxivId) {
   if (/^https?:\/\//.test(src)) return src;
   const p = src.replace(/^\.\//, "").replace(/^\//, "");
+  const vm = p.match(new RegExp(`^(${arxivId}v\\d+)/(.+)$`, "i"));
+  if (vm) return `https://arxiv.org/html/${vm[1]}/${vm[2]}`;
   return `https://arxiv.org/html/${arxivId}/${p}`;
 }
 function parsePlainText(text, arxivId, title) {

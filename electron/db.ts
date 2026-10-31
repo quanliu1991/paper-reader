@@ -174,6 +174,10 @@ function migrateColumns(d: Database.Database) {
   if (cols.length && !cols.some(c => c.name === 'fig_kind')) {
     d.prepare("ALTER TABLE blocks ADD COLUMN fig_kind TEXT").run();
   }
+  // v0.5 图表修复：HTML 表格实体标记（LaTeXML ltx_tabular——无图可下，渲染层只展示图注）
+  if (cols.length && !cols.some(c => c.name === 'fig_html_table')) {
+    d.prepare("ALTER TABLE blocks ADD COLUMN fig_html_table INTEGER DEFAULT 0").run();
+  }
   const pcols = d.prepare("PRAGMA table_info(papers)").all() as any[];
   if (pcols.length && !pcols.some(c => c.name === 'status')) {
     d.prepare("ALTER TABLE papers ADD COLUMN status TEXT DEFAULT 'unread'").run();
@@ -261,19 +265,19 @@ export function listLocalPapers() {
 }
 
 // ---------- blocks ----------
-export function insertBlocks(paperId: number, blocks: Array<{ seq: number; type: string; level: number; en: string; figPath?: string }>) {
+export function insertBlocks(paperId: number, blocks: Array<{ seq: number; type: string; level: number; en: string; figPath?: string; figKind?: string; figHtmlTable?: boolean }>) {
   const d = getDb();
   const tx = d.transaction((rows: typeof blocks) => {
     d.prepare('DELETE FROM blocks WHERE paper_id=?').run(paperId);
-    const stmt = d.prepare('INSERT INTO blocks (paper_id, seq, type, level, en, fig_path) VALUES (?,?,?,?,?,?)');
-    for (const b of rows) stmt.run(paperId, b.seq, b.type, b.level, b.en, b.figPath ?? null);
+    const stmt = d.prepare('INSERT INTO blocks (paper_id, seq, type, level, en, fig_path, fig_kind, fig_html_table) VALUES (?,?,?,?,?,?,?,?)');
+    for (const b of rows) stmt.run(paperId, b.seq, b.type, b.level, b.en, b.figPath ?? null, b.figKind ?? null, b.figHtmlTable ? 1 : 0);
   });
   tx(blocks);
 }
 
 export function getBlocks(paperId: number) {
   return getDb().prepare(
-    `SELECT b.pid, b.seq, b.type, b.level, b.en, b.fig_path, b.fig_kind, t.zh
+    `SELECT b.pid, b.seq, b.type, b.level, b.en, b.fig_path, b.fig_kind, b.fig_html_table, t.zh
      FROM blocks b LEFT JOIN translations t ON t.paper_id=b.paper_id AND t.pid=b.pid
      WHERE b.paper_id=? ORDER BY b.seq`
   ).all(paperId);

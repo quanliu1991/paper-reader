@@ -982,6 +982,16 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  if (process.env.PR_FIG_VERIFY) {
+    // 图表修复验证：真实库副本 → 逐布局断言真图加载 + 无「下载中」残留（入口自带逻辑）
+    const entry = path.join(__dirname, 'fig-verify-entry.js');
+    if (fs.existsSync(entry)) {
+      if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
+      registerIpc();
+      require(entry);
+      return;
+    }
+  }
   if (process.env.PR_LLM_JUDGE) {
     // LLM 体验评估：摘要/翻译/问答接地性打分（本地优先/云端兜底；隔离 userData）
     const entry = path.join(__dirname, 'llm-judge-entry.js');
@@ -1634,6 +1644,42 @@ export function registerIpc() {
   }
   scheduleUpgradeTextImports();
 
+  // 图表自愈：启动后异步补漏——fig 块缺图（fig_path 非本地形态）且磁盘无文件的论文，
+  // 重跑 downloadFiguresFor（现已支持 object svg + 序号对位兜底）。幂等：已有本地图的块会被跳过。
+  setTimeout(() => { repairMissingFigures().catch(() => {}); }, 8000);
+  async function repairMissingFigures() {
+    // 找「有 fig 块但完全没有本地图」的 html 论文（arxiv 导入）
+    const targets = db.getDb().prepare(
+      `SELECT p.id, p.arxiv_id FROM papers p
+       WHERE p.import_type='html' AND p.arxiv_id NOT LIKE 'local:%'
+         AND EXISTS (SELECT 1 FROM blocks b WHERE b.paper_id=p.id AND b.type='fig')
+         AND NOT EXISTS (SELECT 1 FROM blocks b2 WHERE b2.paper_id=p.id AND b2.type='fig' AND b2.fig_path GLOB '[0-9]*/fig-*')`
+    ).all() as any[];
+    console.log(`[fig-repair] papers needing figures: ${targets.length}`);
+    for (const t of targets) {
+      // 先重解析补 fig_path 远端 URL（object svg 现已识别）+ fig_html_table 标记
+      try {
+        const parsed = await arxiv.fetchAndParse(t.arxiv_id);
+        if (parsed.importType !== 'html') { downloadFiguresFor(t.id, t.arxiv_id).catch(() => {}); continue; }
+        const old = db.getBlocks(t.id) as any[];
+        const oldBySeq = new Map(old.map(b => [b.seq, b]));
+        // 只更新 fig 块的 fig_path/fig_kind/fig_html_table（保留 pid 和译文——seq 对位，解析器确定性）
+        const stmtUpd = db.getDb().prepare('UPDATE blocks SET fig_path=?, fig_kind=?, fig_html_table=? WHERE pid=?');
+        let updated = 0;
+        for (const nb of parsed.blocks) {
+          if (nb.type !== 'fig') continue;
+          const ob = oldBySeq.get(nb.seq);
+          if (!ob || ob.type !== 'fig') continue;
+          stmtUpd.run(nb.figPath ?? ob.fig_path, nb.figKind ?? ob.fig_kind, nb.figHtmlTable ? 1 : 0, ob.pid);
+          updated++;
+        }
+        console.log(`[fig-repair] ${t.arxiv_id}: re-parsed ${updated} fig blocks`);
+      } catch (e) { console.log(`[fig-repair] ${t.arxiv_id} reparse FAILED: ${e}`); }
+      // 再走下载（含 object svg 直下 + inline 兜底）
+      downloadFiguresFor(t.id, t.arxiv_id).catch(() => {});
+    }
+  }
+
   // text 降级 / 本地 pdf 论文自动升级：重抓 HTML 结构化导入（含图表）+ PDF
   // pdf 论文仅在完全未翻译时升级（避免覆盖用户已读内容的译文）
   async function upgradeTextImports() {
@@ -1671,18 +1717,33 @@ export function registerIpc() {
     fsMod.mkdirSync(figuresDir, { recursive: true });
     let i = 0;
     const stmt = db.getDb().prepare('UPDATE blocks SET fig_path=? WHERE pid=?');
-    // inline SVG 提取：LaTeXML 图表主力是内联 <svg>（解析时 figPath=undefined 落库 NULL），
-    // 这批图此前永远不下载。回源拉 HTML，按 <figure> 文档序对位提取第 N 个 figure 的 svg。
-    let inlineFigs: string[] | null = null; // 惰性：只在遇到首个无 figPath 的 fig 块时拉取
-    const getInlineFigs = async (): Promise<string[]> => {
+    // inline SVG / object SVG 提取：无 figPath 的 fig 块回源拉 HTML 兜底。
+    // 两种形态：a) <object type="image/svg+xml" data="xxx.svg">（新版 LaTeXML 主力）→ 直接下 data URL；
+    //           b) 内联 <svg>（老版）→ 序列化落盘。
+    let inlineFigs: (string | null)[] | null = null; // 每个 <figure> 的 svg 源（object data URL 或内联 svg 内容），null=无
+    const getInlineFigs = async (): Promise<(string | null)[]> => {
       if (inlineFigs) return inlineFigs;
       try {
         const resp = await fetch(`https://arxiv.org/html/${arxivId}`, { signal: AbortSignal.timeout(60000) });
         const html = resp.ok ? await resp.text() : '';
         inlineFigs = html
           ? [...html.matchAll(/<figure[^>]*>([\s\S]*?)<\/figure>/gi)].map(m => {
+              // 优先 object data（可下载的独立 svg 文件）；退化找内联 <svg>
+              const obj = m[1].match(/<object[^>]*type="image\/svg\+xml"[^>]*data="([^"]+)"[^>]*>/i)
+                || m[1].match(/<object[^>]*data="([^"]+\.svg)"[^>]*>/i);
+              if (obj) return { kind: 'url', src: obj[1] } as const;
               const svg = m[1].match(/<svg[\s\S]*?<\/svg>/i);
-              return svg ? svg[0] : '';
+              if (svg) return { kind: 'inline', src: svg[0] } as const;
+              return null;
+            }).map((x): string | null => {
+              if (!x) return null;
+              if (x.kind === 'inline') return x.src;
+              // object data 相对路径 → 绝对 URL；带版本前缀（2609.34683v1/x.svg）时用版本化 base（否则 404）
+              if (x.src.startsWith('http')) return x.src;
+              const vm = x.src.match(new RegExp(`^(${arxivId}v\\d+)/(.+)$`, 'i'));
+              const base = vm ? `https://arxiv.org/html/${vm[1]}` : `https://arxiv.org/html/${arxivId}`;
+              const rel = vm ? vm[2] : x.src.replace(/^\.\//, '');
+              return `${base}/${rel}`;
             })
           : [];
       } catch { inlineFigs = []; }
@@ -1693,32 +1754,44 @@ export function registerIpc() {
     for (const b of blocks) {
       if (b.type !== 'fig') continue;
       i++;
-      if (b.fig_path) {
-        // 常规路径：远端 URL 直接下载
+      if (b.fig_path && /^https?:/.test(b.fig_path)) {
+        // 常规路径：远端 URL 直接下载（含 object svg 形态——解析器现已产出绝对 URL）
         const url = b.fig_path;
         const ext = (url.match(/\.(svg|png|jpg|jpeg|gif)$/i) || [, 'png'])[1];
         const fname = `fig-${i}.${ext}`;
         try {
           const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
-          if (!resp.ok) continue;
+          if (!resp.ok) { console.log(`[fig-dl] ${fname}: HTTP ${resp.status}`); continue; }
           const buf = Buffer.from(await resp.arrayBuffer());
           fsMod.writeFileSync(path.join(figuresDir, fname), buf);
           stmt.run(`${paperId}/${fname}`, b.pid);
           send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
-        } catch { /* 单图失败跳过 */ }
+          console.log(`[fig-dl] ${fname}: OK (${buf.length}b)`);
+        } catch (e) { console.log(`[fig-dl] ${fname}: FAIL ${e instanceof Error ? e.message : e}`); /* 单图失败跳过 */ }
       } else {
-        // inline svg 路径：按 fig 序号对位提取（解析器逐 figure 产块，文档序一致）
+        // 兜底路径：figPath 为空（旧导入）或已是本地形态但文件丢失——回源按文档序对位提取
         try {
           const figsHtml = await getInlineFigs();
           // 对位序号：blocks 里第 k 个 fig ↔ HTML 第 k 个 <figure>。
-          // 解析时带 img 的 figure 与纯 svg figure 按出现顺序都在 figBlocks 里，序号天然对齐。
           const k = figBlocks.indexOf(b);
-          const svg = figsHtml[k] ?? figsHtml.find(s => s && !figsHtml.slice(0, k).includes(s)) ?? '';
-          if (!svg) continue;
-          const fname = `fig-${i}.svg`;
-          fsMod.writeFileSync(path.join(figuresDir, fname), svg, 'utf8');
-          stmt.run(`${paperId}/${fname}`, b.pid);
-          send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
+          const src = figsHtml[k] ?? '';
+          if (!src) continue;
+          if (/^https?:/.test(src)) {
+            // object data URL：直接下载
+            const ext = (src.match(/\.(svg|png|jpg|jpeg|gif)$/i) || [, 'svg'])[1];
+            const fname = `fig-${i}.${ext}`;
+            const resp = await fetch(src, { signal: AbortSignal.timeout(30000) });
+            if (!resp.ok) continue;
+            fsMod.writeFileSync(path.join(figuresDir, fname), Buffer.from(await resp.arrayBuffer()));
+            stmt.run(`${paperId}/${fname}`, b.pid);
+            send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
+          } else {
+            // 内联 svg 内容：直接落盘
+            const fname = `fig-${i}.svg`;
+            fsMod.writeFileSync(path.join(figuresDir, fname), src, 'utf8');
+            stmt.run(`${paperId}/${fname}`, b.pid);
+            send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
+          }
         } catch { /* 跳过 */ }
       }
     }

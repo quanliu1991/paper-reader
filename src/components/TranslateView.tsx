@@ -95,7 +95,9 @@ const TvRow = memo(function TvRow({
         <figure className="tv-fig">
           {figUrl
             ? <img src={figUrl} alt={b.en.slice(0, 60)} loading="lazy" />
-            : <div className="tv-fig-placeholder">{b.fig_kind === 'table' ? '📊' : '🖼'} 图片下载中</div>}
+            : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
+              ? <div className="tv-fig-placeholder">📊 表格 · 见原文 PDF</div>
+              : <div className="tv-fig-placeholder">🖼 图片下载中</div>}
           <figcaption>
             <span className="cap-en"><RichText text={b.en} /></span>
             {b.zh && <span className="cap-zh"><RichText text={b.zh} /></span>}

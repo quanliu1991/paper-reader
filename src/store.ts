@@ -15,6 +15,7 @@ export interface PaperRow {
 export interface BlockRow {
   pid: number; seq: number; type: 'heading' | 'para' | 'fig'; level: number;
   en: string; fig_path: string | null; fig_kind?: 'figure' | 'table'; zh: string | null;
+  fig_html_table?: 0 | 1 | boolean; // HTML 表格实体（无图可下）：渲染层只展示图注，不显示「下载中」占位
 }
 
 export interface HighlightRow {
