@@ -1,19 +1,19 @@
 # 质量仪表盘（QUALITY.md）
 
-> 自动生成 by improve-loop --report · 2026-10-31T16:38:09.874Z
+> 自动生成 by improve-loop --report · 2026-10-31T16:41:44.090Z
 
 ## 总览
 
 | 指标 | 值 |
 |---|---|
 | 测试通过率 | 12/12 |
-| 未解决问题 | 0（high 0 / medium 0 / low 0） |
+| 未解决问题 | 1（high 1 / medium 0 / low 0） |
 | 已解决 | 2 |
-| 问题来源 | — |
+| 问题来源 | visual-judge:1 |
 
 ## 未解决问题（按优先级）
 
-（全部清零 🎉）
+- **[high]** 视觉异常：02-reader-zh（`visual-02-reader-zh`，visual-judge，出现 1 次）—— 译文模式多处段落仅显示『待翻译』占位符及模板说明文字（如“对应中文译文第 2 段…”），未呈现实际译文内容
 
 ## 已解决
 
@@ -22,6 +22,7 @@
 
 ## 最近审计历史
 
+- 2026-10-31T16:41 audit: +1 new / 1 total signals
 - 2026-10-31T16:38 audit: +0 new / 0 total signals
 - 2026-10-31T16:15 audit: +0 new / 0 total signals
 - 2026-10-31T16:05 audit: +0 new / 0 total signals

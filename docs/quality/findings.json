@@ -26,6 +26,19 @@
       "verified_by": "visual-judge 10/10 PASS + test:all 12/12 PASS",
       "firstSeen": "2026-11-01T00:20:27",
       "count": 1
+    },
+    {
+      "id": "visual-02-reader-zh",
+      "severity": "high",
+      "view": "02-reader-zh",
+      "title": "视觉异常：02-reader-zh",
+      "evidence": "译文模式多处段落仅显示『待翻译』占位符及模板说明文字（如“对应中文译文第 2 段…”），未呈现实际译文内容",
+      "screenshot": null,
+      "source": "visual-judge",
+      "status": "open",
+      "firstSeen": "2026-10-31T16:41:44.003Z",
+      "lastSeen": "2026-10-31T16:41:44.004Z",
+      "count": 1
     }
   ],
   "history": [
@@ -52,6 +65,10 @@
     {
       "at": "2026-10-31T16:38:09.785Z",
       "what": "audit: +0 new / 0 total signals"
+    },
+    {
+      "at": "2026-10-31T16:41:44.004Z",
+      "what": "audit: +1 new / 1 total signals"
     }
   ]
 }
