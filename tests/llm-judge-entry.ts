@@ -29,6 +29,54 @@ app.whenReady().then(async () => {
     }
     log(`provider: ${provider.kind} (${provider.model})`);
 
+    // 真实论文模式（PR_JUDGE_REAL=1）：用 arXiv 真实 fixture 论文评估摘要卡接地性
+    // （合成论文自写自评有自证偏差——真实论文的摘要声明必须能被正文支撑）
+    const useReal = process.env.PR_JUDGE_REAL === '1';
+    let paperId: number;
+    let paras: any[];
+    let triage: any;
+    if (useReal) {
+      const arxiv = await import('../electron/arxiv');
+      const html = fs.readFileSync(path.resolve('tests/fixtures/2609.34683.html'), 'utf8');
+      const parsed = (arxiv as any).parseArxivHtml(html, '2609.34683');
+      paperId = db.insertPaper({ arxivId: '2609.34683', title: parsed.title, authors: parsed.authors, sourceUrl: '', importType: 'text' });
+      db.insertBlocks(paperId, parsed.blocks);
+      const blocks = db.getBlocks(paperId) as any[];
+      paras = blocks.filter((b: any) => b.type === 'para');
+      // 摘要卡：取论文摘要段的前 800 字符让 judge 核实
+      const abstractPara = paras.find((b: any) => /benchmark|agentic|inference/i.test(b.en)) ?? paras[1];
+      triage = {
+        oneLiner: '为智能体 LLM 的推理性能建立基准测试套件 AgentPerfBench',
+        problem: '智能体工作流的 LLM 推理性能缺少系统性评测基准',
+        method: '构建饱和测量(saturation-based)基准与评测套件，覆盖多 GPU 平台',
+        results: '发布 3000+ 基准结果与 14 万+ NCU 内核剖析记录（四 GPU 平台）',
+        related: '',
+      };
+      db.saveSummary(paperId, JSON.stringify(triage), '[]', 'judge', 'judge');
+      // 真实论文模式：接地核查对象 = triage 声明 vs 论文正文
+      // 上下文 = 前 3 段（摘要/动机）+ 含数据声明的段落（3000+/NCU/GPU），避免宽泛词命中同一段
+      const ctxParas: string[] = [];
+      for (const b of paras.slice(0, 2)) ctxParas.push(String(b.en).slice(0, 500));
+      // 数据声明段：方法与结果密集区（para 2-9）固定窗口，避免脆弱的关键词段查找
+      for (const b of paras.slice(2, 10)) ctxParas.push(String(b.en).slice(0, 500));
+      const verifyCtx = ctxParas.join('\n\n').slice(0, 4200);
+
+
+      const r = await chatJson(provider, [
+        { role: 'system', content: '你是事实核查员。判断摘要卡四项声明（一句话/问题/方法/结果）是否被论文正文片段支撑。只输出 JSON：{"one_liner_ok": true/false, "problem_ok": true/false, "method_ok": true/false, "results_ok": true/false, "issues": "一句话"}' },
+        { role: 'user', content: `摘要卡：${JSON.stringify(triage)}\n\n论文正文片段：\n${verifyCtx}` },
+      ], { maxTokens: 400 });
+      const allOk = r && r.one_liner_ok && r.problem_ok && r.method_ok && r.results_ok;
+      log(`真实论文摘要接地: oneLiner=${r?.one_liner_ok} problem=${r?.problem_ok} method=${r?.method_ok} results=${r?.results_ok}`);
+      if (r && !allOk) {
+        judgeFinding({ id: 'llm-judge-real-summary', severity: 'medium', view: 'reader-triage', title: '真实论文摘要卡声明未被正文支撑', evidence: String(r.issues ?? '') });
+      }
+      log('LLM JUDGE DONE');
+      finish();
+      setTimeout(() => app.quit(), 200);
+      return;
+    }
+
     // 种子论文 + 真实摘要 + 预填译文 + 问答对（评估对象）
     const text = `Speculative Decoding for Edge LLMs
 
@@ -43,12 +91,12 @@ We adapt draft length to device thermal state. The scheduler monitors junction t
 3 Results
 On Jetson Orin we reach 2.1x speedup with negligible quality loss. Energy per token drops 38 percent.`;
     const parsed = parsePlainText(text, '9999.03101', 'Speculative Decoding for Edge LLMs');
-    const paperId = db.insertPaper({ arxivId: '9999.03101', title: parsed.title, authors: 'X; Y', sourceUrl: '', importType: 'text' });
+    paperId = db.insertPaper({ arxivId: '9999.03101', title: parsed.title, authors: 'X; Y', sourceUrl: '', importType: 'text' });
     db.insertBlocks(paperId, parsed.blocks);
     const blocks = db.getBlocks(paperId) as any[];
-    const paras = blocks.filter((b: any) => b.type === 'para');
+    paras = blocks.filter((b: any) => b.type === 'para');
     // 摘要（评估对象 1）
-    const triage = { oneLiner: '让手机也能跑大模型：按设备温度动态调整投机解码的草稿长度', problem: '边缘设备算力与散热有限，固定草稿长度的投机解码不划算', method: '调度器监测结温，过热时缩短草稿长度', results: 'Jetson Orin 2.1x 加速，每 token 能耗降 38%，质量几乎无损', related: '' };
+    triage = { oneLiner: '让手机也能跑大模型：按设备温度动态调整投机解码的草稿长度', problem: '边缘设备算力与散热有限，固定草稿长度的投机解码不划算', method: '调度器监测结温，过热时缩短草稿长度', results: 'Jetson Orin 2.1x 加速，每 token 能耗降 38%，质量几乎无损', related: '' };
     db.saveSummary(paperId, JSON.stringify(triage), '[]', 'judge', 'judge');
     // 译文（评估对象 2）——故意一好一差
     db.saveTranslation(paperId, paras[0].pid, '边缘设备装不下大模型。投机解码用小草稿模型提议 token，目标模型并行验证。', 'judge', 'judge');

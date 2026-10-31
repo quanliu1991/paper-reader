@@ -6,7 +6,8 @@ import fs from 'fs';
 await build({ entryPoints: ['electron/main.ts'], bundle: true, platform: 'node', target: 'node20', format: 'cjs', outfile: 'dist-electron/main.js', external: ['electron', 'better-sqlite3', 'pdfjs-dist'], logLevel: 'silent' });
 await build({ entryPoints: ['tests/llm-judge-entry.ts'], bundle: true, platform: 'node', target: 'node20', format: 'cjs', outfile: 'dist-electron/llm-judge-entry.js', external: ['electron', 'better-sqlite3', 'pdfjs-dist'], logLevel: 'silent' });
 
-const { log, timedOut } = await runElectronE2E(process.cwd(), { PR_LLM_JUDGE: '1' }, { timeoutMs: 300000, viteUrl: 'http://localhost:5173' });
+const real = process.argv.includes('--real');
+const { log, timedOut } = await runElectronE2E(process.cwd(), { PR_LLM_JUDGE: '1', ...(real ? { PR_JUDGE_REAL: '1' } : {}) }, { timeoutMs: 300000, viteUrl: 'http://localhost:5173' });
 console.log(log);
 const judgeFindings = log.split('\n').filter(l => l.startsWith('LLM-JUDGE-FINDING: ')).length;
 const done = log.includes('LLM JUDGE DONE');

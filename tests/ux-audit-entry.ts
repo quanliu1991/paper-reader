@@ -28,6 +28,27 @@ app.whenReady().then(async () => {
     log('== UX 审计黄金旅程 ==');
 
     // 种子：论文 + 译文 + 闪卡 + 假 Provider（fake-LLM）
+    // 真实 fixture 模式（PR_UX_REAL=1）：用 arXiv 真实论文 HTML（含公式/图表结构），暴露合成数据测不出的渲染问题
+    const useReal = process.env.PR_UX_REAL === '1';
+    let paperId: number;
+    let blocks: any[];
+    if (useReal) {
+      const arxiv = await import('../electron/arxiv');
+      const html = fs.readFileSync(path.resolve('tests/fixtures/2609.34683.html'), 'utf8');
+      const parsed = (arxiv as any).parseArxivHtml(html, '2609.34683');
+      paperId = db.insertPaper({ arxivId: '2609.34683', title: parsed.title, authors: parsed.authors, sourceUrl: '', importType: 'html' });
+      db.insertBlocks(paperId, parsed.blocks);
+      blocks = db.getBlocks(paperId) as any[];
+      // 预填译文：每 2 段译 1 段（模拟部分翻译完成态——比全译更能暴露 pending 混排问题）
+      let m = 0;
+      for (const b of blocks) {
+        if (b.type === 'para' && m % 2 === 0 && m < 30) {
+          const zhSeed = `研究指出：${String(b.en).slice(0, 40)}……对应中文译文第 ${m / 2 + 1} 段，内容完整覆盖原文要点与论证结构。`;
+          db.saveTranslation(paperId, b.pid, zhSeed, 'ux', 'ux');
+        }
+        m++;
+      }
+    } else {
     const text = `Vision-Language Models Survey
 
 Abstract. We survey vision-language models and their applications in 2026.
@@ -41,18 +62,19 @@ The typical stack joins a vision encoder with an LLM decoder. Figure 1 shows the
 3 Results
 Unified models reach state of the art on most benchmarks while remaining cheaper to train.`;
     const parsed = parsePlainText(text, '9999.02101', 'Vision-Language Models Survey');
-    const paperId = db.insertPaper({ arxivId: '9999.02101', title: parsed.title, authors: 'A; B', sourceUrl: '', importType: 'text' });
+    paperId = db.insertPaper({ arxivId: '9999.02101', title: parsed.title, authors: 'A; B', sourceUrl: '', importType: 'text' });
     db.insertBlocks(paperId, parsed.blocks);
-    const blocks = db.getBlocks(paperId) as any[];
+    blocks = db.getBlocks(paperId) as any[];
     let n = 0;
     for (const b of blocks) {
       if (b.type === 'para' && n < 5) { db.saveTranslation(paperId, b.pid, `【译${n + 1}】这是预填的中文译文，用于 UX 审计走查，长度与原文相当以保证排版稳定。`, 'ux', 'ux'); n++; }
     }
+    }
     db.addFlashcard({ paperId, pid: blocks.find((b: any) => b.type === 'para').pid, front: 'VLM 是什么？', back: '视觉-语言模型' });
     db.getDb().prepare('INSERT INTO providers (name, protocol, base_url, api_key, model, is_default) VALUES (?,?,?,?,?,?)')
       .run('ux-audit', 'openai', 'http://localhost:9/v1', 'enc-x', 'fake', 1);
-    db.saveSummary(paperId, JSON.stringify({ oneLiner: 'VLM 综述', problem: '多模态', method: '编码器+解码器', results: 'SOTA', related: '' }), '[]', 'ux', 'ux');
-    log(`seed: paper=${paperId}, zh=${n}`);
+    db.saveSummary(paperId, JSON.stringify({ oneLiner: useReal ? '证明 Transformer 在特定条件下收敛到不动点（条件无发定理）' : 'VLM 综述', problem: '多模态', method: '编码器+解码器', results: 'SOTA', related: '' }), '[]', 'ux', 'ux');
+    log(`seed: paper=${paperId}, real=${useReal}, blocks=${blocks.length}, zhFilled=${(db.getBlocks(paperId) as any[]).filter((b: any) => b.zh).length}`);
 
     const win = new BrowserWindow({
       width: 1440, height: 900, show: true,
@@ -101,6 +123,7 @@ Unified models reach state of the art on most benchmarks while remaining cheaper
     // ---- 视图 2-4：阅读器三模式 ----
     await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId})`);
     await new Promise(r => setTimeout(r, 900));
+    const zhCount = (db.getBlocks(paperId) as any[]).filter((b: any) => b.zh).length;
     for (const layout of ['dual', 'bilingual', 'zh']) {
       await win.webContents.executeJavaScript(`window.__store.getState().setLayout('${layout}')`);
       await new Promise(r => setTimeout(r, 700));
@@ -111,12 +134,16 @@ Unified models reach state of the art on most benchmarks while remaining cheaper
           const doc = document.documentElement;
           const hOverflow = doc.scrollWidth > doc.clientWidth + 4;
           const textLen = (main?.textContent ?? '').length;
-          return { hOverflow, textLen, hasZh: (main?.textContent ?? '').includes('预填的中文译文') };
+          return { hOverflow, textLen, hasZh: (main?.textContent ?? '').includes('对应中文译文第') };
         })()
       `);
       log(`view reader-${layout}: text=${st.textLen}, zh=${st.hasZh}, hOverflow=${st.hOverflow}`);
       if (st.textLen < 100) finding({ id: `ux-reader-${layout}-empty`, severity: 'high', view: `reader-${layout}`, title: `${layout} 模式内容过少`, evidence: `textLen=${st.textLen}`, screenshot: `02-reader-${layout}.png` });
       if (st.hOverflow) finding({ id: `ux-reader-${layout}-hoverflow`, severity: 'medium', view: `reader-${layout}`, title: `${layout} 模式横向溢出`, evidence: 'scrollWidth > clientWidth', screenshot: `02-reader-${layout}.png` });
+      // 译文模式必须有已译内容（zhFilled>0 时）
+      if (layout === 'zh' && zhCount > 0 && !st.hasZh && st.textLen > 100) {
+        finding({ id: 'ux-reader-zh-missing', severity: 'high', view: 'reader-zh', title: '译文模式未显示已存译文', evidence: `db zh=${zhCount} but view lacks zh text`, screenshot: '02-reader-zh.png' });
+      }
     }
 
     // ---- 视图 5：问答侧栏（fake-LLM）----

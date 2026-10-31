@@ -27,6 +27,14 @@
     {
       "at": "2026-10-31T16:04:08.679Z",
       "what": "verify: closed test-fail-node-tests-dedup-scroll-test-mjs"
+    },
+    {
+      "at": "2026-10-31T16:05:12.210Z",
+      "what": "audit: +0 new / 0 total signals"
+    },
+    {
+      "at": "2026-10-31T16:15:36.351Z",
+      "what": "audit: +0 new / 0 total signals"
     }
   ]
 }

@@ -15,7 +15,8 @@ await build({ entryPoints: ['tests/ux-audit-entry.ts'], bundle: true, platform: 
 
 const vite = await startVite(root, 5199, 'ux-audit');
 try {
-  const { log, timedOut } = await runElectronE2E(root, { PR_UX_AUDIT: '1', PR_FAKE_LLM: '1' }, { timeoutMs: 180000, viteUrl: 'http://localhost:5199' });
+  const real = process.argv.includes('--real');
+  const { log, timedOut } = await runElectronE2E(root, { PR_UX_AUDIT: '1', PR_FAKE_LLM: '1', ...(real ? { PR_UX_REAL: '1' } : {}) }, { timeoutMs: 180000, viteUrl: 'http://localhost:5199' });
   console.log(log);
 
   // 收集 UX-FINDING 行 → build/ux/findings.json
@@ -29,7 +30,7 @@ try {
   const fatal = log.includes('FATAL') || log.includes('UX AUDIT FAIL');
   const ok = !timedOut && !fatal;
   console.log(`[ux-audit] ${ok ? 'DONE' : 'FAIL'} | findings=${findings.length} | screenshots → build/ux/screenshots/`);
-  console.log(`[ux-audit] findings → build/ux/findings.json`);
+  console.log(`[ux-audit] findings → build/ux/findings.json${real ? ' (real fixture)' : ''}`);
   killTree(vite);
   process.exit(ok ? 0 : 1);
 } catch (e) {
