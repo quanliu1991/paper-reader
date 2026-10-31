@@ -1,6 +1,6 @@
 # 质量仪表盘（QUALITY.md）
 
-> 自动生成 by improve-loop --report · 2026-10-31T16:20:59.396Z
+> 自动生成 by improve-loop --report · 2026-10-31T16:38:09.874Z
 
 ## 总览
 
@@ -22,6 +22,7 @@
 
 ## 最近审计历史
 
+- 2026-10-31T16:38 audit: +0 new / 0 total signals
 - 2026-10-31T16:15 audit: +0 new / 0 total signals
 - 2026-10-31T16:05 audit: +0 new / 0 total signals
 - 2026-10-31T16:04 verify: closed test-fail-node-tests-dedup-scroll-test-mjs
