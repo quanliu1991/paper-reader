@@ -295,19 +295,29 @@ export default function DualPdfView({
   // 左→右：IntersectionObserver 找视口交集最大页，右栏滚到 data-page 首段（已在视口则不动）。
   // 右→左：右栏发生「非程序化」滚动 → 找视口顶部段落所属页 → 左栏滚到该页。
   // 防回环：程序化 scrollTo 前记录目标位置，右栏 scroll 事件命中该位置（±3px）→ 判定为联动滚动，忽略。
+  // 时序教训（2026-10 dedup-scroll 抓实）：smooth 动画 300-500ms > 旧锁 150ms，动画中途锁释放
+  // 触发反向联动回环 → R2L 采样错位数百 px。修复：锁定窗口 600ms 覆盖动画全程 +
+  // prog 记录时间戳，窗口内同侧 scroll 一律视为联动（目标位置比对仍保留兜底）。
   const syncingRef = useRef(false);
-  const progScrollRef = useRef<{ side: 'left' | 'right'; top: number } | null>(null);
+  const progScrollRef = useRef<{ side: 'left' | 'right'; top: number; at: number } | null>(null);
   const visiblePageRef = useRef(visiblePage);
   visiblePageRef.current = visiblePage;
   const rightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const SYNC_LOCK_MS = 600;
+  // 联动判定：prog 未过期且方向匹配 → 该侧当前 scroll 视为联动（动画中 scrollTop 逐步逼近，逐点比对会漏判）
+  const isProgScroll = (side: 'left' | 'right'): boolean => {
+    const prog = progScrollRef.current;
+    if (!prog || prog.side !== side) return false;
+    return Date.now() - prog.at <= SYNC_LOCK_MS + 300;
+  };
   const withSyncLock = (fn: () => void) => {
     if (syncingRef.current) return;
     syncingRef.current = true;
     fn();
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    syncTimerRef.current = setTimeout(() => { syncingRef.current = false; }, 150);
+    syncTimerRef.current = setTimeout(() => { syncingRef.current = false; }, SYNC_LOCK_MS);
   };
 
   // 右→左 段落级闪烁定位框：在左栏 canvas 上按 boxes 几何百分比画一个 800ms 渐隐高亮
@@ -348,10 +358,12 @@ export default function DualPdfView({
       // 直接跟随主导可见页（此前的 |prev-best|<=2 钳位会让逐页滚动时锚点永远停在旧页——正是失焦的根源）
       setVisiblePage(best);
       if (mode !== 'both') return;
+      // 左栏程序化滚动中（R2L 联动/点击定位）→ 本回调是回环源头，忽略
+      if (isProgScroll('left')) return;
       // 右栏跟随：连续段落流模式——找 data-page=best 的第一个段落，严格对齐到视口顶+12px。
       // 验收标准：左右锚点误差 ≤50px。此前「已在视口就不滚」的跳过条件会让段落挂在视口中段
       // （实测误差 224px），改为：与目标位偏差 >50px 就滚；≤50px 不动（防微调抖动/回环）。
-      withSyncLock(() => {
+      {
         const right = rightScrollRef.current;
         if (!right) return;
         const g = right.querySelector(`[data-page="${best}"]`) as HTMLElement | null;
@@ -360,39 +372,44 @@ export default function DualPdfView({
         const gr = g.getBoundingClientRect();
         const targetTop = rr.top + 12;
         if (Math.abs(gr.top - targetTop) > 50) {
-          const top = Math.max(0, g.offsetTop - right.offsetTop - 12);
-          progScrollRef.current = { side: 'right', top };
+          // 用 rect 几何算 scrollTop（offsetTop 相对的 offsetParent 在嵌套布局下不是滚动容器，曾致 R2L 错位数百 px）
+          const top = Math.max(0, right.scrollTop + (gr.top - rr.top) - 12);
+          progScrollRef.current = { side: 'right', top, at: Date.now() };
           right.scrollTo({ top, behavior: 'smooth' });
         }
-      });
+      }
     }, { root: leftScrollRef.current, threshold: [0, 0.25, 0.6] });
     hosts.forEach(el => io.observe(el));
     return () => { io.disconnect(); };
   }, [doc, numPages, mode]);
 
   // 6b) 右→左 滚动跟随：右栏发生用户滚动（非程序化）→ 视口顶部段落所属页 → 左栏滚到该页。
-  // 防抖 200ms；程序化滚动（左栏联动/复位）通过 progScrollRef 目标位置比对排除。
+  // 防抖 200ms；程序化滚动（左栏联动/复位）通过 isProgScroll 时间窗排除（含动画进行中）。
   useEffect(() => {
     const right = rightScrollRef.current;
     if (!right || mode === 'en') return;
     const onScroll = () => {
-      const prog = progScrollRef.current;
-      if (prog && prog.side === 'right' && Math.abs(right.scrollTop - prog.top) < 4) return; // 联动滚动，忽略
+      if (isProgScroll('right')) return; // 联动滚动（含动画进行中），忽略
       if (rightSyncTimerRef.current) clearTimeout(rightSyncTimerRef.current);
       rightSyncTimerRef.current = setTimeout(() => {
-        const prog2 = progScrollRef.current;
-        if (prog2 && prog2.side === 'right' && Math.abs(right.scrollTop - prog2.top) < 4) return;
-        // 视口顶部往下第一个可见的带 data-page 段落
+        if (isProgScroll('right')) return;
+        // 视口顶部往下第一个仍与视口相交的带 data-page 段落。
+        // 命中阈值 4px：短标题段（高 ~30px）滚到视口顶时，+30px 阈值会跳过它落到下一段
+        // → 页锚错一页（dedup-scroll R2L pg4 -897px 根因）。只要段落底部还没出视口就算。
         const rr = right.getBoundingClientRect();
         const paras = right.querySelectorAll<HTMLElement>('.dpv-zhpara[data-page]');
         let target: HTMLElement | null = null;
         for (const p of paras) {
           const r = p.getBoundingClientRect();
-          if (r.bottom > rr.top + 30) { target = p; break; }
+          if (r.bottom > rr.top + 4) { target = p; break; }
         }
         const pg = target ? Number(target.dataset.page) : 0;
-        if (!pg || pg === visiblePageRef.current) return;
-        withSyncLock(() => {
+        if (!pg) return;
+        // 用户真实滚动 → 直接滚左栏（不经 withSyncLock：600ms 锁会吞掉连续用户滚动，
+        // pg4 采样 -897px 错位的根因之一）。回环防护由 isProgScroll('left') 在 IO 侧完成。
+        // 去重判定用几何而非 visiblePage：IO「交集最大页」在跨页动画/临界视口下会抖动
+        // （pg3 停稳时 pg4 顶露出一点可能反超），导致 pg===visiblePage 误吞真实滚动（根因之二）。
+        {
           const left = leftScrollRef.current;
           if (!left) return;
           const t = left.querySelector(`[data-page="${pg}"]`) as HTMLElement | null;
@@ -401,12 +418,13 @@ export default function DualPdfView({
             const lr = left.getBoundingClientRect();
             const tr = t.getBoundingClientRect();
             if (Math.abs(tr.top - (lr.top + 8)) > 50) {
-              const top = Math.max(0, t.offsetTop - left.offsetTop - 8);
-              progScrollRef.current = { side: 'left', top };
+              // rect 几何算 scrollTop（offsetTop 在嵌套布局下 offsetParent 不是滚动容器，曾致错位）
+              const top = Math.max(0, left.scrollTop + (tr.top - lr.top) - 8);
+              progScrollRef.current = { side: 'left', top, at: Date.now() };
               left.scrollTo({ top, behavior: 'smooth' });
             }
           }
-        });
+        }
       }, 200);
     };
     right.addEventListener('scroll', onScroll, { passive: true });
@@ -423,8 +441,11 @@ export default function DualPdfView({
     withSyncLock(() => {
       const t = left.querySelector(`[data-page="${page}"]`) as HTMLElement | null;
       if (t) {
-        const top = Math.max(0, t.offsetTop - left.offsetTop - 8);
-        progScrollRef.current = { side: 'left', top };
+        // rect 几何算 scrollTop（offsetTop 在嵌套布局下 offsetParent 不是滚动容器，曾致错位）
+        const lr = left.getBoundingClientRect();
+        const tr = t.getBoundingClientRect();
+        const top = Math.max(0, left.scrollTop + (tr.top - lr.top) - 8);
+        progScrollRef.current = { side: 'left', top, at: Date.now() };
         left.scrollTo({ top, behavior: 'smooth' });
       }
     });

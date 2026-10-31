@@ -154,7 +154,20 @@ export async function runDedupScrollTest() {
             const pageEl = domPage(pg);
             if (!pageEl) { samples.push({ dir: 'R2L', pg, err: null, note: 'no page' }); continue; }
             const err = Math.round(paraEl.getBoundingClientRect().top - pageEl.getBoundingClientRect().top);
-            samples.push({ dir: 'R2L', pg, err, within: Math.abs(err) <= TOL });
+            const within = Math.abs(err) <= TOL;
+            // 诊断（不改判定）：失败时 dump 左栏落点页 + 视口顶段落，定位错位来源
+            if (!within) {
+              const diag = (() => {
+                const lr = L.getBoundingClientRect();
+                const vis = [...L.querySelectorAll('.pdf-page')].find(p => { const r2 = p.getBoundingClientRect(); return r2.bottom > lr.top + 4; });
+                const rr = R.getBoundingClientRect();
+                const rTarget = [...R.querySelectorAll('.dpv-zhpara[data-page]')].find(p => { const r2 = p.getBoundingClientRect(); return r2.bottom > rr.top + 4; });
+                return { leftTopPage: vis?.dataset.page ?? '?', prodTargetPage: rTarget?.dataset.page ?? '?', lScrollTop: Math.round(L.scrollTop) };
+              })();
+              samples.push({ dir: 'R2L', pg, err, within, ...diag });
+            } else {
+              samples.push({ dir: 'R2L', pg, err, within });
+            }
           }
           // B3 稳定性：落定后 600ms 二次采样漂移 ≤2px
           L.scrollTop = Math.round(L.scrollHeight * 0.5);

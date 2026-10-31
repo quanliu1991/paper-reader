@@ -1,0 +1,32 @@
+{
+  "findings": [
+    {
+      "id": "test-fail-node-tests-dedup-scroll-test-mjs",
+      "severity": "high",
+      "view": "dedup-scroll（滚动同步 UI）",
+      "title": "测试层失败：dedup-scroll（滚动同步 UI）",
+      "evidence": "[B] 滚动同步误差: FAIL | DEDUP-SCROLL FAIL |  | [dedup-scroll] FAIL | console log saved: build/dedup-scroll-console.txt",
+      "screenshot": null,
+      "source": "test",
+      "status": "closed",
+      "firstSeen": "2026-10-31T15:46:02.489Z",
+      "lastSeen": "2026-10-31T15:46:02.489Z",
+      "count": 1,
+      "closedAt": "2026-10-31T16:04:08.678Z"
+    }
+  ],
+  "history": [
+    {
+      "at": "2026-10-31T15:46:02.489Z",
+      "what": "audit: +1 new / 1 total signals"
+    },
+    {
+      "at": "2026-10-31T16:02:31.881Z",
+      "what": "audit: +0 new / 0 total signals"
+    },
+    {
+      "at": "2026-10-31T16:04:08.679Z",
+      "what": "verify: closed test-fail-node-tests-dedup-scroll-test-mjs"
+    }
+  ]
+}
