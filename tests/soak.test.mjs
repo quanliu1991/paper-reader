@@ -1,6 +1,7 @@
 // 稳定性 soak：主进程内反复 导入/读取/删除 论文 × N 轮，监控 RSS 与耗时
 // 判定：RSS 增长 < 30%（相对第 1 轮），无异常
 import { build } from 'esbuild';
+import { electronBin } from './lib/launch.mjs';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -27,7 +28,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-soak-'));
 const logFile = path.join(tmpDir, 'soak.log');
 const doneFile = path.join(tmpDir, 'done');
 
-const child = spawn(path.join('node_modules', '.bin', 'electron.cmd'), ['.'], {
+const child = spawn(electronBin(), ['.'], {
   env: { ...process.env, PR_SOAK: '1', PR_SOAK_LOG: logFile, PR_SOAK_DONE: doneFile, PR_SOAK_USER_DATA: tmpDir },
   shell: true, stdio: 'ignore',
 });

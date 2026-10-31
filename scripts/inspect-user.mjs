@@ -1,5 +1,6 @@
 // 用户库检查启动器：vite + electron（连真实 userData，不污染——只读打开）
 import { spawn } from 'child_process';
+import { electronBin } from '../tests/lib/launch.mjs';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -21,7 +22,7 @@ await new Promise((resolve, reject) => {
   }, 500);
 });
 
-const child = spawn(path.join('node_modules', '.bin', 'electron.cmd'), ['.'], {
+const child = spawn(electronBin(), ['.'], {
   cwd: root, shell: true, stdio: 'ignore',
   env: { ...process.env, PR_UI_INSPECT: '1', PR_E2E_LOG: logFile, PR_E2E_DONE: doneFile, VITE_DEV_SERVER_URL: 'http://localhost:5199' },
 });

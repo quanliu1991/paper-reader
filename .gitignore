@@ -7,3 +7,6 @@ release/
 tests/.tmp-tg/
 tests/.tmp-ins/
 build/
+llm.txt
+.env.local
+.env.*.local

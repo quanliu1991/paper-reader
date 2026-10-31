@@ -29,7 +29,7 @@ if (packaged) {
 
 const electronBin = packaged
   ? path.resolve('release/win-unpacked/Paper Reader.exe')
-  : path.join('node_modules', '.bin', 'electron.cmd');
+  : path.join('node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron');
 
 // 防宿主 shell 残留 PR_E2E 等变量误入子进程（曾导致 dev 模式 require 错入口超时）
 const { PR_E2E, PR_PDF_E2E, PR_E2E_LOG, PR_E2E_DONE, PR_E2E_USER_DATA, ...cleanEnv } = process.env;

@@ -14,8 +14,11 @@
     "electron:dev": "node scripts/electron-build.mjs && concurrently \"vite\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "electron:build": "npm run build && electron-builder",
     "preview": "vite preview",
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
     "guard": "node tests/visual-guard.test.mjs",
     "test:dedup-scroll": "node tests/dedup-scroll.test.mjs",
+    "test:all": "node scripts/test-all.mjs",
+    "test:all:full": "node scripts/test-all.mjs --full",
     "release": "node scripts/release.mjs"
   },
   "build": {

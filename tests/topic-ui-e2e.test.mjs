@@ -1,5 +1,6 @@
 // 主题依赖库 UI E2E 启动器
 import { build } from 'esbuild';
+import { electronBin } from './lib/launch.mjs';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -32,7 +33,7 @@ await new Promise((resolve, reject) => {
   }, 500);
 });
 
-const child = spawn(path.join('node_modules', '.bin', 'electron.cmd'), ['.'], {
+const child = spawn(electronBin(), ['.'], {
   cwd: root, shell: true, stdio: 'ignore',
   env: {
     ...process.env,

@@ -20,7 +20,7 @@ await build({
   logLevel: 'silent',
 });
 
-const electronBin = path.join('node_modules', '.bin', 'electron.cmd');
+const electronBin = path.join('node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron');
 const child = spawn(electronBin, ['scripts/.test-db-bundle.cjs'], {
   env: { ...process.env, PR_TEST_DIR: tmpDir, PR_LOG: logFile, PR_DONE: doneFile },
   shell: true,

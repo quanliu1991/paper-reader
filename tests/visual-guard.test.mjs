@@ -1,6 +1,7 @@
 // 强制门禁启动器：npm run guard
 // esbuild 主进程 → vite(5199) → electron(PR_ASSERT_E2E) → A/B/C/D 四断言 → GUARD ALL PASS 才算过
 import { build } from 'esbuild';
+import { electronBin } from './lib/launch.mjs';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -33,7 +34,7 @@ await new Promise((resolve, reject) => {
 });
 console.log('[guard] vite up, launching electron guard ...');
 
-const child = spawn(path.join('node_modules', '.bin', 'electron.cmd'), ['.'], {
+const child = spawn(electronBin(), ['.'], {
   cwd: root, shell: true, stdio: 'ignore',
   env: {
     ...process.env,

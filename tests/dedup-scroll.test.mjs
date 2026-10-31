@@ -1,6 +1,7 @@
 // 启动器：npm run test:dedup-scroll
 // esbuild 测试入口 → vite(5199) → electron 主进程(PR_DEDUP_E2E require 测试入口) → 日志回传
 import { build } from 'esbuild';
+import { electronBin } from './lib/launch.mjs';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -34,7 +35,7 @@ await new Promise((resolve, reject) => {
 });
 console.log('[dedup-scroll] vite up, launching electron ...');
 
-const child = spawn(path.join('node_modules', '.bin', 'electron.cmd'), ['.'], {
+const child = spawn(electronBin(), ['.'], {
   cwd: root, shell: true, stdio: 'ignore',
   env: {
     ...process.env,

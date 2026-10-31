@@ -1,6 +1,7 @@
 // 翻译质量 E2E 启动器：esbuild bundle → electron 跑真实 LLM 翻译 → QC 验收
 // 注意：默认用生产 userData（拿真实 Provider 配置）；--isolated 用临时库（无 Provider 则 SKIP）
 import { build } from 'esbuild';
+import { electronBin } from './lib/launch.mjs';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -25,7 +26,7 @@ const env = {
   ...(isolated ? { PR_E2E_USER_DATA: tmpDir } : {}),
 };
 
-const child = spawn(path.join('node_modules', '.bin', 'electron.cmd'), ['.'], {
+const child = spawn(electronBin(), ['.'], {
   cwd: process.cwd(), shell: true, stdio: 'ignore', env,
 });
 
