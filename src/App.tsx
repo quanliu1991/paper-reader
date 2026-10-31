@@ -5,9 +5,10 @@ import Reader from './components/Reader';
 import Settings from './components/Settings';
 import Review from './components/Review';
 import TopicView from './components/TopicView';
+import NotesView from './components/NotesView';
 import CommandPalette from './components/CommandPalette';
 import ToastHost from './components/Toast';
-import { IconLibrary, IconReview, IconSettings, IconSearch, IconGraph } from './components/icons';
+import { IconLibrary, IconReview, IconSettings, IconSearch, IconGraph, IconNotes } from './components/icons';
 
 export default function App() {
   const view = useStore(s => s.view);
@@ -56,6 +57,13 @@ export default function App() {
             <IconGraph />
           </button>
           <button
+            className={`nav-btn ${view === 'notes' ? 'on' : ''}`}
+            onClick={() => useStore.getState().setView('notes')}
+            title="沉淀：高亮与笔记"
+          >
+            <IconNotes />
+          </button>
+          <button
             className={`nav-btn ${view === 'review' ? 'on' : ''}`}
             onClick={() => useStore.getState().setView('review')}
             title="闪卡复习"
@@ -91,6 +99,7 @@ export default function App() {
           {view === 'settings' && <Settings />}
           {view === 'review' && <Review />}
           {view === 'topics' && <TopicView />}
+          {view === 'notes' && <NotesView />}
         </main>
       </div>
 

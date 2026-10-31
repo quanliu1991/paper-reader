@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, memo } from 'react';
+import { useEffect, useRef, useState, useCallback, memo, Fragment } from 'react';
 import { useStore } from '../store';
 import RichText from './RichText';
 import { figSrc } from '../figsrc';
@@ -8,6 +8,8 @@ import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
 import BilingualView from './BilingualView';
 import DualPdfView from './DualPdfView';
+import ParaNotes from './ParaNotes';
+import type { NoteRow } from '../store';
 import { IconBack, IconExport, IconImmersive, IconMore } from './icons';
 
 const HL_COLORS = [
@@ -21,6 +23,7 @@ export default function Reader() {
   const paper = useStore(s => s.currentPaper)!;
   const blocks = useStore(s => s.blocks);
   const highlights = useStore(s => s.highlights);
+  const notes = useStore(s => s.notes);
   const layout = useStore(s => s.layout);
   const setLayout = useStore(s => s.setLayout);
   const translating = useStore(s => s.translating);
@@ -36,6 +39,8 @@ export default function Reader() {
   const [popover, setPopover] = useState<{ x: number; y: number; text: string; pid: number } | null>(null);
   // 豆包式划词快捷结果（解释/搜索/翻译）
   const [quickResult, setQuickResult] = useState<{ x: number; y: number; kind: 'explain' | 'search' | 'translate'; text: string; answer: string; loading: boolean } | null>(null);
+  // 划词写笔记：浮层输入，挂靠划选所在段落
+  const [noteComposer, setNoteComposer] = useState<{ x: number; y: number; pid: number; text: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollRatioRef = useRef(0);
   const suppressSaveRef = useRef(false);
@@ -178,6 +183,7 @@ export default function Reader() {
       } else if (e.key === 'Escape') {
         setPopover(null);
         setMoreOpen(false);
+        setNoteComposer(null);
         if (useStore.getState().immersive) useStore.getState().setImmersive(false);
       }
     };
@@ -244,6 +250,28 @@ export default function Reader() {
     setPopover(null);
   }
 
+  // 划词写笔记：打开浮层（挂靠段落）
+  function openNoteComposer() {
+    if (!popover) return;
+    const { x, y, pid } = popover;
+    setPopover(null);
+    setNoteComposer({ x, y, pid, text: '' });
+  }
+
+  async function saveNote() {
+    if (!noteComposer) return;
+    const text = noteComposer.text.trim();
+    if (!text) { setNoteComposer(null); return; }
+    try {
+      await window.api.addNote({ paperId: paper.id, pid: noteComposer.pid, text });
+      setNoteComposer(null);
+      await useStore.getState().refreshNotes(paper.id);
+      window.dispatchEvent(new CustomEvent('pr:toast', { detail: { type: 'success', msg: '已存笔记' } }));
+    } catch (e: any) {
+      window.dispatchEvent(new CustomEvent('pr:toast', { detail: { type: 'error', msg: `笔记保存失败：${e?.message ?? e}` } }));
+    }
+  }
+
   // 豆包式划词三键：解释 / 搜索 / 翻译（行内浮层出结果，不打断阅读）
   async function runQuick(kind: 'explain' | 'search' | 'translate') {
     if (!popover) return;
@@ -305,6 +333,13 @@ export default function Reader() {
   for (const h of highlights) {
     if (!hlByPid.has(h.pid)) hlByPid.set(h.pid, []);
     hlByPid.get(h.pid)!.push({ text: h.text_en, color: h.color });
+  }
+
+  const notesByPid = new Map<number, NoteRow[]>();
+  for (const n of notes) {
+    if (n.pid == null) continue;
+    if (!notesByPid.has(n.pid)) notesByPid.set(n.pid, []);
+    notesByPid.get(n.pid)!.push(n);
   }
 
   const readPct = Math.round(scrollRatioRef.current * 100);
@@ -397,6 +432,8 @@ export default function Reader() {
             fontSize={fontSize}
             hlByPid={hlByPid}
             translating={translating}
+            paperId={paper.id}
+            notesByPid={notesByPid}
           />
         </div>
       ) : layout === 'bilingual' ? (
@@ -410,6 +447,8 @@ export default function Reader() {
             blocks={blocks}
             fontSize={fontSize}
             hlByPid={hlByPid}
+            paperId={paper.id}
+            notesByPid={notesByPid}
           />
         </div>
       ) : (
@@ -420,7 +459,10 @@ export default function Reader() {
           style={{ fontSize: `${fontSize}px` }}
         >
           {blocks.map(b => (
-            <BlockRowView key={b.pid} b={b} layout={layout} hlItems={hlByPid.get(b.pid) ?? []} />
+            <Fragment key={b.pid}>
+              <BlockRowView b={b} layout={layout} hlItems={hlByPid.get(b.pid) ?? []} />
+              <ParaNotes notes={notesByPid.get(b.pid) ?? []} paperId={paper.id} />
+            </Fragment>
           ))}
         </div>
       )}
@@ -446,6 +488,7 @@ export default function Reader() {
           <span className="pop-sep" />
           <button onClick={copySelection} title="复制">⧉</button>
           <button className="primary" onClick={askSelection} title="提问">提问</button>
+          <button onClick={openNoteComposer} title="给这段写一条笔记">笔记</button>
           <button onClick={saveFlashcard} title="存为闪卡">闪卡</button>
         </div>
       )}
@@ -460,6 +503,26 @@ export default function Reader() {
             {quickResult.loading
               ? <span className="qr-loading">思考中…</span>
               : <RichText text={quickResult.answer} />}
+          </div>
+        </div>
+      )}
+      {noteComposer && (
+        <div className="note-composer glass" style={{ left: Math.max(70, Math.min(noteComposer.x - 160, window.innerWidth - 380)), top: Math.max(8, noteComposer.y + 36) }}>
+          <div className="ncp-title">📝 写笔记（挂在划选所在段落）</div>
+          <textarea
+            autoFocus
+            value={noteComposer.text}
+            placeholder="用自己的话记一句…（沉淀页可跨论文浏览）"
+            onChange={e => setNoteComposer(v => v! && { ...v, text: e.target.value })}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveNote();
+              if (e.key === 'Escape') setNoteComposer(null);
+            }}
+          />
+          <div className="ncp-actions">
+            <span className="hint">Ctrl/⌘+Enter 保存 · Esc 取消</span>
+            <button className="ghost-btn" onClick={() => setNoteComposer(null)}>取消</button>
+            <button className="primary" onClick={saveNote} disabled={!noteComposer.text.trim()}>保存</button>
           </div>
         </div>
       )}

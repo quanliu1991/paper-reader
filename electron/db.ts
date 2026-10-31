@@ -153,15 +153,37 @@ function migrate(d: Database.Database) {
     value TEXT,
     updated_at TEXT DEFAULT (datetime('now','localtime'))
   );
+
+  CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    pid INTEGER,                              -- 挂靠段落（划词/段落旁新建时记录，整篇笔记可空）
+    text TEXT NOT NULL,                       -- 自由文本（markdown）
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_note_paper ON notes(paper_id);
   `);
   migrateColumns(d);
 }
 
 // v0.1 建库时 blocks 无 fig_kind 列，v0.2 迁移
+// v0.3 论文组织：papers 无 status/tags 列时迁移（老库自动升级，新库由下方迁移补列）
 function migrateColumns(d: Database.Database) {
   const cols = d.prepare("PRAGMA table_info(blocks)").all() as any[];
   if (cols.length && !cols.some(c => c.name === 'fig_kind')) {
     d.prepare("ALTER TABLE blocks ADD COLUMN fig_kind TEXT").run();
+  }
+  const pcols = d.prepare("PRAGMA table_info(papers)").all() as any[];
+  if (pcols.length && !pcols.some(c => c.name === 'status')) {
+    d.prepare("ALTER TABLE papers ADD COLUMN status TEXT DEFAULT 'unread'").run();
+  }
+  if (pcols.length && !pcols.some(c => c.name === 'tags')) {
+    d.prepare("ALTER TABLE papers ADD COLUMN tags TEXT DEFAULT ''").run();
+  }
+  // v0.4 本地论文库：登记本地 PDF 路径（NULL = 非本地导入）
+  if (pcols.length && !pcols.some(c => c.name === 'file_path')) {
+    d.prepare("ALTER TABLE papers ADD COLUMN file_path TEXT").run();
   }
 }
 
@@ -199,6 +221,43 @@ export function touchPaper(id: number) {
 
 export function deletePaper(id: number) {
   getDb().prepare('DELETE FROM papers WHERE id=?').run(id);
+}
+
+// ---------- 论文组织：状态 + 标签（v0.3）----------
+export const PAPER_STATUSES = ['unread', 'reading', 'done', 'deep'] as const;
+export type PaperStatus = (typeof PAPER_STATUSES)[number];
+
+export function setPaperStatus(id: number, status: string) {
+  if (!(PAPER_STATUSES as readonly string[]).includes(status)) {
+    throw new Error(`未知论文状态：${status}`);
+  }
+  getDb().prepare('UPDATE papers SET status=? WHERE id=?').run(status, id);
+}
+
+// tags 落库为 JSON 数组字符串；入参去空白去重，上限 20 防误粘贴
+export function setPaperTags(id: number, tags: string[]) {
+  const clean = [...new Set(tags.map(t => t.trim()).filter(Boolean))].slice(0, 20);
+  getDb().prepare('UPDATE papers SET tags=? WHERE id=?').run(JSON.stringify(clean), id);
+}
+
+// ---------- 本地论文库（v0.4）----------
+export function setPaperFilePath(id: number, filePath: string | null) {
+  getDb().prepare('UPDATE papers SET file_path=? WHERE id=?').run(filePath, id);
+}
+
+export function findPaperByArxiv(arxivId: string) {
+  return getDb().prepare(
+    `SELECT id, arxiv_id, title, file_path,
+       (SELECT COUNT(*) FROM blocks b WHERE b.paper_id=papers.id) AS block_count
+     FROM papers WHERE arxiv_id=?`
+  ).get(arxivId) as any;
+}
+
+export function listLocalPapers() {
+  return getDb().prepare(
+    `SELECT id, arxiv_id, title, file_path FROM papers
+     WHERE file_path IS NOT NULL AND file_path != ''`
+  ).all();
 }
 
 // ---------- blocks ----------
@@ -247,6 +306,46 @@ export function listHighlights(paperId: number) {
 
 export function removeHighlight(id: number) {
   getDb().prepare('DELETE FROM highlights WHERE id=?').run(id);
+}
+
+// 跨论文高亮流（沉淀页用：join 论文标题，最新在前）
+export function listAllHighlights() {
+  return getDb().prepare(
+    `SELECT h.*, p.title AS paper_title, p.arxiv_id FROM highlights h
+     LEFT JOIN papers p ON p.id = h.paper_id
+     ORDER BY h.created_at DESC, h.id DESC`
+  ).all();
+}
+
+// ---------- notes（挂段落自由笔记，v0.3）----------
+export function addNote(n: { paperId: number; pid?: number; text: string }) {
+  const info = getDb().prepare(
+    'INSERT INTO notes (paper_id, pid, text) VALUES (?,?,?)'
+  ).run(n.paperId, n.pid ?? null, n.text);
+  return Number(info.lastInsertRowid);
+}
+
+export function updateNote(id: number, text: string) {
+  getDb().prepare(
+    `UPDATE notes SET text=?, updated_at=datetime('now','localtime') WHERE id=?`
+  ).run(text, id);
+}
+
+export function deleteNote(id: number) {
+  getDb().prepare('DELETE FROM notes WHERE id=?').run(id);
+}
+
+export function listNotes(paperId: number) {
+  return getDb().prepare('SELECT * FROM notes WHERE paper_id=? ORDER BY pid, updated_at').all(paperId);
+}
+
+// 跨论文笔记流（沉淀页用：join 论文标题，最近更新在前）
+export function listAllNotes() {
+  return getDb().prepare(
+    `SELECT n.*, p.title AS paper_title, p.arxiv_id FROM notes n
+     LEFT JOIN papers p ON p.id = n.paper_id
+     ORDER BY n.updated_at DESC, n.id DESC`
+  ).all();
 }
 
 // ---------- qa ----------

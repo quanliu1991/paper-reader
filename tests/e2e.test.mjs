@@ -13,7 +13,7 @@ await build({
   target: 'node20',
   format: 'cjs',
   outfile: 'dist-electron/main.js',
-  external: ['electron', 'better-sqlite3'],
+  external: ['electron', 'better-sqlite3', 'pdfjs-dist'],
   logLevel: 'silent',
 });
 await build({
@@ -22,7 +22,7 @@ await build({
   platform: 'node',
   format: 'cjs',
   outfile: 'dist-electron/e2e-entry.js',
-  external: ['electron', 'better-sqlite3'],
+  external: ['electron', 'better-sqlite3', 'pdfjs-dist'],
   logLevel: 'silent',
 });
 
@@ -30,15 +30,21 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-e2e-'));
 const logFile = path.join(tmpDir, 'e2e.log');
 const doneFile = path.join(tmpDir, 'done');
 
-const electronBin = path.join('node_modules', '.bin', 'electron.cmd');
+// electron 二进制按平台选：Windows 是 electron.cmd，mac/linux 是 electron
+const electronBin = path.join('node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron');
+// 宿主环境（IDE 内嵌终端等）可能残留 ELECTRON_RUN_AS_NODE=1，
+// 会让 electron 二进制退化成纯 Node（protocol undefined）——必须清掉
+const env = {
+  ...process.env,
+  PR_E2E: '1',
+  PR_E2E_LOG: logFile,
+  PR_E2E_DONE: doneFile,
+  PR_E2E_USER_DATA: tmpDir,
+};
+delete env.ELECTRON_RUN_AS_NODE;
+
 const child = spawn(electronBin, ['.'], {
-  env: {
-    ...process.env,
-    PR_E2E: '1',
-    PR_E2E_LOG: logFile,
-    PR_E2E_DONE: doneFile,
-    PR_E2E_USER_DATA: tmpDir,
-  },
+  env,
   shell: true,
   stdio: 'ignore',
 });

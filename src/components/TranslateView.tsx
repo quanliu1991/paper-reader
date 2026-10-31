@@ -1,6 +1,7 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState, Fragment } from 'react';
 import RichText from './RichText';
-import type { BlockRow } from '../store';
+import ParaNotes from './ParaNotes';
+import type { BlockRow, NoteRow } from '../store';
 import { figSrc } from '../figsrc';
 
 // 豆包式「翻译全文」双栏同构对照视图：
@@ -9,12 +10,14 @@ import { figSrc } from '../figsrc';
 // - 长内容淡化折叠（豆包细节）：超长段落 max-height + 渐变 mask + 点击展开
 // - 划词：左栏文本可选中，onMouseUp 冒泡到 Reader 划词工具条
 export default function TranslateView({
-  blocks, fontSize, hlByPid, translating,
+  blocks, fontSize, hlByPid, translating, paperId, notesByPid,
 }: {
   blocks: BlockRow[];
   fontSize: number;
   hlByPid: Map<number, Array<{ text: string; color: string }>>;
   translating: boolean;
+  paperId: number;
+  notesByPid: Map<number, NoteRow[]>;
 }) {
   const [activePid, setActivePid] = useState<number | null>(null);
   const activeRef = useRef<number | null>(null);
@@ -49,13 +52,15 @@ export default function TranslateView({
   return (
     <div className={`translate-view fs-${fontSize}`} ref={containerRef} style={{ fontSize: `${fontSize}px` }}>
       {blocks.map(b => (
-        <TvRow
-          key={b.pid}
-          b={b}
-          active={activePid === b.pid}
-          hlItems={hlByPid.get(b.pid) ?? []}
-          onActivate={() => setActivePid(cur => (cur === b.pid ? null : b.pid))}
-        />
+        <Fragment key={b.pid}>
+          <TvRow
+            b={b}
+            active={activePid === b.pid}
+            hlItems={hlByPid.get(b.pid) ?? []}
+            onActivate={() => setActivePid(cur => (cur === b.pid ? null : b.pid))}
+          />
+          <ParaNotes notes={notesByPid.get(b.pid) ?? []} paperId={paperId} />
+        </Fragment>
       ))}
     </div>
   );

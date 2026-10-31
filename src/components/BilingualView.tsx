@@ -1,22 +1,28 @@
-import { memo } from 'react';
+import { memo, Fragment } from 'react';
 import RichText from './RichText';
-import type { BlockRow } from '../store';
+import ParaNotes from './ParaNotes';
+import type { BlockRow, NoteRow } from '../store';
 import { figSrc } from '../figsrc';
 
 // 双语书模式：单栏流式，每段英文原文下方紧跟中文译文（段落交错，像双语书籍排版）。
 // 与左右对照（TranslateView）互补：窄窗口/长段落连读场景更自然，视线不用左右横跳。
 // 复用 Reader 的划词（onMouseUp 冒泡）与高亮标记管线。
 export default function BilingualView({
-  blocks, fontSize, hlByPid,
+  blocks, fontSize, hlByPid, paperId, notesByPid,
 }: {
   blocks: BlockRow[];
   fontSize: number;
   hlByPid: Map<number, Array<{ text: string; color: string }>>;
+  paperId: number;
+  notesByPid: Map<number, NoteRow[]>;
 }) {
   return (
     <div className="bilingual-view" style={{ fontSize: `${fontSize}px` }}>
       {blocks.map(b => (
-        <BiRow key={b.pid} b={b} hlItems={hlByPid.get(b.pid) ?? []} />
+        <Fragment key={b.pid}>
+          <BiRow b={b} hlItems={hlByPid.get(b.pid) ?? []} />
+          <ParaNotes notes={notesByPid.get(b.pid) ?? []} paperId={paperId} />
+        </Fragment>
       ))}
     </div>
   );

@@ -15,7 +15,48 @@ export default function Settings() {
     <div className="settings-page">
       <ProfileSection />
       <ProviderSection />
+      <LibrarySection />
       <RepoSection />
+    </div>
+  );
+}
+
+// 本地论文库：连接本地文件夹（批量导入 / 目录整理的根目录）
+function LibrarySection() {
+  const [dir, setDir] = useState('');
+
+  useEffect(() => {
+    window.api.libGetDir().then((d: string) => setDir(d ?? ''));
+  }, []);
+
+  async function pick() {
+    try {
+      const d = await window.api.libPickDir();
+      if (!d) return;
+      await window.api.libSetDir(d);
+      setDir(d);
+      toast('success', '本地论文库已连接，去「论文库 → 本地库」扫描导入');
+    } catch (e: any) { toastErr(e); }
+  }
+
+  return (
+    <div className="settings-section">
+      <h3>本地论文库</h3>
+      <div className="repo-status">
+        <span>{dir ? `✓ 已连接：${dir}` : '未连接'}</span>
+        {dir && (
+          <button className="ghost-btn" onClick={() => window.api.libOpenDir('').catch((e: any) => toastErr(e))}>
+            打开文件夹
+          </button>
+        )}
+      </div>
+      <div className="import-row">
+        <input type="text" value={dir} placeholder="选择本地论文文件夹…" readOnly onClick={pick} style={{ cursor: 'pointer' }} />
+        <button className="primary" onClick={pick}>选择文件夹</button>
+      </div>
+      <div className="hint" style={{ marginTop: 10 }}>
+        连接后可批量导入文件夹里的 PDF（全文解析，翻译/划线/闪卡全链路可用）；应用内移动论文会真实移动磁盘文件，外部改动扫描时自动重新关联。
+      </div>
     </div>
   );
 }

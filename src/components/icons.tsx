@@ -30,6 +30,16 @@ export function IconGraph({ s = 18 }: { s?: number }) {
   );
 }
 
+export function IconNotes({ s = 18 }: { s?: number }) {
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3z" />
+      <path d="M15 3v6h6" />
+      <path d="M9 13h6M9 17h4" />
+    </svg>
+  );
+}
+
 export function IconSettings({ s = 18 }: { s?: number }) {
   return (
     <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

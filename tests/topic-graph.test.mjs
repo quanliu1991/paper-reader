@@ -1,5 +1,12 @@
 // 主题依赖库：分层 + 阅读顺序 离线单元测试
-import { stratifyAndOrder } from '../tests/.tmp-tg/topic-graph.js';
+// .tmp-tg 是 gitignore 的编译产物——先自编译再动态 import（保证 fresh clone 可跑）
+import { build } from 'esbuild';
+await build({
+  entryPoints: ['electron/topic-graph.ts'],
+  bundle: true, platform: 'node', target: 'node20', format: 'esm',
+  outfile: 'tests/.tmp-tg/topic-graph.js', logLevel: 'silent',
+});
+const { stratifyAndOrder } = await import('../tests/.tmp-tg/topic-graph.js');
 
 let pass = 0, fail = 0;
 function assert(cond, name) {

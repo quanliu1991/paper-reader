@@ -20,6 +20,22 @@ const api = {
   getBlocks: (id: number) => call('papers:getBlocks', id),
   importArxiv: (input: string) => call('papers:importArxiv', input),
   importText: (arg: { arxivId: string; title: string; text: string }) => call('papers:importText', arg),
+  setStatus: (arg: { id: number; status: string }) => call('papers:setStatus', arg),
+  setTags: (arg: { id: number; tags: string[] }) => call('papers:setTags', arg),
+  // 本地论文库（v0.4）
+  libGetDir: () => call('lib:getDir'),
+  libSetDir: (dir: string) => call('lib:setDir', dir),
+  libPickDir: () => call('lib:pickDir'),
+  libScan: () => call('lib:scan'),
+  libImportFiles: (paths: string[]) => call('lib:importFiles', paths),
+  libMoveFile: (arg: { paperId: number; dir: string; newFolder?: string }) => call('lib:moveFile', arg),
+  libRevealFile: (paperId: number) => call('lib:revealFile', paperId),
+  libOpenDir: (relDir: string) => call('lib:openDir', relDir),
+  onLibProgress: (cb: (p: any) => void): (() => void) => {
+    const l = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('lib:progress', l);
+    return () => { ipcRenderer.removeListener('lib:progress', l); };
+  },
   // summaries
   getSummary: (paperId: number) => call('summary:get', paperId),
   regenSummary: (paperId: number) => call('summary:regen', paperId),
@@ -65,6 +81,13 @@ const api = {
   addHighlight: (h: { paperId: number; pid: number; textEn: string; note?: string; color?: string }) => call('hl:add', h),
   listHighlights: (paperId: number) => call('hl:list', paperId),
   removeHighlight: (id: number) => call('hl:remove', id),
+  listAllHighlights: () => call('hl:listAll'),
+  // notes（挂段落自由笔记）
+  addNote: (n: { paperId: number; pid?: number; text: string }) => call('notes:add', n),
+  updateNote: (arg: { id: number; text: string }) => call('notes:update', arg),
+  deleteNote: (id: number) => call('notes:delete', id),
+  listPaperNotes: (paperId: number) => call('notes:list', paperId),
+  listAllNotes: () => call('notes:listAll'),
   askQuestion: (arg: { paperId: number; pid: number; question: string; context: string; highlightId?: number }) =>
     call('qa:ask', arg),
   onQaStream: (qaId: number, cb: (m: any) => void): (() => void) => {

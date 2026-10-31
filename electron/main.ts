@@ -7,6 +7,7 @@ import * as gh from './github-bridge';
 import * as insights from './insights';
 import * as tr from './translate';
 import * as topicGraph from './topic-graph';
+import * as library from './library';
 import fs from 'fs';
 
 let win: BrowserWindow | null = null;
@@ -58,11 +59,20 @@ app.whenReady().then(async () => {
   });
   // PDF：local-pdf://p/<paperId> → userData/pdfs/<paperId>.pdf
   // 注意：纯数字 host 会被 URL 解析成 IPv4（local-pdf://2 → 0.0.0.2），故用 path 段承载 id
-  protocol.handle('local-pdf', (request) => {
+  // 回退：本地论文库（papers.file_path）直读原文件——零拷贝不占双份磁盘
+  protocol.handle('local-pdf', async (request) => {
     const u = new URL(request.url);
     const id = u.pathname.replace(/\/+/g, '').split('/')[0] || u.hostname;
     const safe = path.basename(decodeURIComponent(id)); // 只留文件名防穿越
     const filePath = path.join(app.getPath('userData'), 'pdfs', `${safe}.pdf`);
+    if (!fs.existsSync(filePath)) {
+      try {
+        const row = db.getDb().prepare('SELECT file_path FROM papers WHERE id=?').get(Number(safe) || 0) as any;
+        if (row?.file_path && fs.existsSync(row.file_path)) {
+          return net.fetch('file:///' + row.file_path.replace(/\\/g, '/'));
+        }
+      } catch { /* 落到 404 */ }
+    }
     return net.fetch('file:///' + filePath.replace(/\\/g, '/'));
   });
   if (process.env.PR_ASSERT_E2E) {
@@ -1353,6 +1363,65 @@ export function registerIpc() {
   wrap('papers:get', (_e, id: number) => { db.touchPaper(id); return db.getPaper(id); });
   wrap('papers:delete', (_e, id: number) => { db.deletePaper(id); return true; });
   wrap('papers:getBlocks', (_e, id: number) => db.getBlocks(id));
+  // 论文组织：状态 + 标签（v0.3）
+  wrap('papers:setStatus', (_e, arg: { id: number; status: string }) => { db.setPaperStatus(arg.id, arg.status); return true; });
+  wrap('papers:setTags', (_e, arg: { id: number; tags: string[] }) => { db.setPaperTags(arg.id, arg.tags); return true; });
+
+  // ---------- 本地论文库（v0.4）----------
+  const LIB_DIR_KEY = 'library_dir';
+  wrap('lib:getDir', () => db.getSetting(LIB_DIR_KEY) ?? '');
+  wrap('lib:setDir', (_e, dir: string) => { db.setSetting(LIB_DIR_KEY, String(dir || '')); return true; });
+  wrap('lib:pickDir', async () => {
+    const r = await dialog.showOpenDialog(win ?? undefined as any, { properties: ['openDirectory', 'createDirectory'] });
+    return r.canceled || !r.filePaths?.length ? null : r.filePaths[0];
+  });
+  wrap('lib:scan', () => {
+    const root = db.getSetting(LIB_DIR_KEY);
+    if (!root) throw new Error('未设置本地论文库文件夹（先在「本地库」面板选择文件夹）');
+    if (!fs.existsSync(root)) {
+      const err: any = new Error(`文件夹不存在：${root}`);
+      err.hint = '文件夹可能被移动或重命名，请重新选择。';
+      throw err;
+    }
+    return library.syncScan(root);
+  });
+  wrap('lib:importFiles', async (_e, paths: string[]) => {
+    if (!Array.isArray(paths) || !paths.length) throw new Error('未选择要导入的文件');
+    const results: Array<{ path: string; ok: boolean; paperId?: number; title?: string; error?: string }> = [];
+    for (let i = 0; i < paths.length; i++) {
+      const abs = paths[i];
+      let r: any;
+      try {
+        r = await library.importLocalPdf(abs);
+        generateTriageInBackground(r.paperId).catch(() => {});
+        results.push({ path: abs, ok: true, ...r });
+      } catch (e: any) {
+        results.push({ path: abs, ok: false, error: e?.message ?? String(e) });
+      }
+      const last = results[results.length - 1];
+      send('lib:progress', { done: i + 1, total: paths.length, path: abs, ok: last.ok, title: last.title ?? path.basename(abs) });
+    }
+    return results;
+  });
+  wrap('lib:moveFile', (_e, arg: { paperId: number; dir: string; newFolder?: string }) => {
+    const root = db.getSetting(LIB_DIR_KEY);
+    if (!root) throw new Error('未设置本地论文库文件夹');
+    return library.movePaperFile(arg.paperId, root, arg.dir, arg.newFolder);
+  });
+  wrap('lib:revealFile', (_e, paperId: number) => {
+    const paper = db.getPaper(paperId) as any;
+    if (!paper?.file_path || !fs.existsSync(paper.file_path)) throw new Error('本地文件不存在（可能已被移动，扫描一次可重新关联）');
+    shell.showItemInFolder(paper.file_path);
+    return true;
+  });
+  wrap('lib:openDir', (_e, relDir: string) => {
+    const root = db.getSetting(LIB_DIR_KEY);
+    if (!root) throw new Error('未设置本地论文库文件夹');
+    const dir = path.join(root, library.cleanRelDir(relDir || ''));
+    if (!fs.existsSync(dir)) throw new Error('文件夹不存在');
+    shell.openPath(dir);
+    return true;
+  });
 
   // ---------- 主题依赖库 ----------
   const topicJobs = new Set<number>(); // 构建中防重
@@ -1459,6 +1528,8 @@ export function registerIpc() {
   // 确保论文 PDF 存在（返回是否存在）
   wrap('pdf:ensure', async (_e, paperId: number) => {
     const paper = db.getPaper(paperId) as any;
+    // 本地论文库：直接读原文件（协议层回退），无需下载
+    if (paper?.file_path && fs.existsSync(paper.file_path)) return { exists: true };
     if (!paper?.arxiv_id) return { exists: false };
     const dest = path.join(app.getPath('userData'), 'pdfs', `${paperId}.pdf`);
     if (fs.existsSync(dest) && fs.statSync(dest).size > 10000) return { exists: true };
@@ -1472,7 +1543,12 @@ export function registerIpc() {
   // 页面对齐：解析 PDF 文本层，为每个 block 定位页码
   wrap('pdf:pageMap', async (_e, paperId: number) => {
     const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
-    const pdfPath = path.join(pdfsDir, `${paperId}.pdf`);
+    let pdfPath = path.join(pdfsDir, `${paperId}.pdf`);
+    // 本地论文库回退：直读原文件
+    if (!fs.existsSync(pdfPath)) {
+      const paper = db.getPaper(paperId) as any;
+      if (paper?.file_path && fs.existsSync(paper.file_path)) pdfPath = paper.file_path;
+    }
     if (!fs.existsSync(pdfPath)) return { exists: false, map: {} };
     try {
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
@@ -1517,9 +1593,15 @@ export function registerIpc() {
   }
   scheduleUpgradeTextImports();
 
-  // text 降级论文自动升级：重抓 HTML 结构化导入（含图表）+ PDF
+  // text 降级 / 本地 pdf 论文自动升级：重抓 HTML 结构化导入（含图表）+ PDF
+  // pdf 论文仅在完全未翻译时升级（避免覆盖用户已读内容的译文）
   async function upgradeTextImports() {
-    const rows = db.getDb().prepare("SELECT id, arxiv_id FROM papers WHERE import_type='text'").all() as any[];
+    const rows = db.getDb().prepare(
+      `SELECT id, arxiv_id FROM papers
+       WHERE import_type='text'
+          OR (import_type='pdf' AND arxiv_id NOT LIKE 'local:%'
+              AND NOT EXISTS (SELECT 1 FROM translations t WHERE t.paper_id=papers.id))`
+    ).all() as any[];
     console.log(`[upgrade] text papers: ${rows.length}`);
     if (!rows.length) return;
     for (const row of rows) {
@@ -1892,6 +1974,14 @@ export function registerIpc() {
   wrap('hl:add', (_e, h: { paperId: number; pid: number; textEn: string; note?: string; color?: string }) => db.addHighlight(h));
   wrap('hl:list', (_e, paperId: number) => db.listHighlights(paperId));
   wrap('hl:remove', (_e, id: number) => { db.removeHighlight(id); return true; });
+  wrap('hl:listAll', () => db.listAllHighlights());
+
+  // ---------- notes（挂段落自由笔记，v0.3）----------
+  wrap('notes:add', (_e, n: { paperId: number; pid?: number; text: string }) => db.addNote(n));
+  wrap('notes:update', (_e, arg: { id: number; text: string }) => { db.updateNote(arg.id, arg.text); return true; });
+  wrap('notes:delete', (_e, id: number) => { db.deleteNote(id); return true; });
+  wrap('notes:list', (_e, paperId: number) => db.listNotes(paperId));
+  wrap('notes:listAll', () => db.listAllNotes());
 
   // 豆包式划词三键：解释 / 搜索 / 翻译（一次性返回，不落库）
   wrap('quick:action', async (_e, arg: { kind: 'explain' | 'search' | 'translate'; text: string; context?: string }) => {

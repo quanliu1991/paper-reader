@@ -3,9 +3,13 @@ import { create } from 'zustand';
 export interface PaperRow {
   id: number; arxiv_id: string; title: string; authors: string;
   source_url: string; import_type: string; created_at: string;
+  last_opened_at?: string | null;
   block_count: number; translated_count: number; highlight_count: number;
   summary?: string | null;
   read_pct?: number | null;
+  status?: string;   // unread | reading | done | deep（默认 unread）
+  tags?: string;     // JSON 数组字符串，如 ["serving","kv-cache"]
+  file_path?: string | null;  // 本地论文库登记的 PDF 绝对路径（NULL = 非本地导入）
 }
 
 export interface BlockRow {
@@ -16,6 +20,13 @@ export interface BlockRow {
 export interface HighlightRow {
   id: number; paper_id: number; pid: number; text_en: string; note: string;
   color: string; created_at: string;
+  paper_title?: string; arxiv_id?: string;
+}
+
+export interface NoteRow {
+  id: number; paper_id: number; pid: number | null; text: string;
+  created_at: string; updated_at: string;
+  paper_title?: string; arxiv_id?: string;
 }
 
 export interface QaRow {
@@ -30,7 +41,7 @@ export interface ProviderRow {
 
 export interface ToastMsg { id: number; type: 'success' | 'error' | 'info'; msg: string; action?: { label: string; run: () => void } }
 
-type View = 'list' | 'reader' | 'settings' | 'review' | 'topics';
+type View = 'list' | 'reader' | 'settings' | 'review' | 'topics' | 'notes';
 
 interface Store {
   view: View;
@@ -38,6 +49,7 @@ interface Store {
   currentPaper: PaperRow | null;
   blocks: BlockRow[];
   highlights: HighlightRow[];
+  notes: NoteRow[];
   qaList: QaRow[];
   // 阅读状态
   layout: 'translate' | 'bilingual' | 'dual' | 'en' | 'zh' | 'pdf-dual' | 'pdf' | 'pdf-layout';
@@ -56,6 +68,7 @@ interface Store {
   setView: (v: View) => void;
   loadPapers: () => Promise<void>;
   openPaper: (id: number) => Promise<void>;
+  refreshNotes: (paperId: number) => Promise<void>;
   setLayout: (l: Store['layout']) => void;
   setFontSize: (n: number) => void;
   setLineHeight: (n: number) => void;
@@ -75,6 +88,7 @@ export const useStore = create<Store>((set, get) => ({
   currentPaper: null,
   blocks: [],
   highlights: [],
+  notes: [],
   qaList: [],
   // 布局选择持久化：默认豆包式翻译全文对照，记住用户切换
   layout: (localStorage.getItem('pr:layout') as Store['layout']) || 'translate',
@@ -98,8 +112,13 @@ export const useStore = create<Store>((set, get) => ({
     const paper = await window.api.getPaper(id);
     const blocks = await window.api.getBlocks(id);
     const highlights = await window.api.listHighlights(id);
+    const notes = await window.api.listPaperNotes(id);
     const qaList = await window.api.listQa(id);
-    set({ currentPaper: paper, blocks, highlights, qaList, view: 'reader', paletteOpen: false });
+    set({ currentPaper: paper, blocks, highlights, notes, qaList, view: 'reader', paletteOpen: false });
+  },
+  refreshNotes: async (paperId) => {
+    const notes = await window.api.listPaperNotes(paperId);
+    set({ notes });
   },
   setLayout: (l) => { localStorage.setItem('pr:layout', l); set({ layout: l }); },
   setFontSize: (n) => set({ fontSize: Math.max(12, Math.min(22, n)) }),
