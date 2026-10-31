@@ -141,7 +141,7 @@ ${open.sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity]).slice(0, 20
 ## 已解决
 
 ${closed.slice(-15).reverse().map(f =>
-    `- ✅ ${f.title}（\`${f.id}\`，${f.firstSeen.slice(0, 10)} → ${f.closedAt?.slice(0, 10) ?? '?'}）`
+    `- ✅ ${f.title}（\`${f.id}\`，${String(f.firstSeen ?? '').slice(0, 10) || '?'} → ${String(f.closedAt ?? f.closed_at ?? '').slice(0, 10) || '?'}）`
   ).join('\n') || '（暂无）'}
 
 ## 最近审计历史

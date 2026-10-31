@@ -11,6 +11,8 @@ const vFinding = (f: any) => log('VISUAL-JUDGE-FINDING: ' + JSON.stringify(f));
 const finish = () => { if (process.env.PR_E2E_DONE) fs.writeFileSync(process.env.PR_E2E_DONE, '1'); };
 
 const shotDir = path.resolve('build/ux/screenshots');
+// PDF 链路截图（pdf-ui-e2e 产出，真实 PDF 渲染+图表区域——图表可见性核心场景）
+const pdfShotsDir = path.resolve('build');
 
 // 每个视图的检查点（图表可见性只对含图表的视图强断言）
 const CHECKS: Record<string, { blank: boolean; formula: boolean; layout: boolean; desc: string }> = {
@@ -22,6 +24,9 @@ const CHECKS: Record<string, { blank: boolean; formula: boolean; layout: boolean
   '04-review': { blank: true, formula: false, layout: true, desc: '闪卡复习' },
   '05-palette': { blank: true, formula: false, layout: true, desc: '命令面板' },
   '06-settings': { blank: true, formula: false, layout: true, desc: '设置页' },
+  // PDF 链路（真实 PDF + 原位翻译）：图表可见性强断言
+  'pdf-ui-e2e': { blank: true, formula: true, layout: true, desc: 'PDF 双栏原位翻译（真实论文）' },
+  'guard-both': { blank: true, formula: false, layout: true, desc: '视觉门禁双栏视图' },
 };
 
 app.whenReady().then(async () => {
@@ -41,7 +46,13 @@ app.whenReady().then(async () => {
     }
     log(`provider: ${provider.kind} (${provider.model})`);
 
-    const shots = fs.existsSync(shotDir) ? fs.readdirSync(shotDir).filter(f => f.endsWith('.png')) : [];
+    const shots = [
+      ...(fs.existsSync(shotDir) ? fs.readdirSync(shotDir).filter(f => f.endsWith('.png')).map(f => path.join(shotDir, f)) : []),
+      // PDF 链路截图（若存在才检——由 pdf-ui-e2e / visual-guard 产出）
+      ...Object.keys(CHECKS).filter(k => CHECKS[k].desc.includes('PDF') || CHECKS[k].desc.includes('门禁'))
+        .map(k => path.join(pdfShotsDir, `${k}.png`))
+        .filter(p => fs.existsSync(p)),
+    ].map(p => path.basename(p));
     if (shots.length === 0) {
       vFinding({ id: 'visual-no-shots', severity: 'medium', view: 'visual-judge', title: '无截图可检（先跑 ux:audit）', evidence: `${shotDir} empty` });
       log('VISUAL JUDGE DONE');
@@ -54,13 +65,17 @@ app.whenReady().then(async () => {
       const name = shot.replace('.png', '');
       const check = CHECKS[name];
       if (!check) continue;
-      const img = fs.readFileSync(path.join(shotDir, shot));
+      // ux 截图在 shotDir；PDF 链路截图在 build/ 根（存在性已在收集时过滤）
+      const shotPath = fs.existsSync(path.join(shotDir, shot)) ? path.join(shotDir, shot) : path.join(pdfShotsDir, shot);
+      const img = fs.readFileSync(shotPath);
       const b64 = img.toString('base64');
       // 视觉断言提问；明确「内容少」与「异常空白」的区别（种子论文段落少属正常，不立案）
+      const isPdf = check.desc.includes('PDF');
+      const pdfRule = isPdf ? ' 重点关注：左侧 PDF 页面是否真实渲染（canvas 有内容而非灰块/空白），若页面含图表区域检查是否可见。' : '';
       const ask = [
         { role: 'user', content: [
           { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } },
-          { type: 'text', text: `这是论文阅读 App「${check.desc}」视图截图（注意：这是测试环境，种子论文段落较少，页面下方留白属正常排版，不算问题）。只报告真正的渲染异常。只输出 JSON：
+          { type: 'text', text: `这是论文阅读 App「${check.desc}」视图截图（注意：这是测试环境，种子论文段落较少，页面下方留白属正常排版，不算问题）。只报告真正的渲染异常。${pdfRule} 只输出 JSON：
 {"render_ok": 布尔(内容是否正常渲染), "content_truncated": 布尔(内容是否被截断/加载失败/显示错误占位), "tofu_boxes": 布尔(是否有乱码方块/未渲染字符), "layout_broken": 布尔(布局是否明显错位/重叠/元素溢出), "confidence": 0-1(判定置信度), "note": "一句话异常描述或空"}` },
         ] },
       ];

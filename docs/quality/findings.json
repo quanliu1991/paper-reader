@@ -13,6 +13,19 @@
       "lastSeen": "2026-10-31T15:46:02.489Z",
       "count": 1,
       "closedAt": "2026-10-31T16:04:08.678Z"
+    },
+    {
+      "id": "vision-coverage-pdf-screens",
+      "title": "视觉检验未覆盖 PDF 真实渲染截图（图表/公式可见性盲区）",
+      "severity": "medium",
+      "source": "improve-loop-r3",
+      "evidence": "Round 3 审计发现 visual-judge 仅检查 ux-audit 生成的 8 张 UI 视图截图，未覆盖 pdf-ui-e2e/guard 产出的真实 PDF 渲染截图（build/pdf-ui-e2e.png、build/guard-both.png），图表/公式渲染缺陷无法被视觉断言捕获。",
+      "fix": "tests/visual-judge-entry.ts 新增 pdfShots（PDF 渲染截图清单），PDF 截图使用图表/空白专项提问（render_ok/content_truncated/tofu_boxes/layout_broken），并产出 build/ux/visual-judge.json；10/10 断言全过（含 2 张 PDF 截图，conf≥0.85）。",
+      "status": "closed",
+      "closed_at": "2026-11-01T00:20:27",
+      "verified_by": "visual-judge 10/10 PASS + test:all 12/12 PASS",
+      "firstSeen": "2026-11-01T00:20:27",
+      "count": 1
     }
   ],
   "history": [
