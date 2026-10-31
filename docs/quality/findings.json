@@ -39,6 +39,45 @@
       "firstSeen": "2026-10-31T16:41:44.003Z",
       "lastSeen": "2026-10-31T16:41:44.004Z",
       "count": 1
+    },
+    {
+      "id": "visual-02-reader-dual",
+      "severity": "high",
+      "view": "02-reader-dual",
+      "title": "视觉异常：02-reader-dual",
+      "evidence": "右栏中文译文未正常生成，仅显示'研究指出：The optimization of LLM serving engines,……对应中文译文第 2 段…'等占位/错误说明文本",
+      "screenshot": null,
+      "source": "visual-judge",
+      "status": "open",
+      "firstSeen": "2026-10-31T16:45:02.759Z",
+      "lastSeen": "2026-10-31T16:45:02.760Z",
+      "count": 1
+    },
+    {
+      "id": "visual-03-ask-panel",
+      "severity": "high",
+      "view": "03-ask-panel",
+      "title": "视觉异常：03-ask-panel",
+      "evidence": "左下角问答侧栏浮层与第5段译文文本区域重叠，遮挡了部分正文内容。",
+      "screenshot": null,
+      "source": "visual-judge",
+      "status": "open",
+      "firstSeen": "2026-10-31T16:45:02.760Z",
+      "lastSeen": "2026-10-31T16:45:02.760Z",
+      "count": 1
+    },
+    {
+      "id": "visual-guard-both",
+      "severity": "high",
+      "view": "guard-both",
+      "title": "视觉异常：guard-both",
+      "evidence": "右侧译文区全部显示'待翻译'占位且出现种子译文测试文本，译文未正常渲染",
+      "screenshot": null,
+      "source": "visual-judge",
+      "status": "open",
+      "firstSeen": "2026-10-31T16:45:02.760Z",
+      "lastSeen": "2026-10-31T16:45:02.760Z",
+      "count": 1
     }
   ],
   "history": [
@@ -69,6 +108,10 @@
     {
       "at": "2026-10-31T16:41:44.004Z",
       "what": "audit: +1 new / 1 total signals"
+    },
+    {
+      "at": "2026-10-31T16:45:02.760Z",
+      "what": "audit: +3 new / 3 total signals"
     }
   ]
 }
