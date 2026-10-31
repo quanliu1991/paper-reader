@@ -982,6 +982,22 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  if (process.env.PR_LLM_JUDGE) {
+    // LLM 体验评估：摘要/翻译/问答接地性打分（本地优先/云端兜底；隔离 userData）
+    const entry = path.join(__dirname, 'llm-judge-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
+  }
+  if (process.env.PR_VISUAL_JUDGE) {
+    // 视觉检验：ux-audit 截图 → 视觉模型断言（本地多模态优先/云端兜底）
+    const entry = path.join(__dirname, 'visual-judge-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
+  }
   if (process.env.PR_PDF_UI_E2E) {
     // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议；隔离 userData）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);

@@ -20,6 +20,8 @@
     "test:all": "node scripts/test-all.mjs",
     "ux:audit": "node tests/ux-audit.test.mjs && node scripts/ux-lint.mjs",
     "ux:lint": "node scripts/ux-lint.mjs",
+    "llm:judge": "node tests/llm-judge.test.mjs",
+    "visual:judge": "node tests/visual-judge.test.mjs",
     "test:all:full": "node scripts/test-all.mjs --full",
     "release": "node scripts/release.mjs"
   },
