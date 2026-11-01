@@ -1,6 +1,6 @@
 # 质量仪表盘（QUALITY.md）
 
-> 自动生成 by improve-loop --report · 2026-11-01T08:43:55.697Z
+> 自动生成 by improve-loop --report · 2026-11-01T18:33:07.822Z
 
 ## 总览
 
@@ -29,6 +29,7 @@
 
 ## 最近审计历史
 
+- 2026-11-01T18:33 audit: +0 new / 0 total signals
 - 2026-11-01T16:43 release-final: all open findings closed, v0.4.0 release-ready
 - 2026-11-01T10:39 close 2 findings: scroll-sync root cause fixed in c1e386b
 - 2026-11-01T00:27 audit: +0 new / 3 total signals
@@ -38,4 +39,3 @@
 - 2026-11-01T01:18 fix+verify: fig-object-svg-not-rendered closed (round 4)
 - 2026-10-31T16:45 audit: +3 new / 3 total signals
 - 2026-10-31T16:41 audit: +1 new / 1 total signals
-- 2026-10-31T16:38 audit: +0 new / 0 total signals
