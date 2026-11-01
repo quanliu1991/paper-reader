@@ -81,6 +81,27 @@ export async function runDedupScrollTest() {
       `);
       log('warm-up: 左栏全页渲染完成，高度已定型');
 
+      // ---- 预热 2：右栏图表物化等待 ----
+      // 占位 → 真图切换（fig:updated）会撑高布局数百 px，若发生在采样中，
+      // 已对齐锚段被推下 → 误差假阳性（pg8 err 274px 根因）。等所有真图完全加载
+      // （naturalWidth>0）或确认为无图占位/表格标注后布局才定型。
+      const figReady: any = await win.webContents.executeJavaScript(`
+        (async () => {
+          const R = document.querySelector('.dpv-right');
+          if (!R) return { ok: false };
+          for (let i = 0; i < 60; i++) {
+            const imgs = [...R.querySelectorAll('.dpv-zhfig img')];
+            const allLoaded = imgs.every(im => im.complete && im.naturalWidth > 0);
+            const pending = [...R.querySelectorAll('.dpv-zhfigph')].filter(ph => ph.textContent?.includes('图片下载中')).length;
+            if (allLoaded && pending === 0) return { ok: true, imgs: imgs.length, waited: i * 500 };
+            await new Promise(r => setTimeout(r, 500));
+          }
+          return { ok: false, imgs: R.querySelectorAll('.dpv-zhfig img').length, pending: R.querySelectorAll('.dpv-zhfigph').length };
+        })()
+      `);
+      log('warm-up 2: 右栏图表物化 ' + JSON.stringify(figReady));
+      if (!figReady?.ok) log('  ⚠️ 图表未全部物化（下载中），布局可能在采样期间变化');
+
       // ---------- A. 右栏重复检测 ----------
       log('[A] 右栏文字重复检测');
       const a: any = await win.webContents.executeJavaScript(`
@@ -132,17 +153,51 @@ export async function runDedupScrollTest() {
           const lPages = pick([anchored[1], anchored[2], anchored[Math.floor(anchored.length / 2)], anchored[anchored.length - 3], anchored[anchored.length - 2], anchored[anchored.length - 1]]);
           const rPages = pick([anchored[2], anchored[3], anchored[Math.floor(anchored.length / 2) + 1], anchored[anchored.length - 4], anchored[anchored.length - 2], anchored[anchored.length - 1]]);
           const samples = [];
+          // 等同步落定：轮询直至两侧 scrollTop 稳定（连续 2 次 250ms 采样差 ≤1px）或超时。
+          // 固定 1400ms 在 CPU 负载高时不够平滑滚动（400ms/次跳页动画）完成——曾致 err 5000px 级误采样。
+          const settle = async (pane, ms = 4000) => {
+            let last = pane.scrollTop, same = 0;
+            const t0 = Date.now();
+            while (Date.now() - t0 < ms) {
+              await new Promise(r => setTimeout(r, 250));
+              const cur = pane.scrollTop;
+              if (Math.abs(cur - last) <= 1) { same++; if (same >= 2) return true; } else same = 0;
+              last = cur;
+            }
+            return false;
+          };
           // B1 左→右
           for (const pg of lPages) {
             const pageEl = domPage(pg);
             if (!pageEl) continue;
             L.scrollTop = pageEl.getBoundingClientRect().top - L.getBoundingClientRect().top + L.scrollTop - 10;
             L.dispatchEvent(new Event('scroll'));
-            await new Promise(r => setTimeout(r, 1400));
+            await settle(L); await settle(R);
+            await new Promise(r => setTimeout(r, 200));
             const paraEl = domPara(pg);
             if (!paraEl) { samples.push({ dir: 'L2R', pg, err: null, note: 'no para' }); continue; }
             const err = Math.round(paraEl.getBoundingClientRect().top - pageEl.getBoundingClientRect().top);
-            samples.push({ dir: 'L2R', pg, err, within: Math.abs(err) <= TOL });
+            const within = Math.abs(err) <= TOL;
+            // 失败时附诊断：左右各自视口顶部锚（判断是右栏跟错页还是渲染未落定）
+            if (!within) {
+              const lr = L.getBoundingClientRect(), rr = R.getBoundingClientRect();
+              const lTop = [...L.querySelectorAll('.pdf-page')].find(p => p.getBoundingClientRect().bottom > lr.top + 4);
+              const rTop = [...R.querySelectorAll('.dpv-zhpara[data-page]')].find(p => p.getBoundingClientRect().bottom > rr.top + 4);
+              // 右栏 pg 边界解剖：该页第一个 [data-page] 元素是什么（figure 头？段落？）+ 前页尾部结构
+              const firstEl = R.querySelector('[data-page="' + pg + '"]');
+              const anatomy = firstEl ? { tag: firstEl.tagName, cls: firstEl.className?.toString?.().slice(0, 40), topInR: Math.round(firstEl.getBoundingClientRect().top - rr.top) } : null;
+              const prevTail = [...R.querySelectorAll('.dpv-zhpara[data-page="' + (pg - 1) + '"]')].slice(-1).map(p => ({ bottomInR: Math.round(p.getBoundingClientRect().bottom - rr.top), h: Math.round(p.getBoundingClientRect().height) }));
+              // 一锤定音：手动把 pg 首段对齐到视口顶+10（与左栏同标准），再量一次 err。
+              // err2≈0 → 命令后内容位移（锚定/补偿缺失）；err2≈err → 目标计算本身错。
+              const pe = domPara(pg);
+              if (pe) { R.scrollTop += Math.round(pe.getBoundingClientRect().top - (rr.top + 10)); }
+              await new Promise(r => setTimeout(r, 300));
+              const pe2 = domPara(pg);
+              const err2 = pe2 ? Math.round(pe2.getBoundingClientRect().top - (pageEl.getBoundingClientRect().top)) : null;
+              samples.push({ dir: 'L2R', pg, err, within, err2, lTopPg: lTop?.dataset.page ?? '?', rTopPg: rTop?.dataset.page ?? '?', lST: Math.round(L.scrollTop), rST: Math.round(R.scrollTop), anatomy, prevTail });
+            } else {
+              samples.push({ dir: 'L2R', pg, err, within });
+            }
           }
           // B2 右→左
           for (const pg of rPages) {
@@ -150,7 +205,8 @@ export async function runDedupScrollTest() {
             if (!paraEl) continue;
             R.scrollTop = paraEl.getBoundingClientRect().top - R.getBoundingClientRect().top + R.scrollTop - 10;
             R.dispatchEvent(new Event('scroll'));
-            await new Promise(r => setTimeout(r, 1400));
+            await settle(R); await settle(L);
+            await new Promise(r => setTimeout(r, 200));
             const pageEl = domPage(pg);
             if (!pageEl) { samples.push({ dir: 'R2L', pg, err: null, note: 'no page' }); continue; }
             const err = Math.round(paraEl.getBoundingClientRect().top - pageEl.getBoundingClientRect().top);

@@ -568,7 +568,7 @@ const ZhFlow = memo(function ZhFlow({
               title="点击定位左栏原文页"
             >
               {src
-                ? <img src={src} alt={b.en.slice(0, 60)} loading="lazy" />
+                ? <img src={src} alt={b.en.slice(0, 60)} decoding="async" />
                 : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
                   ? <div className="dpv-zhfigph">📊 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 表格见左栏</div>
                   : <div className="dpv-zhfigph">🖼 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 图片下载中</div>}
