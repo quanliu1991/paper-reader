@@ -123,7 +123,7 @@ async function streamOpenAI(
   const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${p.apiKey}` },
-    body: JSON.stringify({ model: p.model, messages, temperature, max_tokens: maxTokens, stream: true }),
+    body: JSON.stringify({ model: p.model, messages, temperature, max_tokens: maxTokens, stream: true, thinking: { type: 'disabled' } }),
     signal,
   });
   if (!resp.ok || !resp.body) {
@@ -186,6 +186,8 @@ async function readSse(body: ReadableStream<Uint8Array>, onDelta: (text: string)
 }
 
 // 从 SSE data 行提取文本增量（OpenAI 兼容 + Anthropic 两种格式）
+// 注意：GLM 推理模型的思考走 delta.reasoning_content——显式忽略（即使 thinking:disabled
+// 被端点忽略，思考文本也绝不能混进译文/摘要）。
 function extractDelta(data: string): string {
   try {
     const j = JSON.parse(data);

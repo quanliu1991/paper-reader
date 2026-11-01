@@ -9,6 +9,7 @@ export interface ParsedBlock {
   figPath?: string;    // figure 本地文件路径（下载后）
   figKind?: 'figure' | 'table';
   figHtmlTable?: boolean; // HTML 表格实体（LaTeXML ltx_tabular span 结构）：无需下载图片，渲染层直接展示
+  figTableRows?: string[][]; // 表格数据（ltx_tabular 提取：行 → 单元格纯文本），渲染层还原为真表格
 }
 
 export interface ParsedPaper {
@@ -120,16 +121,18 @@ export function parseArxivHtml(html: string, arxivId: string): ParsedPaper {
       let img = imgMatch ? imgMatch[1] : '';
       if (img && !/^data:/.test(img)) img = absolutizeImg(img, arxivId);
       const hasSvg = /<svg/i.test(figHtml);
-      // HTML 表格实体（ltx_tabular span 结构）：无图源时标记 fig_kind=table 且无占位需求——
-      // 表格本身就是文本内容，渲染层直接展示图注即可，不应显示「图片下载中」
-      const hasTabular = /ltx_tabular/i.test(figHtml);
+      // HTML 表格实体（ltx_tabular：span 嵌套或原生 <table> 两种形态）：无图源时提取表格数据，
+      // 渲染层还原为真表格——用户不再需要「见原文 PDF」跳转。
+      const tableRows = (!img && !hasSvg && /ltx_tabular/i.test(figHtml)) ? extractTableRows(figHtml) : undefined;
+      const hasTabular = !!tableRows;
       if ((cap && !NOISE.test(cap)) || img || hasSvg) {
         blocks.push({
           seq: seq++, type: 'fig', level: 0,
           en: cap || (kind === 'table' ? '表格' : '图'),
           figPath: img || undefined,
           figKind: kind,
-          figHtmlTable: (!img && !hasSvg && hasTabular) || undefined,
+          figHtmlTable: hasTabular || undefined,
+          figTableRows: tableRows,
         });
       }
     }
@@ -171,6 +174,59 @@ async function downloadToFile(url: string, dest: string) {
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const buf = Buffer.from(await resp.arrayBuffer());
   fs.writeFileSync(dest, buf);
+}
+
+// LaTeXML 表格提取：两种形态
+//  a) span 嵌套（transformed 布局）：ltx_tr/ltx_td 都是 <span>，无法正则配对，深度扫描
+//  b) 原生 <table class="ltx_tabular">：<tr>/<td> 直接 DOM 语义
+// 返回行 → 单元格纯文本（数学 alttext → $..$ 保留）。
+function extractTableRows(figHtml: string): string[][] | undefined {
+  const cellText = (raw: string) => {
+    const withMath = raw.replace(/<math([^>]*)>([\s\S]*?)<\/math>/gi, (_x, attrs: string) => {
+      const alt = (attrs.match(/alttext="([^"]*)"/) || [])[1];
+      return alt ? ` $${decodeEntities(alt)}$ ` : ' ';
+    });
+    return ' ' + withMath.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+  };
+  // 深度扫描配对 span 块
+  const spanBlocks = (fragment: string, cls: string) => {
+    const out: string[] = [];
+    const re = new RegExp(`<span[^>]*class="[^"]*\\b${cls}\\b[^"]*"[^>]*>`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(fragment)) !== null) {
+      const start = m.index + m[0].length;
+      let depth = 1; let pos = start;
+      while (depth > 0 && pos < fragment.length) {
+        const op = fragment.indexOf('<span', pos);
+        const cl = fragment.indexOf('</span>', pos);
+        if (cl === -1) return out;
+        if (op !== -1 && op < cl) { depth++; pos = fragment.indexOf('>', op) + 1; }
+        else { depth--; pos = cl + 7; }
+      }
+      out.push(fragment.slice(start, pos - 7));
+      re.lastIndex = pos;
+    }
+    return out;
+  };
+
+  // 形态 b：原生 <table>——直接 tr/td
+  const tableMatch = figHtml.match(/<table[^>]*ltx_tabular[^>]*>([\s\S]*?)<\/table>/i);
+  if (tableMatch) {
+    const rows: string[][] = [];
+    for (const tr of tableMatch[1].match(/<tr[^>]*>([\s\S]*?)<\/tr>/gi) ?? []) {
+      const cells = [...tr.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(m2 => cellText(m2[1]));
+      if (cells.length) rows.push(cells);
+    }
+    if (rows.length) return rows;
+  }
+
+  // 形态 a：span 嵌套
+  const rows: string[][] = [];
+  for (const tr of spanBlocks(figHtml, 'ltx_tr')) {
+    const cells = spanBlocks(tr, 'ltx_td').map(cellText);
+    if (cells.length) rows.push(cells);
+  }
+  return rows.length > 0 ? rows : undefined;
 }
 
 function absolutizeImg(src: string, arxivId: string): string {

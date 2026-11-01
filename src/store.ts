@@ -16,6 +16,7 @@ export interface BlockRow {
   pid: number; seq: number; type: 'heading' | 'para' | 'fig'; level: number;
   en: string; fig_path: string | null; fig_kind?: 'figure' | 'table'; zh: string | null;
   fig_html_table?: 0 | 1 | boolean; // HTML 表格实体（无图可下）：渲染层只展示图注，不显示「下载中」占位
+  fig_table_rows?: string | null;   // 表格数据 JSON [row][cell]（ltx_tabular 提取），渲染层还原真表格
 }
 
 export interface HighlightRow {

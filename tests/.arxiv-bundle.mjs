@@ -96,7 +96,8 @@ function parseArxivHtml(html, arxivId) {
       let img = imgMatch ? imgMatch[1] : "";
       if (img && !/^data:/.test(img)) img = absolutizeImg(img, arxivId);
       const hasSvg = /<svg/i.test(figHtml);
-      const hasTabular = /ltx_tabular/i.test(figHtml);
+      const tableRows = !img && !hasSvg && /ltx_tabular/i.test(figHtml) ? extractTableRows(figHtml) : void 0;
+      const hasTabular = !!tableRows;
       if (cap && !NOISE.test(cap) || img || hasSvg) {
         blocks.push({
           seq: seq++,
@@ -105,7 +106,8 @@ function parseArxivHtml(html, arxivId) {
           en: cap || (kind === "table" ? "\u8868\u683C" : "\u56FE"),
           figPath: img || void 0,
           figKind: kind,
-          figHtmlTable: !img && !hasSvg && hasTabular || void 0
+          figHtmlTable: hasTabular || void 0,
+          figTableRows: tableRows
         });
       }
     }
@@ -144,6 +146,55 @@ async function downloadToFile(url, dest) {
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const buf = Buffer.from(await resp.arrayBuffer());
   fs.writeFileSync(dest, buf);
+}
+function extractTableRows(figHtml) {
+  const cellText = (raw) => {
+    const withMath = raw.replace(/<math([^>]*)>([\s\S]*?)<\/math>/gi, (_x, attrs) => {
+      const alt = (attrs.match(/alttext="([^"]*)"/) || [])[1];
+      return alt ? ` $${decodeEntities(alt)}$ ` : " ";
+    });
+    return " " + withMath.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() + " ";
+  };
+  const spanBlocks = (fragment, cls) => {
+    const out = [];
+    const re = new RegExp(`<span[^>]*class="[^"]*\\b${cls}\\b[^"]*"[^>]*>`, "g");
+    let m;
+    while ((m = re.exec(fragment)) !== null) {
+      const start = m.index + m[0].length;
+      let depth = 1;
+      let pos = start;
+      while (depth > 0 && pos < fragment.length) {
+        const op = fragment.indexOf("<span", pos);
+        const cl = fragment.indexOf("</span>", pos);
+        if (cl === -1) return out;
+        if (op !== -1 && op < cl) {
+          depth++;
+          pos = fragment.indexOf(">", op) + 1;
+        } else {
+          depth--;
+          pos = cl + 7;
+        }
+      }
+      out.push(fragment.slice(start, pos - 7));
+      re.lastIndex = pos;
+    }
+    return out;
+  };
+  const tableMatch = figHtml.match(/<table[^>]*ltx_tabular[^>]*>([\s\S]*?)<\/table>/i);
+  if (tableMatch) {
+    const rows2 = [];
+    for (const tr of tableMatch[1].match(/<tr[^>]*>([\s\S]*?)<\/tr>/gi) ?? []) {
+      const cells = [...tr.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)].map((m2) => cellText(m2[1]));
+      if (cells.length) rows2.push(cells);
+    }
+    if (rows2.length) return rows2;
+  }
+  const rows = [];
+  for (const tr of spanBlocks(figHtml, "ltx_tr")) {
+    const cells = spanBlocks(tr, "ltx_td").map(cellText);
+    if (cells.length) rows.push(cells);
+  }
+  return rows.length > 0 ? rows : void 0;
 }
 function absolutizeImg(src, arxivId) {
   if (/^https?:\/\//.test(src)) return src;

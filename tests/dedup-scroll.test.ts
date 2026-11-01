@@ -48,7 +48,13 @@ export async function runDedupScrollTest() {
       width: 1400, height: 900, show: true,
       webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
     });
-    await win.loadURL(process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199');
+    // 加载源：默认 vite dev（HMR 便于调试）；PR_E2E_LOAD=dist 用 vite build 产物（无 dev server 依赖，
+    // 彻底规避 vite 挂死导致的假挂死——2026-11 实测 vite 长跑后 5199 无响应，测试随机卡死）。
+    if (process.env.PR_E2E_LOAD === 'dist') {
+      await win.loadFile(path.join(__dirname, '../dist/index.html'));
+    } else {
+      await win.loadURL(process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199');
+    }
     await sleep(1000);
     await win.webContents.executeJavaScript(`
       (async () => {
@@ -68,18 +74,26 @@ export async function runDedupScrollTest() {
       log(`cluster: ${JSON.stringify(clusterInfo)}`);
 
       // ---- 预热：滚完整篇左栏，把懒渲染页全部变成最终高度，消除占位高度漂移 ----
-      await win.webContents.executeJavaScript(`
+      // 两轮收敛：canvas 懒渲染替换占位会改变 scrollHeight/页位，一轮后高度已变，
+      // 第二轮按新高度滚全篇直至 scrollHeight 稳定（±2px）——B1 L2R 采样曾因 L 布局
+      // 在采样后位移 895px 全军覆没（err2≈0 证明同步算法本身正确）。
+      const warmResult = await win.webContents.executeJavaScript(`
         (async () => {
           const L = document.querySelector('.dpv-left');
-          for (let y = 0; y < L.scrollHeight; y += 700) {
-            L.scrollTop = y;
-            await new Promise(r => setTimeout(r, 120));
+          for (let round = 0; round < 4; round++) {
+            const h0 = L.scrollHeight;
+            for (let y = 0; y < L.scrollHeight; y += 700) {
+              L.scrollTop = y;
+              await new Promise(r => setTimeout(r, 120));
+            }
+            L.scrollTop = 0;
+            await new Promise(r => setTimeout(r, 500));
+            if (Math.abs(L.scrollHeight - h0) <= 2) return 'converged@' + round;
           }
-          L.scrollTop = 0;
-          await new Promise(r => setTimeout(r, 800));
+          return 'not-converged:' + L.scrollHeight;
         })()
       `);
-      log('warm-up: 左栏全页渲染完成，高度已定型');
+      log('warm-up: 左栏全页渲染完成，高度已定型 (' + warmResult + ')');
 
       // ---- 预热 2：右栏图表物化等待 ----
       // 占位 → 真图切换（fig:updated）会撑高布局数百 px，若发生在采样中，
@@ -140,6 +154,19 @@ export async function runDedupScrollTest() {
 
       // ---------- B. 滚动同步误差 ----------
       log('[B] 滚动同步误差（阈值 50px，视口坐标系 rect.top 直接相减）');
+      // 并行进度监视器：B 步 executeJavaScript 曾在 14 表格布局下挂死（超时被 driver 杀，
+      // 日志停在 [B] 无任何输出）——监视器每 8s 打点 __dedupProgress，定位挂点页。
+      let monitorStop = false;
+      const monitor = (async () => {
+        for (let i = 0; i < 40 && !monitorStop; i++) {
+          await sleep(8000);
+          if (monitorStop) return;
+          try {
+            const p = await win.webContents.executeJavaScript('window.__dedupProgress ?? "(none)"');
+            log(`  [B monitor ${(i + 1) * 8}s] ${p}`);
+          } catch { return; }
+        }
+      })();
       const b2: any = await win.webContents.executeJavaScript(`
         (async () => {
           const L = document.querySelector('.dpv-left'), R = document.querySelector('.dpv-right');
@@ -153,6 +180,7 @@ export async function runDedupScrollTest() {
           const lPages = pick([anchored[1], anchored[2], anchored[Math.floor(anchored.length / 2)], anchored[anchored.length - 3], anchored[anchored.length - 2], anchored[anchored.length - 1]]);
           const rPages = pick([anchored[2], anchored[3], anchored[Math.floor(anchored.length / 2) + 1], anchored[anchored.length - 4], anchored[anchored.length - 2], anchored[anchored.length - 1]]);
           const samples = [];
+          const progress = s => { window.__dedupProgress = (window.__dedupProgress || '') + s; };
           // 等同步落定：轮询直至两侧 scrollTop 稳定（连续 2 次 250ms 采样差 ≤1px）或超时。
           // 固定 1400ms 在 CPU 负载高时不够平滑滚动（400ms/次跳页动画）完成——曾致 err 5000px 级误采样。
           const settle = async (pane, ms = 4000) => {
@@ -164,15 +192,26 @@ export async function runDedupScrollTest() {
               if (Math.abs(cur - last) <= 1) { same++; if (same >= 2) return true; } else same = 0;
               last = cur;
             }
+            progress('settle-timeout(' + (pane === L ? 'L' : 'R') + '@' + Math.round(pane.scrollTop) + ') ');
             return false;
           };
           // B1 左→右
           for (const pg of lPages) {
+            progress('B1:' + pg + ',');
             const pageEl = domPage(pg);
             if (!pageEl) continue;
             L.scrollTop = pageEl.getBoundingClientRect().top - L.getBoundingClientRect().top + L.scrollTop - 10;
             L.dispatchEvent(new Event('scroll'));
-            await settle(L); await settle(R);
+            await settle(L); progress('sL' + pg + ' ');
+            await settle(R); progress('sR' + pg + ' ');
+            // 跟随效果等待：L→R 联动是 IO 驱动的异步级联（IO 周期 + 滚动动画），settle 只保证
+            // 「滚动停止」不保证「跟随已执行」。等 pg 首段真正靠近 R 视口顶（或 3s 超时），再采样。
+            for (let w = 0; w < 12; w++) {
+              const pe = domPara(pg), rr0 = R.getBoundingClientRect();
+              if (!pe || Math.abs(pe.getBoundingClientRect().top - (rr0.top + 12)) <= 50) break;
+              await new Promise(r => setTimeout(r, 250));
+            }
+            progress('w' + pg + ' ');
             await new Promise(r => setTimeout(r, 200));
             const paraEl = domPara(pg);
             if (!paraEl) { samples.push({ dir: 'L2R', pg, err: null, note: 'no para' }); continue; }
@@ -201,6 +240,7 @@ export async function runDedupScrollTest() {
           }
           // B2 右→左
           for (const pg of rPages) {
+            progress('B2:' + pg + ',');
             const paraEl = domPara(pg);
             if (!paraEl) continue;
             R.scrollTop = paraEl.getBoundingClientRect().top - R.getBoundingClientRect().top + R.scrollTop - 10;
@@ -237,6 +277,7 @@ export async function runDedupScrollTest() {
           return { anchored: anchored.length, samples, stable, s1, s2, ok };
         })()
       `);
+      monitorStop = true;
       log('  页锚总数=' + (b2.anchored ?? '?'));
       for (const s of (b2.samples ?? [])) log('  ' + JSON.stringify(s));
       log('  稳定性: stable=' + b2.stable + ' (' + JSON.stringify(b2.s1) + ' -> ' + JSON.stringify(b2.s2) + ')');
@@ -245,9 +286,14 @@ export async function runDedupScrollTest() {
     }
     log(pass ? 'DEDUP-SCROLL ALL PASS' : 'DEDUP-SCROLL FAIL');
   } catch (e: any) {
+    // 超时诊断：B 步 executeJavaScript 曾在 14 表格布局下挂死（本 catch 也到不了——driver 超时先杀）。
     log('FATAL: ' + (e?.stack ?? e));
     pass = false;
   } finally {
+    try {
+      const prog = await win.webContents.executeJavaScript('window.__dedupProgress ?? ""').catch(() => '');
+      if (prog) log('B 步进度（事后）: ' + prog);
+    } catch { /* window 可能已销毁 */ }
     fs.writeFileSync(doneFile, pass ? '1' : '0');
   }
 }

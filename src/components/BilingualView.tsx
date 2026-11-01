@@ -1,6 +1,7 @@
 import { memo, Fragment } from 'react';
 import RichText from './RichText';
 import ParaNotes from './ParaNotes';
+import FigTable from './FigTable';
 import type { BlockRow, NoteRow } from '../store';
 import { figSrc } from '../figsrc';
 
@@ -50,9 +51,11 @@ const BiRow = memo(function BiRow({
       <figure className="bi-row bi-fig" data-pid={b.pid}>
         {figUrl
           ? <img src={figUrl} alt={b.en.slice(0, 60)} loading="lazy" />
-          : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
-            ? <div className="bi-fig-ph">📊 表格 · 见原文 PDF</div>
-            : <div className="bi-fig-ph">🖼 图片下载中</div>}
+          : b.fig_table_rows
+            ? <FigTable rows={JSON.parse(b.fig_table_rows)} />
+            : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
+              ? <div className="bi-fig-ph">📊 表格 · 见原文 PDF</div>
+              : <div className="bi-fig-ph">🖼 图片下载中</div>}
         <figcaption>
           <span className="cap-en"><RichText text={b.en} /></span>
           {b.zh && <span className="cap-zh"><RichText text={b.zh} /></span>}

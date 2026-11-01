@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, memo, Fragment } from 'react';
 import { useStore } from '../store';
 import RichText from './RichText';
+import FigTable from './FigTable';
 import { figSrc } from '../figsrc';
 import AskPanel from './AskPanel';
 import CommandPalette from './CommandPalette';
@@ -583,9 +584,11 @@ function FigureView({ b, side }: { b: import('../store').BlockRow; side: 'en' | 
     <figure className="paper-fig">
       {figUrl
         ? <img src={figUrl} alt={b.en.slice(0, 60)} loading="lazy" onClick={() => setZoom(true)} />
-        : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
-          ? <div className="fig-placeholder">📊 表格 · 见原文 PDF</div>
-          : <div className="fig-placeholder">🖼 {b.fig_kind === 'table' ? '表格' : '图'} · 图片下载中</div>}
+        : b.fig_table_rows
+          ? <FigTable rows={JSON.parse(b.fig_table_rows)} />
+          : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
+            ? <div className="fig-placeholder">📊 表格 · 见原文 PDF</div>
+            : <div className="fig-placeholder">🖼 {b.fig_kind === 'table' ? '表格' : '图'} · 图片下载中</div>}
       <figcaption><RichText text={caption} /></figcaption>
       {zoom && figUrl && (
         <div className="fig-zoom-mask" onClick={() => setZoom(false)}>

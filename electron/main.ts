@@ -50,6 +50,12 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // 统一前置：任何 PR_* 测试模式必须用隔离 userData（启动器都传 PR_E2E_USER_DATA）。
+  // 此前各分支分散 setPath，遗漏即污染真实库（2026-11 两次事故）；此处兜底一次，
+  // 配合 db.ts 的拒写守卫形成双保险。
+  if (e2eEnabled && process.env.PR_E2E_USER_DATA && !app.isPackaged) {
+    try { app.setPath('userData', process.env.PR_E2E_USER_DATA); } catch { /* 已初始化则忽略 */ }
+  }
   protocol.handle('local-figure', (request) => {
     // url 形如 f/<paperId>/fig-N.ext（新格式，host 'f' 防纯数字被解析成 IPv4）
     // 旧格式 <paperId>/fig-N.ext 的纯数字 host 会被 URL 解析成 0.0.0.x——pathname 兜底解析
@@ -397,6 +403,23 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  if (e2eEnabled && process.env.PR_L2R_DEBUG) {
+    // L2R/R2L 长跳跟随调试探针（开发用，不进 CI）
+    const entry = path.join(__dirname, 'l2r-debug-entry.js');
+    const entry2 = path.join(__dirname, 'r2l-debug-entry.js');
+    if (process.env.PR_L2R_DEBUG === 'r2l' && fs.existsSync(entry2)) {
+      registerIpc();
+      const m = require(entry2);
+      (m.run ?? m.default ?? m)();
+      return;
+    }
+    if (fs.existsSync(entry)) {
+      registerIpc();
+      const m = require(entry);
+      (m.run ?? m.default ?? m)();
+      return;
+    }
+  }
   if (e2eEnabled && process.env.PR_E2E) {
     const entry = path.join(__dirname, 'e2e-entry.js');
     if (fs.existsSync(entry)) {
@@ -499,11 +522,23 @@ app.whenReady().then(async () => {
         const fsMod = await import('fs');
         fsMod.mkdirSync(ud, { recursive: true });
         const realDb = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader/paper-reader.db');
-        if (fsMod.existsSync(realDb)) fsMod.copyFileSync(realDb, path.join(ud, 'paper-reader.db'));
+        if (fsMod.existsSync(realDb)) {
+          fsMod.copyFileSync(realDb, path.join(ud, 'paper-reader.db'));
+          // WAL 必须一并复制：SQLite 的写入先落 -wal，副本缺 WAL 会回退到旧 checkpoint 状态
+          // （2026-11 事故：DELETE 后未 checkpoint，inspect 副本仍看到 89 条假译文）
+          for (const suffix of ['-wal', '-shm']) {
+            const src = realDb + suffix;
+            if (fsMod.existsSync(src)) fsMod.copyFileSync(src, path.join(ud, 'paper-reader.db' + suffix));
+          }
+        }
         for (const sub of ['figures', 'pdfs']) {
           const src = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader', sub);
           if (fsMod.existsSync(src)) fsMod.cpSync(src, path.join(ud, sub), { recursive: true });
         }
+        // .mk（Provider key 的 master key）必须一并复制：缺它副本里加密的 api_key 无法解密，
+        // inspect 的 translateAll 探针会误报「Provider 不可用」。
+        const mk = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader/.mk');
+        if (fsMod.existsSync(mk)) fsMod.copyFileSync(mk, path.join(ud, '.mk'));
         console.log('[inspect] using ISOLATED COPY of real library');
       } catch (e) { console.log(`[inspect] copy failed, empty userData: ${e}`); }
     }
@@ -1668,6 +1703,39 @@ export function registerIpc() {
   }
   scheduleUpgradeTextImports();
 
+  // 首次启动 Provider 自动导入：库中无 Provider 且项目根有 llm.txt（格式：key baseurl model）时，
+  // 自动加密入库为默认 Provider——用户不再撞「未配置 LLM Provider」死路（2026-11 用户实测：
+  // llm.txt 备用配置给了但从未进 app，翻译/摘要/问答全部瘫痪，UI 只见占位文案）。
+  // llm.txt 消费后改名 llm.txt.imported 防重复导入；key 永不落日志。
+  function importLlmTxtIfFresh() {
+    try {
+      // 仅打包版（真实用户场景）导入：dev/e2e/inspect 的 userData 都是隔离库或测试库，
+      // 在那里执行会把仓库共享的 llm.txt 消费掉（改名 .imported）而真实库永远得不到
+      // 导入（2026-11 实测事故）。dev 库通过 npm run seed:provider 手动种子。
+      if (!app.isPackaged) return;
+      const has = db.getDb().prepare('SELECT COUNT(*) AS n FROM providers').get() as any;
+      if (Number(has?.n ?? 0) > 0) return;
+      // 打包版候选：~/llm.txt（用户手动放置）> userData/llm.txt（升级携带）> 开发机项目根（本机调试）
+      const candidates = [
+        path.join(process.env.HOME ?? '', 'llm.txt'),
+        path.join(app.getPath('userData'), 'llm.txt'),
+        path.join(process.env.HOME ?? '', 'projects/paper-reader/llm.txt'),
+      ];
+      const f = candidates.find(c => c && fs.existsSync(c));
+      if (!f) return;
+      const m = fs.readFileSync(f, 'utf8').trim().match(/^(\S+)\s+(\S+)\s+(\S+)\s*$/m);
+      if (!m) { console.log('[llm.txt] 格式不符（期望「key url model」三段），跳过'); return; }
+      const [, key, baseUrl, model] = m;
+      const base = baseUrl.replace(/\/chat\/completions$/, '');
+      const name = /bigmodel/i.test(base) ? '智谱 BigModel' : 'LLM';
+      db.getDb().prepare('INSERT INTO providers (name, protocol, base_url, api_key, model, is_default) VALUES (?,?,?,?,?,1)')
+        .run(name, 'openai', base, llm.encryptSecret(key), model);
+      fs.renameSync(f, f + '.imported');
+      console.log(`[llm.txt] 已导入 Provider「${name}/${model}」并设为默认（源文件改名 .imported）`);
+    } catch (e: any) { console.log('[llm.txt] 导入失败:', e?.message ?? e); }
+  }
+  importLlmTxtIfFresh();
+
   // 图表自愈：启动后异步补漏——fig 块缺图（fig_path 非本地形态）且磁盘无文件的论文，
   // 重跑 downloadFiguresFor（现已支持 object svg + 序号对位兜底）。幂等：已有本地图的块会被跳过。
   setTimeout(() => { repairMissingFigures().catch(() => {}); }, 8000);
@@ -1688,13 +1756,13 @@ export function registerIpc() {
         const old = db.getBlocks(t.id) as any[];
         const oldBySeq = new Map(old.map(b => [b.seq, b]));
         // 只更新 fig 块的 fig_path/fig_kind/fig_html_table（保留 pid 和译文——seq 对位，解析器确定性）
-        const stmtUpd = db.getDb().prepare('UPDATE blocks SET fig_path=?, fig_kind=?, fig_html_table=? WHERE pid=?');
+        const stmtUpd = db.getDb().prepare('UPDATE blocks SET fig_path=?, fig_kind=?, fig_html_table=?, fig_table_rows=? WHERE pid=?');
         let updated = 0;
         for (const nb of parsed.blocks) {
           if (nb.type !== 'fig') continue;
           const ob = oldBySeq.get(nb.seq);
           if (!ob || ob.type !== 'fig') continue;
-          stmtUpd.run(nb.figPath ?? ob.fig_path, nb.figKind ?? ob.fig_kind, nb.figHtmlTable ? 1 : 0, ob.pid);
+          stmtUpd.run(nb.figPath ?? ob.fig_path, nb.figKind ?? ob.fig_kind, nb.figHtmlTable ? 1 : 0, nb.figTableRows ? JSON.stringify(nb.figTableRows) : null, ob.pid);
           updated++;
         }
         console.log(`[fig-repair] ${t.arxiv_id}: re-parsed ${updated} fig blocks`);

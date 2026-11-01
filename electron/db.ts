@@ -8,6 +8,16 @@ let db: Database.Database | null = null;
 export function getDb(): Database.Database {
   if (db) return db;
   const userData = app.getPath('userData');
+  // 防真实库污染（2026-11 两次事故根因）：任何 PR_* 测试模式下，
+  // userData 必须指向隔离目录——若测试进程落在默认真实库路径，直接抛错拒写。
+  // 真实库路径（macOS）：~/Library/Application Support/Paper Reader
+  const isTestMode = Object.keys(process.env).some(k => /^PR_/.test(k) && k !== 'PR_USER_DATA_ROOT');
+  if (isTestMode && !app.isPackaged) {
+    const defaultUd = path.join(app.getPath('appData'), app.name);
+    if (path.resolve(userData) === path.resolve(defaultUd)) {
+      throw new Error(`[db-guard] 测试模式（PR_* 环境变量存在）但 userData 是真实库路径 ${defaultUd}——拒绝打开。测试启动器必须设置 PR_E2E_USER_DATA 隔离目录。`);
+    }
+  }
   fs.mkdirSync(userData, { recursive: true });
   db = new Database(path.join(userData, 'paper-reader.db'));
   db.pragma('journal_mode = WAL');
@@ -178,6 +188,10 @@ function migrateColumns(d: Database.Database) {
   if (cols.length && !cols.some(c => c.name === 'fig_html_table')) {
     d.prepare("ALTER TABLE blocks ADD COLUMN fig_html_table INTEGER DEFAULT 0").run();
   }
+  // v0.5.1 表格真实渲染：ltx_tabular 提取的行列数据（JSON [row][cell]）
+  if (cols.length && !cols.some(c => c.name === 'fig_table_rows')) {
+    d.prepare("ALTER TABLE blocks ADD COLUMN fig_table_rows TEXT").run();
+  }
   const pcols = d.prepare("PRAGMA table_info(papers)").all() as any[];
   if (pcols.length && !pcols.some(c => c.name === 'status')) {
     d.prepare("ALTER TABLE papers ADD COLUMN status TEXT DEFAULT 'unread'").run();
@@ -265,19 +279,19 @@ export function listLocalPapers() {
 }
 
 // ---------- blocks ----------
-export function insertBlocks(paperId: number, blocks: Array<{ seq: number; type: string; level: number; en: string; figPath?: string; figKind?: string; figHtmlTable?: boolean }>) {
+export function insertBlocks(paperId: number, blocks: Array<{ seq: number; type: string; level: number; en: string; figPath?: string; figKind?: string; figHtmlTable?: boolean; figTableRows?: string[][] }>) {
   const d = getDb();
   const tx = d.transaction((rows: typeof blocks) => {
     d.prepare('DELETE FROM blocks WHERE paper_id=?').run(paperId);
-    const stmt = d.prepare('INSERT INTO blocks (paper_id, seq, type, level, en, fig_path, fig_kind, fig_html_table) VALUES (?,?,?,?,?,?,?,?)');
-    for (const b of rows) stmt.run(paperId, b.seq, b.type, b.level, b.en, b.figPath ?? null, b.figKind ?? null, b.figHtmlTable ? 1 : 0);
+    const stmt = d.prepare('INSERT INTO blocks (paper_id, seq, type, level, en, fig_path, fig_kind, fig_html_table, fig_table_rows) VALUES (?,?,?,?,?,?,?,?,?)');
+    for (const b of rows) stmt.run(paperId, b.seq, b.type, b.level, b.en, b.figPath ?? null, b.figKind ?? null, b.figHtmlTable ? 1 : 0, b.figTableRows ? JSON.stringify(b.figTableRows) : null);
   });
   tx(blocks);
 }
 
 export function getBlocks(paperId: number) {
   return getDb().prepare(
-    `SELECT b.pid, b.seq, b.type, b.level, b.en, b.fig_path, b.fig_kind, b.fig_html_table, t.zh
+    `SELECT b.pid, b.seq, b.type, b.level, b.en, b.fig_path, b.fig_kind, b.fig_html_table, b.fig_table_rows, t.zh
      FROM blocks b LEFT JOIN translations t ON t.paper_id=b.paper_id AND t.pid=b.pid
      WHERE b.paper_id=? ORDER BY b.seq`
   ).all(paperId);

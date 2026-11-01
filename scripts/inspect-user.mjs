@@ -24,7 +24,7 @@ await new Promise((resolve, reject) => {
 
 const child = spawn(electronBin(), ['.'], {
   cwd: root, shell: true, stdio: 'ignore',
-  env: { ...process.env, PR_UI_INSPECT: '1', PR_E2E_LOG: logFile, PR_E2E_DONE: doneFile, VITE_DEV_SERVER_URL: 'http://localhost:5199' },
+  env: { ...process.env, PR_UI_INSPECT: '1', PR_E2E_LOG: logFile, PR_E2E_DONE: doneFile, PR_E2E_USER_DATA: tmpDir, VITE_DEV_SERVER_URL: 'http://localhost:5199' },
 });
 
 const t0 = Date.now();

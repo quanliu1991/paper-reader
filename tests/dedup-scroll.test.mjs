@@ -21,26 +21,35 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-dedup-'));
 const logFile = path.join(tmpDir, 'dedup.log');
 const doneFile = path.join(tmpDir, 'done');
 
-const vite = spawn('npx', ['vite', '--port', '5199', '--strictPort'], { cwd: root, shell: true, stdio: 'ignore' });
-await new Promise((resolve, reject) => {
-  const t0 = Date.now();
-  console.log('[dedup-scroll] waiting vite :5199 ...');
-  const timer = setInterval(async () => {
-    try {
-      const r = await fetch('http://localhost:5199');
-      if (r.ok) { clearInterval(timer); resolve(null); }
-    } catch { /* not up */ }
-    if (Date.now() - t0 > 30000) { clearInterval(timer); reject(new Error('vite timeout')); }
-  }, 500);
-});
-console.log('[dedup-scroll] vite up, launching electron ...');
+// PR_E2E_LOAD=dist：用 vite build 产物，不起 dev server（vite 长跑挂死曾致测试随机卡死）
+const useDist = process.env.PR_E2E_LOAD === 'dist';
+let vite = null;
+if (!useDist) {
+  vite = spawn('npx', ['vite', '--port', '5199', '--strictPort'], { cwd: root, shell: true, stdio: 'ignore' });
+  await new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    console.log('[dedup-scroll] waiting vite :5199 ...');
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch('http://localhost:5199');
+        if (r.ok) { clearInterval(timer); resolve(null); }
+      } catch { /* not up */ }
+      if (Date.now() - t0 > 30000) { clearInterval(timer); reject(new Error('vite timeout')); }
+    }, 500);
+  });
+} else {
+  // dist 模式必须先 build（renderer 产物 + electron bundle 已在上面生成）
+  if (!fs.existsSync(path.join(root, 'dist/index.html'))) throw new Error('dist/index.html missing — run npm run build first');
+  console.log('[dedup-scroll] dist mode (no vite)');
+}
+console.log('[dedup-scroll] launching electron ...');
 
 const child = spawn(electronBin(), ['.'], {
   cwd: root, shell: true, stdio: 'ignore',
   env: {
     ...process.env,
     PR_DEDUP_E2E: '1', PR_E2E_LOG: logFile, PR_E2E_DONE: doneFile, PR_E2E_USER_DATA: tmpDir,
-    VITE_DEV_SERVER_URL: 'http://localhost:5199',
+    ...(useDist ? { PR_E2E_LOAD: 'dist' } : { VITE_DEV_SERVER_URL: 'http://localhost:5199' }),
   },
 });
 
@@ -49,11 +58,11 @@ let timedOut = false;
 await new Promise((resolve) => {
   const timer = setInterval(() => {
     if (fs.existsSync(doneFile)) { clearInterval(timer); resolve(null); }
-    else if (Date.now() - t0 > 180000) { clearInterval(timer); timedOut = true; child.kill(); resolve(null); }
+    else if (Date.now() - t0 > 300000) { clearInterval(timer); timedOut = true; child.kill(); resolve(null); }
   }, 500);
 });
 
-vite.kill(); child.kill();
+if (vite) vite.kill(); child.kill();
 try { process.kill(-vite.pid); } catch {}
 
 const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '(no log)';

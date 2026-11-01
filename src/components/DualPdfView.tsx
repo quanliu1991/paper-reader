@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import RichText from './RichText';
+import FigTable from './FigTable';
 import type { BlockRow } from '../store';
 import { figSrc } from '../figsrc';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -300,17 +301,39 @@ export default function DualPdfView({
   // prog 记录时间戳，窗口内同侧 scroll 一律视为联动（目标位置比对仍保留兜底）。
   const syncingRef = useRef(false);
   const progScrollRef = useRef<{ side: 'left' | 'right'; top: number; at: number } | null>(null);
+  // 联动节流：双向联动的最小间隔。瞬移式 scrollTo 会在同一帧内级联（L 联动→R 事件→R 联动→L 事件→…），
+  // 14 表格布局下每轮 querySelector+rect 都是全量布局抖动 → 主线程饱和 → 测试的 setTimeout 全部饿死（挂死）。
+  // 节流 120ms 强制级联断流：任何一侧联动后 120ms 内忽略新的联动触发。
+  const lastSyncAtRef = useRef(0);
+  const SYNC_THROTTLE_MS = 120;
   const visiblePageRef = useRef(visiblePage);
   visiblePageRef.current = visiblePage;
   const rightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const SYNC_LOCK_MS = 600;
-  // 联动判定：prog 未过期且方向匹配 → 该侧当前 scroll 视为联动（动画中 scrollTop 逐步逼近，逐点比对会漏判）
+  // 联动判定：prog 未过期且方向匹配 → 该侧当前 scroll 视为联动（动画中 scrollTop 逐步逼近，逐点比对会漏判）。
+  // 完成即冷却（新）：长距离 smooth 动画可 >900ms（14 表格布局实测数千 ms），纯时间窗会在动画中途
+  // 过期 → 反向联动回环 → 双侧互滚永不收敛（dedup B2:3 挂死根因）。到达目标 ±3px 后仍保留 400ms
+  // 冷却窗：瞬移落位后同帧/惯性 scroll 事件继续派发，清标记过早会把它们误判成用户滚动 → R2L
+  // 用旧顶页把左栏拉回去（2026-11 dedup L2R pg8/9/11 失准实测：scrollTos=0 但 R 停在旧页）。
   const isProgScroll = (side: 'left' | 'right'): boolean => {
     const prog = progScrollRef.current;
     if (!prog || prog.side !== side) return false;
-    return Date.now() - prog.at <= SYNC_LOCK_MS + 300;
+    const pane = side === 'left' ? leftScrollRef.current : rightScrollRef.current;
+    if (pane) {
+      const d = Math.abs(pane.scrollTop - prog.top);
+      if (d <= 3) {
+        // 已到达：只信 400ms 冷却窗（同帧/惯性 scroll 继续派发），之后清标记
+        return Date.now() - prog.at <= 400;
+      }
+      // 未到达但已远离（>120px）：用户明显接管滚动（如 E2E 直接赋值 scrollTop 长跳、
+      // 或用户在动画中途反向滚）——prog 标记失效，放行本次滚动。此前纯 3s 时间窗会把
+      // 接管滚动吞掉整整 3s（dedup B2:3/B2:4 leftTopPage 停在旧页根因）。
+      if (d > 120) { progScrollRef.current = null; return false; }
+    }
+    if (Date.now() - prog.at > 3000) { progScrollRef.current = null; return false; } // 3s 兜底：异常中断防死锁
+    return true;
   };
   const withSyncLock = (fn: () => void) => {
     if (syncingRef.current) return;
@@ -360,12 +383,24 @@ export default function DualPdfView({
       if (mode !== 'both') return;
       // 左栏程序化滚动中（R2L 联动/点击定位）→ 本回调是回环源头，忽略
       if (isProgScroll('left')) return;
+      // 节流：打断同帧级联（见 lastSyncAtRef 注释）
+      const now = Date.now();
+      if (now - lastSyncAtRef.current < SYNC_THROTTLE_MS) return;
+      lastSyncAtRef.current = now;
       // 右栏跟随：连续段落流模式——找 data-page=best 的第一个段落，严格对齐到视口顶+12px。
       // 验收标准：左右锚点误差 ≤50px。此前「已在视口就不滚」的跳过条件会让段落挂在视口中段
       // （实测误差 224px），改为：与目标位偏差 >50px 就滚；≤50px 不动（防微调抖动/回环）。
       {
         const right = rightScrollRef.current;
         if (!right) return;
+        // 页级滞回：R 视口顶已停在本页（顶部第一个 data-page 锚点 == best）就不动。
+        // 只按像素差滚会在 50px 阈值边界与 R2L 互斥重对齐 → 双栏乒乓永不收敛（14 表布局挂死根因）。
+        const rr0 = right.getBoundingClientRect();
+        let topAnchorPg = 0;
+        for (const p of right.querySelectorAll<HTMLElement>('[data-page]')) {
+          if (p.getBoundingClientRect().bottom > rr0.top + 4) { topAnchorPg = Number(p.dataset.page); break; }
+        }
+        if (topAnchorPg === best) return;
         const g = right.querySelector(`[data-page="${best}"]`) as HTMLElement | null;
         if (!g) return;
         const rr = right.getBoundingClientRect();
@@ -375,7 +410,9 @@ export default function DualPdfView({
           // 用 rect 几何算 scrollTop（offsetTop 相对的 offsetParent 在嵌套布局下不是滚动容器，曾致 R2L 错位数百 px）
           const top = Math.max(0, right.scrollTop + (gr.top - rr.top) - 12);
           progScrollRef.current = { side: 'right', top, at: Date.now() };
-          right.scrollTo({ top, behavior: 'smooth' });
+          // 瞬移（不用 smooth）：14 表布局下右栏高度数万 px，smooth 动画在 IO 连续重定向下
+          // 无限爬行（实测 >180s 不收敛）；联动是「对齐」语义，即时落位才是正确行为。
+          right.scrollTo({ top, behavior: 'auto' });
         }
       }
     }, { root: leftScrollRef.current, threshold: [0, 0.25, 0.6] });
@@ -388,16 +425,28 @@ export default function DualPdfView({
   useEffect(() => {
     const right = rightScrollRef.current;
     if (!right || mode === 'en') return;
+    let lastExecAt = 0;
+    const MAX_WAIT = 400; // 防抖饥饿：长距离 smooth 滚动持续派发 scroll 事件（<200ms 间隔），
+    // 纯 debounce 的 clearTimeout 永远重置定时器 → R2L 联动永不执行（dedup B2:3 挂死根因）。
+    // max-wait：距上次执行 ≥400ms 强制执行，保证滚动流中联动仍然落地。
     const onScroll = () => {
       if (isProgScroll('right')) return; // 联动滚动（含动画进行中），忽略
+      const now = Date.now();
+      const wait = Math.min(200, Math.max(0, lastExecAt + MAX_WAIT - now));
       if (rightSyncTimerRef.current) clearTimeout(rightSyncTimerRef.current);
       rightSyncTimerRef.current = setTimeout(() => {
+        lastExecAt = Date.now();
         if (isProgScroll('right')) return;
-        // 视口顶部往下第一个仍与视口相交的带 data-page 段落。
+        // 节流：打断同帧级联（见 lastSyncAtRef 注释）
+        const nowSync = Date.now();
+        if (nowSync - lastSyncAtRef.current < SYNC_THROTTLE_MS) return;
+        lastSyncAtRef.current = nowSync;
+        // 视口顶部往下第一个仍与视口相交的带 data-page 锚点（段落 + 图表统一——图表缺锚时此处跳过
+        // 表格会选中其上方旧页段落，把左栏拉回旧页触发回环，2026-11 dedup L2R 长跳失准根因）。
         // 命中阈值 4px：短标题段（高 ~30px）滚到视口顶时，+30px 阈值会跳过它落到下一段
         // → 页锚错一页（dedup-scroll R2L pg4 -897px 根因）。只要段落底部还没出视口就算。
         const rr = right.getBoundingClientRect();
-        const paras = right.querySelectorAll<HTMLElement>('.dpv-zhpara[data-page]');
+        const paras = right.querySelectorAll<HTMLElement>('[data-page]');
         let target: HTMLElement | null = null;
         for (const p of paras) {
           const r = p.getBoundingClientRect();
@@ -412,6 +461,12 @@ export default function DualPdfView({
         {
           const left = leftScrollRef.current;
           if (!left) return;
+          // 页级滞回：L 视口顶已在 pg（顶部第一个 pdf-page == pg）就不动——与 IO 侧对称，
+          // 消除 50px 边界乒乓。
+          const lr0 = left.getBoundingClientRect();
+          const lTopPage = [...left.querySelectorAll<HTMLElement>('.pdf-page')]
+            .find(p => p.getBoundingClientRect().bottom > lr0.top + 4);
+          if (lTopPage && Number(lTopPage.dataset.page) === pg) return;
           const t = left.querySelector(`[data-page="${pg}"]`) as HTMLElement | null;
           if (t) {
             // 与左→右同标准：目标位（视口顶+8px）偏差 >50px 才滚，≤50px 不动（防回环抖动）
@@ -421,7 +476,8 @@ export default function DualPdfView({
               // rect 几何算 scrollTop（offsetTop 在嵌套布局下 offsetParent 不是滚动容器，曾致错位）
               const top = Math.max(0, left.scrollTop + (tr.top - lr.top) - 8);
               progScrollRef.current = { side: 'left', top, at: Date.now() };
-              left.scrollTo({ top, behavior: 'smooth' });
+              // 瞬移：与 L→R 同理，联动对齐即时落位（smooth 在长距离下爬行不收敛）。
+              left.scrollTo({ top, behavior: 'auto' });
             }
           }
         }
@@ -529,6 +585,12 @@ export default function DualPdfView({
 // 段落按文档 seq 顺序排成一条顺滑的流；每段带 data-pid + data-page（首个匹配页）。
 // 左栏滚动同步：找 data-page 的第一个段落平滑滚过去，不依赖组头。
 
+// 图表块（fig）不在 pidsByPage 里（无 PDF 文本映射），用其后第一个有映射的段落的页作锚。
+function nextParaPid(blocks: BlockRow[], from: number): number | undefined {
+  for (let i = from + 1; i < blocks.length; i++) if (blocks[i].type !== 'fig') return blocks[i].pid;
+  return undefined;
+}
+
 const ZhFlow = memo(function ZhFlow({
   blocks, pidsByPage, unmappedSet, numPages, activePid, activePage, clusterDone, onJumpPage, onJumpPid, onRetry,
 }: {
@@ -553,25 +615,31 @@ const ZhFlow = memo(function ZhFlow({
 
   return (
     <div className="dpv-zhflow">
-      {blocks.map((b, i) => {
-        if (b.type === 'fig') {
+      {blocks.map((b, i) => {        if (b.type === 'fig') {
           // 图表按论文原位内联（seq 即文档流位置）：本地已落地 → 真图 + 中文图注 + 点击跳左栏；
           // 未落地 → 占位框（下载完成 fig:updated 自动变真图）
           const src = figSrc(b.fig_path);
           const cap = b.zh ?? b.en ?? '';
+          // data-page 与段落同标准：图表也是右栏文档流的一等锚点。此前表格/图片缺 data-page，
+          // R2L 顶页探测与 L2R 滞回判断都跳过它们 → 表格贴近视口顶时页锚常年落在旧页，
+          // R2L 把左栏拉回旧页 → IO 再跟随 → 乒乓回环（dedup-scroll pg8/9/11 err 1300-2700px 根因）。
+          const figPg = pageOfPid.get(b.pid) ?? (nextParaPid(blocks, i) !== undefined ? pageOfPid.get(nextParaPid(blocks, i)!) : undefined);
           return (
             <figure
               key={`f${b.pid}`}
               className={`dpv-zhfig ${src ? '' : 'pending'}`}
               data-pid={b.pid}
+              data-page={figPg || undefined}
               onClick={() => onJumpPid(b.pid)}
               title="点击定位左栏原文页"
             >
               {src
                 ? <img src={src} alt={b.en.slice(0, 60)} decoding="async" />
-                : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
-                  ? <div className="dpv-zhfigph">📊 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 表格见左栏</div>
-                  : <div className="dpv-zhfigph">🖼 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 图片下载中</div>}
+                : b.fig_table_rows
+                  ? <FigTable rows={JSON.parse(b.fig_table_rows)} />
+                  : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
+                    ? <div className="dpv-zhfigph">📊 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 表格见左栏</div>
+                    : <div className="dpv-zhfigph">🖼 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 图片下载中</div>}
               {src && cap && <figcaption><RichText text={cap} /></figcaption>}
             </figure>
           );
