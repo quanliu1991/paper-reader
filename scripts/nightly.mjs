@@ -30,6 +30,14 @@ const log = (m) => console.log(`[nightly ${new Date().toISOString().slice(11, 19
 const run = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', timeout: 30 * 60_000, ...opts });
 
+// 夜间跑 UI 测试前清掉残留 Electron/打包版 app：避免 vite 端口冲突 + 多实例抢资源
+// （2026-11-01 实证：用户开着的打包版 Paper Reader 导致 dedup-scroll/visual-guard 误报 FAIL）
+try {
+  run('pkill', ['-f', 'paper-reader/release'], { stdio: 'ignore' });
+  run('pkill', ['-f', 'node_modules/.bin/electron'], { stdio: 'ignore' });
+  log('cleared residual electron instances');
+} catch { /* 没有resident实例，正常 */ }
+
 function git(args, allowFail = false) {
   try {
     return run('git', args);
