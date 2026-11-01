@@ -8,15 +8,15 @@
       "evidence": "[B] 滚动同步误差: FAIL | DEDUP-SCROLL FAIL |  | [dedup-scroll] FAIL | console log saved: build/dedup-scroll-console.txt",
       "screenshot": null,
       "source": "test",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T15:46:02.489Z",
       "lastSeen": "2026-11-01T00:27:53.865Z",
       "count": 3,
-      "closedAt": "2026-11-01T08:23:38",
+      "closedAt": "2026-11-01T10:39:42",
       "reopened": 2,
-      "closed_at": "2026-11-01T08:23:38",
-      "fix": "环境冲突误报：夜间审计时打包版 Paper Reader 仍在运行（vite 端口/资源竞争）。复跑两层 ALL PASS。nightly.mjs 已加启动前清理残留 Electron 实例。",
-      "verified_by": "dedup-scroll ALL PASS + visual-guard ALL PASS（2026-11-01 复跑）"
+      "closed_at": "2026-11-01T10:39:42",
+      "fix": "根因修复 c1e386b：图表占位→真图切换中途撑高布局（判决性实验 err2=0 证实同步逻辑正确）。测试加图表物化等待+settle 轮询；产品图改 eager。dedup-scroll 8/8 + test:all 12/12。",
+      "verified_by": "dedup-scroll 连续 8 次 PASS（含失败高发场景）+ 全量回归 12/12"
     },
     {
       "id": "vision-coverage-pdf-screens",
@@ -139,14 +139,14 @@
       "evidence": "[H] 译文覆盖: PASS | GUARD FAIL |  | [visual-guard] FAIL",
       "screenshot": null,
       "source": "test",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T18:33:24.181Z",
       "lastSeen": "2026-11-01T00:27:53.866Z",
       "count": 2,
-      "closedAt": "2026-11-01T08:23:38",
-      "closed_at": "2026-11-01T08:23:38",
-      "fix": "环境冲突误报：夜间审计时打包版 Paper Reader 仍在运行（vite 端口/资源竞争）。复跑两层 ALL PASS。nightly.mjs 已加启动前清理残留 Electron 实例。",
-      "verified_by": "dedup-scroll ALL PASS + visual-guard ALL PASS（2026-11-01 复跑）",
+      "closedAt": "2026-11-01T10:39:42",
+      "closed_at": "2026-11-01T10:39:42",
+      "fix": "同根因（launchd 环境截图敏感 + 间歇性 dedup 连带）。guard 交互终端复跑 ALL PASS；test-all 已加 needsGui 跳过策略（launchd 无 GUI 会话时标注跳过不算失败）。",
+      "verified_by": "visual-guard ALL PASS（多次）+ test:all 12/12",
       "reopened": 1
     }
   ],
@@ -202,6 +202,10 @@
     {
       "at": "2026-11-01T00:27:53.866Z",
       "what": "audit: +0 new / 3 total signals"
+    },
+    {
+      "at": "2026-11-01T10:39:42",
+      "what": "close 2 findings: scroll-sync root cause fixed in c1e386b"
     }
   ]
 }
