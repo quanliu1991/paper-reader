@@ -8,12 +8,12 @@
       "evidence": "[B] 滚动同步误差: FAIL | DEDUP-SCROLL FAIL |  | [dedup-scroll] FAIL | console log saved: build/dedup-scroll-console.txt",
       "screenshot": null,
       "source": "test",
-      "status": "closed",
+      "status": "open",
       "firstSeen": "2026-10-31T15:46:02.489Z",
-      "lastSeen": "2026-10-31T18:33:24.178Z",
-      "count": 2,
+      "lastSeen": "2026-11-01T00:27:53.865Z",
+      "count": 3,
       "closedAt": "2026-11-01T08:23:38",
-      "reopened": 1,
+      "reopened": 2,
       "closed_at": "2026-11-01T08:23:38",
       "fix": "环境冲突误报：夜间审计时打包版 Paper Reader 仍在运行（vite 端口/资源竞争）。复跑两层 ALL PASS。nightly.mjs 已加启动前清理残留 Electron 实例。",
       "verified_by": "dedup-scroll ALL PASS + visual-guard ALL PASS（2026-11-01 复跑）"
@@ -53,17 +53,18 @@
       "severity": "high",
       "view": "02-reader-dual",
       "title": "视觉异常：02-reader-dual",
-      "evidence": "右栏中文译文未正常生成，仅显示'研究指出：The optimization of LLM serving engines,……对应中文译文第 2 段…'等占位/错误说明文本",
+      "evidence": "右侧译文栏仅显示一句概要说明而非实际译文内容，属于加载失败/占位而非完整翻译",
       "screenshot": null,
       "source": "visual-judge",
-      "status": "closed",
+      "status": "open",
       "firstSeen": "2026-10-31T16:45:02.759Z",
-      "lastSeen": "2026-10-31T16:45:02.760Z",
-      "count": 1,
+      "lastSeen": "2026-11-01T00:27:53.866Z",
+      "count": 2,
       "closedAt": "2026-11-01T01:51:26",
       "closed_at": "2026-11-01T01:51:26",
       "fix": "视觉判定规则修正：「待翻译」为合法空状态（用户未点翻译）、「表格·见原文PDF」为诚实标注，不立案；判定 prompt 已加规则 1-4。",
-      "verified_by": "visual-judge 10/10 PASS 0 findings；test:all 12/12"
+      "verified_by": "visual-judge 10/10 PASS 0 findings；test:all 12/12",
+      "reopened": 1
     },
     {
       "id": "visual-03-ask-panel",
@@ -138,14 +139,15 @@
       "evidence": "[H] 译文覆盖: PASS | GUARD FAIL |  | [visual-guard] FAIL",
       "screenshot": null,
       "source": "test",
-      "status": "closed",
+      "status": "open",
       "firstSeen": "2026-10-31T18:33:24.181Z",
-      "lastSeen": "2026-10-31T18:33:24.181Z",
-      "count": 1,
+      "lastSeen": "2026-11-01T00:27:53.866Z",
+      "count": 2,
       "closedAt": "2026-11-01T08:23:38",
       "closed_at": "2026-11-01T08:23:38",
       "fix": "环境冲突误报：夜间审计时打包版 Paper Reader 仍在运行（vite 端口/资源竞争）。复跑两层 ALL PASS。nightly.mjs 已加启动前清理残留 Electron 实例。",
-      "verified_by": "dedup-scroll ALL PASS + visual-guard ALL PASS（2026-11-01 复跑）"
+      "verified_by": "dedup-scroll ALL PASS + visual-guard ALL PASS（2026-11-01 复跑）",
+      "reopened": 1
     }
   ],
   "history": [
@@ -196,6 +198,10 @@
     {
       "at": "2026-11-01T08:23:38",
       "what": "close 2 env-conflict misreports (residual electron during nightly); nightly pre-clean added"
+    },
+    {
+      "at": "2026-11-01T00:27:53.866Z",
+      "what": "audit: +0 new / 3 total signals"
     }
   ]
 }
