@@ -510,6 +510,36 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+  if (e2eEnabled && process.env.PR_TR_VERIFY) {
+    // 全篇真翻译验收（发布前）：隔离副本（含 .mk）→ translateAll → 成功率断言
+    const ud = process.env.PR_E2E_USER_DATA!;
+    app.setPath('userData', ud);
+    try {
+      fs.mkdirSync(ud, { recursive: true });
+      const realDb = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader/paper-reader.db');
+      if (fs.existsSync(realDb)) {
+        fs.copyFileSync(realDb, path.join(ud, 'paper-reader.db'));
+        for (const suffix of ['-wal', '-shm']) {
+          const src = realDb + suffix;
+          if (fs.existsSync(src)) fs.copyFileSync(src, path.join(ud, 'paper-reader.db' + suffix));
+        }
+      }
+      for (const sub of ['figures', 'pdfs']) {
+        const src = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader', sub);
+        if (fs.existsSync(src)) fs.cpSync(src, path.join(ud, sub), { recursive: true });
+      }
+      const mk = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader/.mk');
+      if (fs.existsSync(mk)) fs.copyFileSync(mk, path.join(ud, '.mk'));
+      console.log('[tr-verify] using ISOLATED COPY of real library');
+    } catch (e) { console.log(`[tr-verify] copy failed: ${e}`); }
+    registerIpc();
+    const entry = path.join(__dirname, 'translate-verify-entry.js');
+    if (fs.existsSync(entry)) {
+      const m = require(entry);
+      (m.run ?? m.default ?? m)();
+      return;
+    }
+  }
   if (e2eEnabled && process.env.PR_UI_INSPECT) {
     // 用户库检查：打开真实库中最近论文，检查渲染状态并截图。
     // 安全：默认改用真实库的临时副本（防 translateAll 等写操作污染真实库——
