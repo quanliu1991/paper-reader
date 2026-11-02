@@ -510,6 +510,36 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+  if (e2eEnabled && process.env.PR_HOME_VERIFY) {
+    // 首页摘要显示验收：paper-card 必须渲染 triage oneLiner（隔离副本）
+    const ud = process.env.PR_E2E_USER_DATA!;
+    app.setPath('userData', ud);
+    try {
+      fs.mkdirSync(ud, { recursive: true });
+      const realDb = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader/paper-reader.db');
+      if (fs.existsSync(realDb)) {
+        fs.copyFileSync(realDb, path.join(ud, 'paper-reader.db'));
+        for (const suffix of ['-wal', '-shm']) {
+          const src = realDb + suffix;
+          if (fs.existsSync(src)) fs.copyFileSync(src, path.join(ud, 'paper-reader.db' + suffix));
+        }
+      }
+      for (const sub of ['figures', 'pdfs']) {
+        const src = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader', sub);
+        if (fs.existsSync(src)) fs.cpSync(src, path.join(ud, sub), { recursive: true });
+      }
+      const mk = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader/.mk');
+      if (fs.existsSync(mk)) fs.copyFileSync(mk, path.join(ud, '.mk'));
+      console.log('[home-verify] using ISOLATED COPY of real library');
+    } catch (e) { console.log(`[home-verify] copy failed: ${e}`); }
+    registerIpc();
+    const entry = path.join(__dirname, 'home-summary-entry.js');
+    if (fs.existsSync(entry)) {
+      const m = require(entry);
+      (m.run ?? m.default ?? m)();
+      return;
+    }
+  }
   if (e2eEnabled && process.env.PR_TR_VERIFY) {
     // 全篇真翻译验收（发布前）：隔离副本（含 .mk）→ translateAll → 成功率断言
     const ud = process.env.PR_E2E_USER_DATA!;
@@ -1769,6 +1799,28 @@ export function registerIpc() {
   // 图表自愈：启动后异步补漏——fig 块缺图（fig_path 非本地形态）且磁盘无文件的论文，
   // 重跑 downloadFiguresFor（现已支持 object svg + 序号对位兜底）。幂等：已有本地图的块会被跳过。
   setTimeout(() => { repairMissingFigures().catch(() => {}); }, 8000);
+
+  // 摘要自愈：导入时无 Provider 的论文 summary 永远缺失（generateTriageInBackground 静默跳过），
+  // 首页只显示「AI 摘要待生成」占位。启动后补生成（串行防限流，与图表自愈错峰）。
+  // 幂等：已有 summary 的论文跳过；无 Provider 时整体跳过（下次配置后再补）。
+  setTimeout(() => { repairMissingSummaries().catch(() => {}); }, 20000);
+  async function repairMissingSummaries() {
+    const provider = getDefaultProvider();
+    if (!provider) return;
+    const targets = db.getDb().prepare(
+      `SELECT p.id FROM papers p
+       WHERE NOT EXISTS (SELECT 1 FROM paper_summaries s WHERE s.paper_id = p.id AND s.summary != '')`
+    ).all() as any[];
+    if (!targets.length) return;
+    console.log(`[summary-repair] papers needing summary: ${targets.length}`);
+    for (const t of targets) {
+      try {
+        await generateTriageInBackground(t.id);
+        console.log(`[summary-repair] paper ${t.id}: summary generated`);
+        await new Promise(r => setTimeout(r, 3000)); // 串行 + 间隔防限流
+      } catch (e: any) { console.log(`[summary-repair] paper ${t.id} FAILED: ${e?.message ?? e}`); }
+    }
+  }
   async function repairMissingFigures() {
     // 找「有 fig 块但完全没有本地图」的 html 论文（arxiv 导入）
     const targets = db.getDb().prepare(
