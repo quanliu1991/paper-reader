@@ -28,6 +28,7 @@ const LAYERS = [
   { name: 'pdf-ui（PDF 原位翻译 UI）', cmd: ['node', 'tests/pdf-ui-e2e.test.mjs'], timeout: 240000, offline: true },
   { name: 'topic-ui（主题库 UI）', cmd: ['node', 'tests/topic-ui-e2e.test.mjs'], timeout: 300000, offline: false },
   { name: 'profile-ui（用户画像 UI）', cmd: ['node', 'tests/profile-ui-e2e.test.mjs'], timeout: 240000, offline: true },
+  { name: 'uex（用户旅程全流程）', cmd: ['node', 'tests/uex-e2e.test.mjs', '--timeout', '240000'], timeout: 300000, offline: true },
   { name: 'guard（视觉门禁）', cmd: ['node', 'tests/visual-guard.test.mjs'], timeout: 240000, offline: true, needsGui: true },
   ...(FULL ? [
     { name: 'soak（30 轮稳定性）', cmd: ['node', 'tests/soak.test.mjs'], timeout: 420000, offline: true },

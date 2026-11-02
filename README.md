@@ -109,6 +109,7 @@ npm run electron:dev    # 起开发窗口，日常阅读够用
 node tests/fixtures.test.mjs        # arXiv 解析回归（fixtures 快照断言）
 node tests/translate-qc.test.mjs    # 翻译 QC + 提示词（离线）
 node tests/e2e.test.mjs             # E2E 黄金路径（导入→划线→闪卡→SM-2→持久化）
+node tests/uex-e2e.test.mjs         # 用户旅程全流程 UI E2E（导入→阅读→翻译→划线提问→高亮笔记→闪卡复习→沉淀→管理→进度）
 node tests/topic-graph.test.mjs     # 主题依赖库分层/排序（离线单元）
 node tests/topic-e2e.mjs            # 主题构建真实网络 E2E（arXiv + S2）
 node tests/pdf-ui-e2e.test.mjs      # PDF 视图 UI E2E（真实窗口 + 字体断言）

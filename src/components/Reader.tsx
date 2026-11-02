@@ -138,6 +138,13 @@ export default function Reader() {
           anchorPidRef.current = topPid;
           localStorage.setItem(`paper:${paper.id}:pid`, String(topPid));
         }
+        // 进度百分比入库（只增不减：回头翻不算退步）——列表页「读至 X%」数据源
+        const pct = Math.round(scrollRatioRef.current * 100);
+        const prev = Number(localStorage.getItem(`paper:${paper.id}:pct`) || 0);
+        if (pct > prev) {
+          localStorage.setItem(`paper:${paper.id}:pct`, String(pct));
+          window.api.setReadPct(paper.id, pct).catch(() => { /* 进度失败不打扰阅读 */ });
+        }
       }, 500);
     };
     el.addEventListener('scroll', onScroll, { passive: true });

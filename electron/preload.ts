@@ -22,6 +22,7 @@ const api = {
   importText: (arg: { arxivId: string; title: string; text: string }) => call('papers:importText', arg),
   setStatus: (arg: { id: number; status: string }) => call('papers:setStatus', arg),
   setTags: (arg: { id: number; tags: string[] }) => call('papers:setTags', arg),
+  setReadPct: (paperId: number, pct: number) => call('papers:setReadPct', paperId, pct),
   // 本地论文库（v0.4）
   libGetDir: () => call('lib:getDir'),
   libSetDir: (dir: string) => call('lib:setDir', dir),

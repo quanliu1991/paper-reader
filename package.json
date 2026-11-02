@@ -17,6 +17,7 @@
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "guard": "node tests/visual-guard.test.mjs",
     "test:dedup-scroll": "node tests/dedup-scroll.test.mjs",
+    "test:uex": "node tests/uex-e2e.test.mjs",
     "test:all": "node scripts/test-all.mjs",
     "ux:audit": "node tests/ux-audit.test.mjs && node tests/ux-audit.test.mjs --real && node scripts/ux-lint.mjs",
     "ux:lint": "node scripts/ux-lint.mjs",

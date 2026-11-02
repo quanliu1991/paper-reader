@@ -172,6 +172,9 @@ export default function PaperList() {
     return off;
   }, [loadPapers]);
 
+  // 挂载时刷新：从阅读器返回列表页，卡片的进度/已译/划线数才是最新（App 只在启动时拉一次）
+  useEffect(() => { loadPapers(); }, [loadPapers]);
+
   async function importArxiv() {
     if (!input.trim() || busy) return;
     setBusy(true);

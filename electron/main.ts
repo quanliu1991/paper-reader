@@ -1092,6 +1092,16 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  if (e2eEnabled && process.env.PR_UEX_E2E) {
+    // 用户旅程 UI E2E：真实用户视角全流程（导入→阅读→翻译→划线→闪卡→复习→沉淀→管理）
+    const entry = path.join(__dirname, 'uex-e2e.js');
+    if (fs.existsSync(entry)) {
+      if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
+      registerIpc();
+      require(entry);
+      return;
+    }
+  }
   if (e2eEnabled && process.env.PR_UX_AUDIT) {
     // UX 审计：黄金旅程 + 探针 + 截图（入口自带全部逻辑；隔离 userData）
     const entry = path.join(__dirname, 'ux-audit-entry.js');
@@ -1536,6 +1546,13 @@ export function registerIpc() {
   // 论文组织：状态 + 标签（v0.3）
   wrap('papers:setStatus', (_e, arg: { id: number; status: string }) => { db.setPaperStatus(arg.id, arg.status); return true; });
   wrap('papers:setTags', (_e, arg: { id: number; tags: string[] }) => { db.setPaperTags(arg.id, arg.tags); return true; });
+  // 阅读进度百分比入库（列表页「读至 X%」数据源；渲染层防抖上报，只增不减）
+  wrap('papers:setReadPct', (_e, paperId: number, pct: number) => {
+    const p = Math.max(0, Math.min(100, Math.round(pct)));
+    const prev = db.getReadProgress(paperId);
+    if (p > prev) db.setSetting(`read:${paperId}`, String(p));
+    return true;
+  });
 
   // ---------- 本地论文库（v0.4）----------
   const LIB_DIR_KEY = 'library_dir';
