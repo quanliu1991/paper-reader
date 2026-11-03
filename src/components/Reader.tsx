@@ -12,6 +12,9 @@ import DualPdfView from './DualPdfView';
 import ParaNotes from './ParaNotes';
 import type { NoteRow } from '../store';
 import { IconBack, IconExport, IconImmersive, IconMore } from './icons';
+import { toast, toastErr } from './Toast';
+import { highlightHtml } from '../highlights';
+import { modKeyLabel } from '../platform';
 
 const HL_COLORS = [ // ux-lint-allow: 高亮功能色板（业务数据非主题色）
   { id: 'yellow', label: '黄', bg: '#fff3b0' },
@@ -22,7 +25,8 @@ const HL_COLORS = [ // ux-lint-allow: 高亮功能色板（业务数据非主题
 
 export default function Reader() {
   const paper = useStore(s => s.currentPaper)!;
-  const blocks = useStore(s => s.blocks);
+  const allBlocks = useStore(s => s.blocks);
+  const blocks = allBlocks.filter(b => !(b.type === 'para' && /^\d{1,4}$/.test((b.en || '').trim())));
   const highlights = useStore(s => s.highlights);
   const notes = useStore(s => s.notes);
   const layout = useStore(s => s.layout);
@@ -32,6 +36,7 @@ export default function Reader() {
   const updateBlockZh = useStore(s => s.updateBlockZh);
   const updateBlockFig = useStore(s => s.updateBlockFig);
   const askPanelOpen = useStore(s => s.askPanelOpen);
+  const readerBack = useStore(s => s.readerBack);
   const fontSize = useStore(s => s.fontSize);
   const lineHeight = useStore(s => s.lineHeight);
   const columnWidth = useStore(s => s.columnWidth);
@@ -53,6 +58,7 @@ export default function Reader() {
   const [, setSelectedPid] = useState<number | null>(null);
   // 翻译版 PDF 导出
   const [exporting, setExporting] = useState(false);
+  const [digestBusy, setDigestBusy] = useState(false);
   // 工具栏「更多」菜单
   const [moreOpen, setMoreOpen] = useState(false);
   const isPdfLayout = layout === 'pdf-layout';
@@ -245,7 +251,20 @@ export default function Reader() {
 
   async function saveHighlight(color: string) {
     if (!popover) return;
-    await window.api.addHighlight({ paperId: paper.id, pid: popover.pid, textEn: popover.text, color });
+    const text = popover.text.trim();
+    const pid = popover.pid;
+    const existing = useStore.getState().highlights.filter(h => h.pid === pid);
+    const overlapping = existing.filter(h => {
+      const prev = (h.text_en || '').trim();
+      return prev.length >= 2 && (text.includes(prev) || prev.includes(text));
+    });
+    if (overlapping.some(h => h.text_en.trim().length > text.length)) {
+      setPopover(null);
+      window.dispatchEvent(new CustomEvent('pr:toast', { detail: { type: 'info', msg: '这段已经有更完整的划线' } }));
+      return;
+    }
+    for (const h of overlapping) await window.api.removeHighlight(h.id);
+    await window.api.addHighlight({ paperId: paper.id, pid, textEn: text, color });
     setPopover(null);
     const hls = await window.api.listHighlights(paper.id);
     useStore.setState({ highlights: hls });
@@ -362,7 +381,11 @@ export default function Reader() {
       )}
       {!immersive && (
         <div className="reader-toolbar">
-          <button className="icon-btn" onClick={() => useStore.getState().setView('list')} title="返回论文库"><IconBack /></button>
+          <button
+            className="icon-btn"
+            onClick={() => useStore.getState().setView(readerBack ?? 'list')}
+            title={readerBack === 'topics' ? '返回主题' : readerBack === 'notes' ? '返回沉淀' : '返回论文库'}
+          ><IconBack /></button>
           <span className="title">{paper.title}</span>
           <div className="mode-switch">
             <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="左右对照：段落逐行双语">对照</button>
@@ -387,10 +410,24 @@ export default function Reader() {
                   <div className="more-backdrop" onClick={() => setMoreOpen(false)} />
                   <div className="more-popover" role="menu">
                     <button role="menuitem" onClick={() => { setMoreOpen(false); useStore.getState().setImmersive(true); }}>
-                      <IconImmersive /> 沉浸模式 <span className="kbd">Ctrl+Shift+F</span>
+                      <IconImmersive /> 沉浸模式 <span className="kbd">{modKeyLabel}+Shift+F</span>
                     </button>
                     <button role="menuitem" onClick={() => { setMoreOpen(false); exportTranslatedPdf(); }} disabled={exporting}>
                       <IconExport /> {exporting ? '导出中…' : '导出翻译版 PDF'}
+                    </button>
+                    <button role="menuitem" disabled={digestBusy} onClick={async () => {
+                      setMoreOpen(false);
+                      if (typeof window.api.genPaperDigest !== 'function') {
+                        toast('info', '请先停掉并重新运行 npm run electron:dev，再生成精炼笔记');
+                        return;
+                      }
+                      setDigestBusy(true);
+                      try {
+                        await window.api.genPaperDigest(paper.id);
+                        toast('success', '已生成本篇精炼笔记，可在「沉淀」查看');
+                      } catch (e: any) { toastErr(e); } finally { setDigestBusy(false); }
+                    }}>
+                      {digestBusy ? '生成中…' : '生成本篇精炼笔记'}
                     </button>
                     {layout !== 'pdf-layout' && (
                       <>
@@ -551,7 +588,8 @@ const BlockRowView = memo(function BlockRowView({ b, layout, hlItems }: {
   const showZh = layout === 'dual' || layout === 'zh';
   const single = layout !== 'dual';
 
-  const enHtml = hlItems.length ? markHighlights(b.en, hlItems) : undefined;
+  const enHtml = highlightHtml(b.en, hlItems);
+  const zhHtml = b.zh ? highlightHtml(b.zh, hlItems) : null;
 
   return (
     <div className="block-row" data-rowpid={b.pid} data-pid={b.pid}>
@@ -573,7 +611,9 @@ const BlockRowView = memo(function BlockRowView({ b, layout, hlItems }: {
               : b.type === 'fig'
                 ? <FigureView b={b} side="zh" />
                 : b.zh
-                  ? <p className="zh-text"><RichText text={b.zh} /></p>
+                  ? zhHtml
+                    ? <p className="zh-text" dangerouslySetInnerHTML={{ __html: zhHtml }} />
+                    : <p className="zh-text"><RichText text={b.zh} /></p>
                   : <p className="zh-pending">待翻译</p>
             }
           </div>
@@ -615,19 +655,3 @@ function zhToHtml(s: string): string {
   return escapeHtml(s);
 }
 const escHtml = escapeHtml;
-
-function markHighlights(en: string, items: Array<{ text: string; color: string }>): string {
-  let html = escapeHtml(en);
-  for (const it of items) {
-    const esc = escapeHtml(it.text.trim()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    try {
-      html = html.replace(new RegExp(esc), m =>
-        `<mark class="hl" style="background:${colorOf(it.color)}">${m}</mark>`);
-    } catch { /* skip */ }
-  }
-  return html;
-}
-
-function colorOf(id: string): string { // ux-lint-allow: 高亮色板兜底色
-  return HL_COLORS.find(c => c.id === id)?.bg ?? '#fff3b0';
-}

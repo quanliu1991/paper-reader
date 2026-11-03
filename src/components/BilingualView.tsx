@@ -1,5 +1,6 @@
 import { memo, Fragment } from 'react';
 import RichText from './RichText';
+import { highlightHtml } from '../highlights';
 import ParaNotes from './ParaNotes';
 import FigTable from './FigTable';
 import type { BlockRow, NoteRow } from '../store';
@@ -64,7 +65,8 @@ const BiRow = memo(function BiRow({
     );
   }
   // 正文段落：英文段 → 中文段（书页式交错）
-  const enHtml = hlItems.length ? markHighlights(b.en, hlItems) : undefined;
+  const enHtml = highlightHtml(b.en, hlItems);
+  const zhHtml = b.zh ? highlightHtml(b.zh, hlItems) : null;
   return (
     <div className="bi-row bi-para" data-pid={b.pid}>
       <p className="bi-en"
@@ -72,28 +74,10 @@ const BiRow = memo(function BiRow({
         {enHtml ? undefined : <RichText text={b.en} />}
       </p>
       {b.zh
-        ? <p className="bi-zh"><RichText text={b.zh} /></p>
+        ? zhHtml
+          ? <p className="bi-zh" dangerouslySetInnerHTML={{ __html: zhHtml }} />
+          : <p className="bi-zh"><RichText text={b.zh} /></p>
         : <div className="bi-pending"><span className="dot" /><span className="dot" /><span className="dot" /><span>待翻译</span></div>}
     </div>
   );
 });
-
-function markHighlights(en: string, items: Array<{ text: string; color: string }>): string {
-  let html = escapeHtml(en);
-  for (const it of items) {
-    const esc = escapeHtml(it.text.trim()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    try {
-      html = html.replace(new RegExp(esc), m => // ux-lint-allow: 高亮色板应用（业务数据）
-        `<mark class="hl" style="background:${COLORS[it.color] ?? '#fff3b0'}">${m}</mark>`);
-    } catch { /* skip */ }
-  }
-  return html;
-}
-
-const COLORS: Record<string, string> = { // ux-lint-allow: 高亮功能色板（业务数据非主题色）
-  yellow: '#fff3b0', green: '#c8e6c9', blue: '#bbdefb', pink: '#f8bbd0',
-};
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}

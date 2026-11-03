@@ -34,10 +34,10 @@ function MathSpan({ tex, display }: { tex: string; display: boolean }) {
   return <span className={display ? 'math-block' : 'math-inline'} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-interface Part { text: string; math: boolean; display: boolean }
+export interface Part { text: string; math: boolean; display: boolean }
 
 // 拆分：先 $$...$$（块级，含跨行），再 $...$（行内，非贪婪、不允许裸换行）
-function splitMath(s: string): Part[] {
+export function splitMath(s: string): Part[] {
   const parts: Part[] = [];
   let rest = s;
   // 块级 $$...$$

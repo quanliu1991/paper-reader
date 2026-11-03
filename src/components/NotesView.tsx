@@ -1,43 +1,158 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useStore, HighlightRow, NoteRow } from '../store';
+import { useStore, HighlightRow, NoteRow, QaRow } from '../store';
 import { toast, toastErr } from './Toast';
 import { IconExport, IconTrash, IconSearch } from './icons';
+import DigestCard, { DigestDoc, toDigestDoc } from './DigestCard';
+import AnswerText from './AnswerText';
 
 const HL_COLOR_LABEL: Record<string, string> = { yellow: '黄', green: '绿', blue: '蓝', pink: '粉' };
+const HL_BAR: Record<string, string> = { yellow: '#e6c84a', green: '#7dcea0', blue: '#85b7eb', pink: '#f0a3bd' };
 
-// 跳转：写入 pid 锚点（Reader 打开时按锚点恢复位置）再进论文
+type Scope = 'all' | 'highlights' | 'notes';
+
+interface Passage {
+  pid: number | null;
+  highlights: HighlightRow[];
+  notes: NoteRow[];
+  qas: QaRow[];
+}
+interface PaperGroup {
+  paperId: number;
+  title: string;
+  arxivId: string;
+  passages: Passage[];
+  highlightCount: number;
+  noteCount: number;
+  qaCount: number;
+  latest: string;
+}
+
+function initialScope(): Scope {
+  const saved = localStorage.getItem('pr:notes:scope');
+  if (saved === 'all' || saved === 'highlights' || saved === 'notes') return saved;
+  const old = localStorage.getItem('pr:notes:tab');
+  if (old === 'highlights' || old === 'notes') return old;
+  return 'all';
+}
+
+// 按论文成组，组内按段落 pid 升序（阅读顺序）。同一段的高亮和笔记放在一起。
+export function buildSettleGroups(hls: HighlightRow[], notes: NoteRow[], scope: Scope, qas: QaRow[] = []): PaperGroup[] {
+  const showH = scope !== 'notes';
+  const showN = scope !== 'highlights';
+  const showQ = scope === 'all';
+  const map = new Map<number, {
+    paperId: number; title: string; arxivId: string;
+    passages: Map<string, Passage>;
+    highlightCount: number; noteCount: number; qaCount: number; latest: string;
+  }>();
+  const ensure = (paperId: number, title?: string, arxiv?: string) => {
+    let g = map.get(paperId);
+    if (!g) {
+      g = {
+        paperId, title: title || `论文 #${paperId}`, arxivId: arxiv || '',
+        passages: new Map(), highlightCount: 0, noteCount: 0, qaCount: 0, latest: '',
+      };
+      map.set(paperId, g);
+    } else {
+      if (title && g.title.startsWith('论文 #')) g.title = title;
+      if (arxiv && !g.arxivId) g.arxivId = arxiv;
+    }
+    return g;
+  };
+  const passage = (g: NonNullable<ReturnType<typeof map.get>>, pid: number | null) => {
+    const key = pid == null ? 'none' : String(pid);
+    let p = g.passages.get(key);
+    if (!p) { p = { pid, highlights: [], notes: [], qas: [] }; g.passages.set(key, p); }
+    return p;
+  };
+  const touch = (g: NonNullable<ReturnType<typeof map.get>>, t: string) => {
+    if (t > g.latest) g.latest = t;
+  };
+  if (showH) {
+    for (const h of hls) {
+      const g = ensure(h.paper_id, h.paper_title, h.arxiv_id);
+      passage(g, h.pid).highlights.push(h);
+      g.highlightCount += 1;
+      touch(g, h.created_at || '');
+    }
+  }
+  if (showN) {
+    for (const n of notes) {
+      const g = ensure(n.paper_id, n.paper_title, n.arxiv_id);
+      passage(g, n.pid).notes.push(n);
+      g.noteCount += 1;
+      touch(g, n.updated_at || n.created_at || '');
+    }
+  }
+  if (showQ) {
+    for (const q of qas) {
+      const g = ensure(q.paper_id, q.paper_title, q.arxiv_id);
+      passage(g, q.pid).qas.push(q);
+      g.qaCount += 1;
+      touch(g, q.created_at || '');
+    }
+  }
+  return [...map.values()]
+    .map(g => ({
+      paperId: g.paperId,
+      title: g.title,
+      arxivId: g.arxivId,
+      highlightCount: g.highlightCount,
+      noteCount: g.noteCount,
+      qaCount: g.qaCount,
+      latest: g.latest,
+      passages: [...g.passages.values()].sort((a, b) => {
+        if (a.pid == null) return 1;
+        if (b.pid == null) return -1;
+        return a.pid - b.pid;
+      }),
+    }))
+    .sort((a, b) => b.latest.localeCompare(a.latest) || a.title.localeCompare(b.title));
+}
+
 function jumpTo(paperId: number, pid: number | null) {
   if (pid) localStorage.setItem(`paper:${paperId}:pid`, String(pid));
   useStore.getState().openPaper(paperId);
 }
 
 export default function NotesView() {
-  const openPaper = useStore(s => s.openPaper);
-  const papers = useStore(s => s.papers);
-  const [tab, setTab] = useState<'highlights' | 'notes'>(() => localStorage.getItem('pr:notes:tab') as any || 'highlights');
+  const [scope, setScope] = useState<Scope>(initialScope);
   const [hls, setHls] = useState<HighlightRow[]>([]);
   const [notes, setNotes] = useState<NoteRow[]>([]);
+  const [qas, setQas] = useState<QaRow[]>([]);
+  const [digests, setDigests] = useState<Record<number, DigestDoc>>({});
+  const [busyId, setBusyId] = useState<number | null>(null);
   const [q, setQ] = useState('');
   const [paperFilter, setPaperFilter] = useState<string>('all');
   const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => { localStorage.setItem('pr:notes:tab', tab); }, [tab]);
+  useEffect(() => { localStorage.setItem('pr:notes:scope', scope); }, [scope]);
 
   async function reload() {
     try {
-      const [allHls, allNotes] = await Promise.all([
+      const [allHls, allNotes, allQa, allDigests] = await Promise.all([
         window.api.listAllHighlights(),
         window.api.listAllNotes(),
+        typeof window.api.listAllQa === 'function' ? window.api.listAllQa() : Promise.resolve([]),
+        typeof window.api.listPaperDigests === 'function' ? window.api.listPaperDigests() : Promise.resolve([]),
       ]);
       setHls(allHls);
       setNotes(allNotes);
+      setQas(allQa);
+      const map: Record<number, DigestDoc> = {};
+      for (const row of allDigests) {
+        const doc = toDigestDoc(row);
+        if (doc) map[row.ref_id] = doc;
+      }
+      setDigests(map);
     } catch (e: any) { toastErr(e); } finally { setLoaded(true); }
   }
 
   useEffect(() => { reload(); }, []);
 
-  const hasFilter = q.trim() || paperFilter !== 'all';
+  const hasFilter = q.trim() || paperFilter !== 'all' || scope !== 'all';
   const match = (s: string) => !q.trim() || s.toLowerCase().includes(q.trim().toLowerCase());
 
   const filteredHls = useMemo(() => hls.filter(h =>
@@ -48,6 +163,15 @@ export default function NotesView() {
     (paperFilter === 'all' || String(n.paper_id) === paperFilter) &&
     (match(n.text) || match(n.paper_title || '')),
   ), [notes, q, paperFilter]);
+  const filteredQas = useMemo(() => qas.filter(item =>
+    (paperFilter === 'all' || String(item.paper_id) === paperFilter) &&
+    (match(item.question) || match(item.answer) || match(item.paper_title || '')),
+  ), [qas, q, paperFilter]);
+
+  const groups = useMemo(
+    () => buildSettleGroups(filteredHls, filteredNotes, scope, filteredQas),
+    [filteredHls, filteredNotes, filteredQas, scope],
+  );
 
   async function removeHighlight(e: React.MouseEvent, h: HighlightRow) {
     e.stopPropagation();
@@ -75,68 +199,87 @@ export default function NotesView() {
     } catch (e: any) { toastErr(e); }
   }
 
-  // 导出当前 tab 的筛选结果为 markdown（按论文分组，BibTeX 同款 Blob 下载）
   function exportMarkdown() {
-    const items = tab === 'highlights' ? filteredHls : filteredNotes;
-    if (!items.length) return;
-    const byPaper = new Map<number, { title: string; arxivId: string; hls: HighlightRow[]; notes: NoteRow[] }>();
-    if (tab === 'highlights') {
-      for (const h of filteredHls) {
-        if (!byPaper.has(h.paper_id)) byPaper.set(h.paper_id, { title: h.paper_title || `#${h.paper_id}`, arxivId: h.arxiv_id || '', hls: [], notes: [] });
-        byPaper.get(h.paper_id)!.hls.push(h);
-      }
-    } else {
-      for (const n of filteredNotes) {
-        if (!byPaper.has(n.paper_id)) byPaper.set(n.paper_id, { title: n.paper_title || `#${n.paper_id}`, arxivId: n.arxiv_id || '', hls: [], notes: [] });
-        byPaper.get(n.paper_id)!.notes.push(n);
-      }
-    }
+    if (!groups.length) return;
     const lines: string[] = [
-      `# Paper Reader 沉淀导出`,
-      ``,
-      `> 导出时间：${new Date().toLocaleString('zh-CN')}；${tab === 'highlights' ? `高亮 ${filteredHls.length} 条` : `笔记 ${filteredNotes.length} 条`}`,
-      ``,
+      '# Paper Reader 沉淀导出',
+      '',
+      `> 导出时间：${new Date().toLocaleString('zh-CN')}`,
+      '',
     ];
-    for (const [, g] of byPaper) {
-      lines.push(`## ${g.title}${g.arxivId ? `（arXiv:${g.arxivId}）` : ''}`, ``);
-      if (g.hls.length) {
-        lines.push(`### 高亮`, ``);
-        for (const h of g.hls) {
-          lines.push(`- **[${HL_COLOR_LABEL[h.color] || h.color}]** ${h.text_en}（${(h.created_at || '').slice(0, 10)}）`);
+    let n = 0;
+    for (const g of groups) {
+      lines.push(`## ${g.title}${g.arxivId ? `（arXiv:${g.arxivId}）` : ''}`, '');
+      const digest = digests[g.paperId];
+      if (digest) lines.push(digest.body, '');
+      g.passages.forEach((p, i) => {
+        const where = p.pid == null ? '未挂段落' : `文中第 ${i + 1} 处`;
+        lines.push(`### ${where}`, '');
+        for (const h of p.highlights) {
+          n += 1;
+          lines.push(`- **高亮 [${HL_COLOR_LABEL[h.color] || h.color}]** ${h.text_en}`);
           if (h.note) lines.push(`  - 备注：${h.note}`);
         }
-        lines.push(``);
-      }
-      if (g.notes.length) {
-        lines.push(`### 笔记`, ``);
-        for (const n of g.notes) lines.push(`- ${n.text}（${(n.updated_at || '').slice(0, 10)} 更新）`);
-        lines.push(``);
-      }
+        for (const note of p.notes) {
+          n += 1;
+          lines.push(`- **笔记** ${note.text}`);
+        }
+        for (const item of p.qas) {
+          n += 1;
+          lines.push(`- **提问** ${item.question}`, `  - 答：${item.answer}`);
+        }
+        lines.push('');
+      });
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `paper-reader-${tab === 'highlights' ? 'highlights' : 'notes'}.md`;
+    a.download = 'paper-reader-notes.md';
     a.click();
     URL.revokeObjectURL(a.href);
-    toast('success', `已导出 ${items.length} 条`);
+    toast('success', `已导出 ${n} 条`);
   }
 
-  const curCount = tab === 'highlights' ? filteredHls.length : filteredNotes.length;
   const paperOptions = useMemo(() => {
-    // 只列出有沉淀的论文（标题去重取最新）
     const m = new Map<number, string>();
-    for (const x of [...hls, ...notes]) if (!m.has(x.paper_id)) m.set(x.paper_id, x.paper_title || `论文 #${x.paper_id}`);
+    for (const x of [...hls, ...notes, ...qas]) if (!m.has(x.paper_id)) m.set(x.paper_id, x.paper_title || `论文 #${x.paper_id}`);
     return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]));
-  }, [hls, notes]);
+  }, [hls, notes, qas]);
+
+  const totalH = filteredHls.length;
+  const totalN = filteredNotes.length;
+  const totalQ = filteredQas.length;
+  const emptyAll = loaded && hls.length === 0 && notes.length === 0 && qas.length === 0;
+
+  async function genPaper(paperId: number) {
+    if (typeof window.api.genPaperDigest !== 'function') {
+      toast('info', '请先停掉并重新运行 npm run electron:dev，再生成精炼笔记');
+      return;
+    }
+    setBusyId(paperId);
+    try {
+      const row = await window.api.genPaperDigest(paperId);
+      const doc = toDigestDoc(row);
+      if (doc) setDigests(prev => ({ ...prev, [paperId]: doc }));
+      toast('success', '已生成本篇精炼笔记');
+    } catch (e: any) { toastErr(e); } finally { setBusyId(null); }
+  }
+
+  function togglePaper(id: number) {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
   return (
     <div className="notes-page">
       <div className="list-head">
         <h1>沉淀</h1>
-        <span className="count">{tab === 'highlights' ? `高亮 ${curCount} 条` : `笔记 ${curCount} 条`}</span>
-        {curCount > 0 && (
-          <button className="ghost-btn" onClick={exportMarkdown} title="导出当前筛选结果为 markdown">
+        <span className="count">{groups.length} 篇 · 高亮 {totalH} · 笔记 {totalN} · 提问 {totalQ}</span>
+        {groups.length > 0 && (
+          <button className="ghost-btn" onClick={exportMarkdown} title="按论文与文中顺序导出 markdown">
             <IconExport /> 导出
           </button>
         )}
@@ -144,8 +287,9 @@ export default function NotesView() {
 
       <div className="notes-toolbar">
         <div className="mode-switch">
-          <button onClick={() => setTab('highlights')} className={tab === 'highlights' ? 'active' : ''}>高亮 {hls.length}</button>
-          <button onClick={() => setTab('notes')} className={tab === 'notes' ? 'active' : ''}>笔记 {notes.length}</button>
+          <button onClick={() => setScope('all')} className={scope === 'all' ? 'active' : ''}>全部</button>
+          <button onClick={() => setScope('highlights')} className={scope === 'highlights' ? 'active' : ''}>高亮 {hls.length}</button>
+          <button onClick={() => setScope('notes')} className={scope === 'notes' ? 'active' : ''}>笔记 {notes.length}</button>
         </div>
         <div className="notes-search">
           <IconSearch s={14} />
@@ -158,79 +302,120 @@ export default function NotesView() {
           </select>
         )}
         {hasFilter && (
-          <button className="fb-clear" onClick={() => { setQ(''); setPaperFilter('all'); }}>清除筛选</button>
+          <button className="fb-clear" onClick={() => { setQ(''); setPaperFilter('all'); setScope('all'); }}>清除筛选</button>
         )}
       </div>
 
-      {loaded && (tab === 'highlights' ? hls.length === 0 : notes.length === 0) && (
+      <p className="settle-lead">点「精炼」会按这篇的划线、笔记和提问写一页笔记。展开后是按阅读顺序留下的原文记录，点一条就能回到文中。重新生成只改这一页。</p>
+
+      {emptyAll && (
         <div className="empty-hint">
-          <div className="empty-icon">{tab === 'highlights' ? '🖍' : '📝'}</div>
-          {tab === 'highlights'
-            ? <>还没有高亮。在阅读器里划选文字，点四色圆点即可高亮。</>
-            : <>还没有笔记。在阅读器里划选文字点「笔记」，即可给段落挂一条笔记。</>}
+          <div className="empty-icon">📝</div>
+          还没有沉淀。阅读时划选文字可以高亮，或点「笔记」记下一句自己的话。
         </div>
       )}
-      {loaded && (tab === 'highlights' ? hls.length : notes.length) > 0 && curCount === 0 && (
+      {loaded && !emptyAll && groups.length === 0 && (
         <div className="empty-hint">没有符合当前筛选的条目，试试「清除筛选」。</div>
       )}
 
-      <div className="notes-list">
-        {tab === 'highlights' && filteredHls.map(h => (
-          <div key={h.id} className="note-card" onClick={() => jumpTo(h.paper_id, h.pid)}>
-            <div className="nc-head">
-              <span className={`nc-dot ${h.color}`} title={HL_COLOR_LABEL[h.color] || h.color} />
-              <span className="nc-paper">{h.paper_title}</span>
-              {h.arxiv_id && <span className="nc-arxiv">arXiv:{h.arxiv_id}</span>}
-              <span className="nc-date">{(h.created_at || '').slice(0, 10)}</span>
-              <button className="icon-danger nc-del" onClick={e => removeHighlight(e, h)} title="删除">
-                <IconTrash s={14} />
+      {groups.map(g => {
+        const closed = collapsed.has(g.paperId);
+        let place = 0;
+        return (
+          <section key={g.paperId} className="settle-paper">
+            <header className="settle-head">
+              <button className="settle-toggle" onClick={() => togglePaper(g.paperId)} aria-expanded={!closed}>
+                <span className={`lib-caret ${closed ? '' : 'open'}`}>▸</span>
+                <span className="settle-title">{g.title}</span>
               </button>
-            </div>
-            <div className="nc-body en">{h.text_en}</div>
-            {h.note && <div className="nc-note">备注：{h.note}</div>}
-          </div>
-        ))}
-
-        {tab === 'notes' && filteredNotes.map(n => (
-          <div key={n.id} className="note-card" onClick={() => jumpTo(n.paper_id, n.pid)}>
-            <div className="nc-head">
-              <span className="nc-paper">{n.paper_title}</span>
-              {n.arxiv_id && <span className="nc-arxiv">arXiv:{n.arxiv_id}</span>}
-              <span className="nc-date">{(n.updated_at || '').slice(0, 10)} 更新</span>
-              <button
-                className="nc-edit"
-                onClick={e => { e.stopPropagation(); setEditing({ id: n.id, text: n.text }); }}
-                title="编辑"
-              >
-                编辑
-              </button>
-              <button className="icon-danger nc-del" onClick={e => removeNote(e, n)} title="删除">
-                <IconTrash s={14} />
-              </button>
-            </div>
-            {editing?.id === n.id ? (
-              <div className="nc-edit-box" onClick={e => e.stopPropagation()}>
-                <textarea
-                  autoFocus
-                  value={editing.text}
-                  onChange={e => setEditing(v => v! && { ...v, text: e.target.value })}
-                  onKeyDown={e => {
-                    if (e.key === 'Escape') setEditing(null);
-                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveNote();
-                  }}
-                />
-                <div className="te-actions">
-                  <button className="primary" onClick={saveNote}>保存</button>
-                  <button className="ghost-btn" onClick={() => setEditing(null)}>取消</button>
-                </div>
-                <div className="hint">Ctrl/⌘+Enter 保存 · Esc 取消</div>
+              <div className="settle-meta">
+                {g.arxivId && <span>arXiv:{g.arxivId}</span>}
+                {g.highlightCount > 0 && <span>{g.highlightCount} 处高亮</span>}
+                {g.noteCount > 0 && <span>{g.noteCount} 条笔记</span>}
+                {g.qaCount > 0 && <span>{g.qaCount} 个提问</span>}
               </div>
-            ) : (
-              <div className="nc-body">{n.text}</div>
+              {!digests[g.paperId] && (
+                <button className="ghost-btn" onClick={() => genPaper(g.paperId)} disabled={busyId === g.paperId}>
+                  {busyId === g.paperId ? '生成中…' : '精炼'}
+                </button>
+              )}
+              <button className="ghost-btn" onClick={() => jumpTo(g.paperId, g.passages.find(p => p.pid != null)?.pid ?? null)}>打开</button>
+            </header>
+            {!closed && digests[g.paperId] && (
+              <DigestCard
+                kicker="这篇我带走的"
+                doc={digests[g.paperId]}
+                busy={busyId === g.paperId}
+                emptyHint=""
+                onGenerate={() => genPaper(g.paperId)}
+                onOpen={jumpTo}
+              />
             )}
-          </div>
-        ))}
-      </div>
+            {!closed && g.passages.map(p => {
+              if (p.pid != null) place += 1;
+              const label = p.pid == null ? '篇' : String(place);
+              return (
+                <article key={p.pid ?? 'none'} className="settle-passage" onClick={() => jumpTo(g.paperId, p.pid)}>
+                  <div className="settle-index" title={p.pid == null ? '没有挂到具体段落' : '按论文中的先后'}>{label}</div>
+                  <div className="settle-main">
+                    {p.highlights.map(h => (
+                      <div key={`h${h.id}`} className="settle-hl">
+                        <div className="settle-row">
+                          <span className={`nc-dot ${h.color}`} title={HL_COLOR_LABEL[h.color] || h.color} />
+                          <span className="settle-kind">原文</span>
+                          <span className="nc-date">{(h.created_at || '').slice(0, 10)}</span>
+                          <button className="icon-danger nc-del" onClick={e => removeHighlight(e, h)} title="删除高亮"><IconTrash s={14} /></button>
+                        </div>
+                        <div className="settle-quote" style={{ borderLeftColor: HL_BAR[h.color] || 'var(--border)' }}>{h.text_en}</div>
+                        {h.note && <div className="nc-note">备注：{h.note}</div>}
+                      </div>
+                    ))}
+                    {p.notes.map(n => (
+                      <div key={`n${n.id}`} className="settle-note" onClick={e => e.stopPropagation()}>
+                        <div className="settle-row">
+                          <span className="settle-kind">我的笔记</span>
+                          <span className="nc-date">{(n.updated_at || n.created_at || '').slice(0, 10)}</span>
+                          <button className="nc-edit" onClick={() => setEditing({ id: n.id, text: n.text })} title="编辑">编辑</button>
+                          <button className="icon-danger nc-del" onClick={e => removeNote(e, n)} title="删除笔记"><IconTrash s={14} /></button>
+                        </div>
+                        {editing?.id === n.id ? (
+                          <div className="nc-edit-box">
+                            <textarea
+                              autoFocus
+                              value={editing.text}
+                              onChange={e => setEditing(v => v! && { ...v, text: e.target.value })}
+                              onKeyDown={e => {
+                                if (e.key === 'Escape') setEditing(null);
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveNote();
+                              }}
+                            />
+                            <div className="te-actions">
+                              <button className="primary" onClick={saveNote}>保存</button>
+                              <button className="ghost-btn" onClick={() => setEditing(null)}>取消</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="nc-body">{n.text}</div>
+                        )}
+                      </div>
+                    ))}
+                    {p.qas.map(item => (
+                      <div key={`q${item.id}`} className="settle-qa" onClick={e => e.stopPropagation()}>
+                        <div className="settle-row">
+                          <span className="settle-kind">提问</span>
+                          <span className="nc-date">{(item.created_at || '').slice(0, 10)}</span>
+                        </div>
+                        <div className="nc-body">{item.question}</div>
+                        {item.answer && <AnswerText text={item.answer} onJump={() => jumpTo(item.paper_id, item.pid)} />}
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              );
+            })}
+          </section>
+        );
+      })}
     </div>
   );
 }

@@ -101,6 +101,7 @@ export function parseArxivHtml(html: string, arxivId: string): ParsedPaper {
       if (!text || NOISE.test(text)) continue;
       if (TOC_LINE.test(text) && text.length > 200) continue;
       if (text.length < 2) continue;
+      if (/^\d{1,4}$/.test(text)) continue; // 页码 / 行号，不是正文
       blocks.push({ seq: seq++, type: 'para', level: 0, en: text });
     } else if (m[5] !== undefined) {
       // 独立块级公式（equation 容器）

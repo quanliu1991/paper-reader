@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { toast, toastErr } from './Toast';
+import AnswerText from './AnswerText';
 
-interface LiveMsg { role: 'q' | 'a'; text: string; streaming?: boolean; qaId?: number; feedback?: 'tooShallow' | 'tooDeep' | 'justRight' }
+interface LiveMsg { role: 'q' | 'a'; text: string; streaming?: boolean; qaId?: number; streamId?: string; feedback?: 'tooShallow' | 'tooDeep' | 'justRight' }
 
 const FOLLOWUPS = [
   { label: '详细解释', prompt: '请更详细地解释上面提到的关键概念。' },
@@ -28,13 +29,16 @@ export default function AskPanel() {
   const threadRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const hist: LiveMsg[] = [];
-    for (const q of qaList) {
-      if (!q.answer) continue;
-      hist.push({ role: 'q', text: q.question, qaId: q.id });
-      hist.push({ role: 'a', text: q.answer, qaId: q.id });
-    }
-    setMsgs(hist);
+    setMsgs(prev => {
+      if (prev.some(m => m.streaming)) return prev;
+      const hist: LiveMsg[] = [];
+      for (const q of qaList) {
+        if (!q.answer) continue;
+        hist.push({ role: 'q', text: q.question, qaId: q.id });
+        hist.push({ role: 'a', text: q.answer, qaId: q.id });
+      }
+      return hist;
+    });
   }, [qaList]);
 
   // 打开面板时拉画像驱动的建议问题（不耗 LLM）
@@ -64,29 +68,45 @@ export default function AskPanel() {
       .join('\n\n')
       .slice(0, 6000);
 
-    setMsgs(m => [...m, { role: 'q', text: selText ? `【划线】${selText}\n\n${question}` : question }]);
+    // 先订流再发问。askQuestion 要等模型说完才返回，之后再订就收不到任何一个 delta。
+    const streamId = `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const qText = selText ? `【划线】${selText}\n\n${question}` : question;
+    setMsgs(m => [...m, { role: 'q', text: qText }, { role: 'a', text: '', streaming: true, streamId }]);
+    const off = window.api.onQaStream(streamId, (msg: any) => {
+      if (msg.delta) {
+        setMsgs(m => m.map(x => x.streamId === streamId && x.role === 'a' ? { ...x, text: x.text + msg.delta } : x));
+      } else if (msg.error) {
+        setMsgs(m => m.map(x => x.streamId === streamId && x.role === 'a' ? { ...x, text: `⚠ ${msg.error}`, streaming: false } : x));
+      } else if (msg.done) {
+        setMsgs(m => m.map(x => x.streamId === streamId && x.role === 'a'
+          ? { ...x, qaId: msg.qaId ?? x.qaId, text: x.text || msg.answer || '', streaming: false }
+          : x));
+      }
+    });
 
     try {
-      const qaId = await window.api.askQuestion({
+      const r = await window.api.askQuestion({
         paperId: paper.id,
         pid: pid!,
         question: selText ? `${question}\n（用户划线内容：${selText}）` : question,
         context: ctx,
+        streamId,
       });
-
-      setMsgs(m => [...m, { role: 'a', text: '', streaming: true, qaId }]);
-      const off = window.api.onQaStream(qaId, (msg: any) => {
-        if (msg.delta) {
-          setMsgs(m => m.map(x => x.qaId === qaId && x.role === 'a' ? { ...x, text: x.text + msg.delta } : x));
-        } else if (msg.done || msg.error) {
-          if (msg.error) setMsgs(m => m.map(x => x.qaId === qaId && x.role === 'a' ? { ...x, text: `⚠ ${msg.error}`, streaming: false } : x));
-          else setMsgs(m => m.map(x => x.qaId === qaId && x.role === 'a' ? { ...x, streaming: false } : x));
-          off();
-          setBusy(false);
-        }
-      });
-    } catch (e) {
+      const answer = (r.answer ?? '').trim();
+      setMsgs(m => m.map(x => x.streamId === streamId && x.role === 'a'
+        ? { ...x, qaId: r.qaId, text: (x.text || answer).trim() || '⚠ 模型没有返回内容', streaming: false }
+        : x));
+      if (answer) {
+        const list = await window.api.listQa(paper.id);
+        useStore.setState({ qaList: list });
+      }
+    } catch (e: any) {
+      setMsgs(m => m.map(x => x.streamId === streamId && x.role === 'a' && x.streaming
+        ? { ...x, text: x.text || `⚠ ${e?.message ?? e}`, streaming: false }
+        : x));
       toastErr(e);
+    } finally {
+      off();
       setBusy(false);
     }
   }
@@ -116,10 +136,17 @@ export default function AskPanel() {
 
   async function writeBack(qaId: number) {
     const qa = qaList.find(q => q.id === qaId);
-    if (!qa) return;
+    if (!qa?.answer) { toast('info', '这条回答还没有内容'); return; }
     try {
-      const r = await window.api.writeQa({ arxivId: paper.arxiv_id, question: qa.question, answer: qa.answer });
-      toast('success', `已写回笔记 ${r.note}`);
+      const r = await window.api.writeQa({
+        arxivId: paper.arxiv_id,
+        question: qa.question,
+        answer: qa.answer,
+        paperId: paper.id,
+        pid: qa.pid,
+      });
+      await useStore.getState().refreshNotes(paper.id);
+      toast('success', r.note ? `已写入笔记，并追加到仓库 ${r.note}` : '已写入笔记，可在「沉淀」里查看');
     } catch (e: any) {
       toastErr(e);
     }
@@ -167,7 +194,7 @@ export default function AskPanel() {
             {m.role === 'q'
               ? <div className="q">{m.text}</div>
               : <div className={`a ${m.streaming ? 'streaming' : ''}`}>
-                  {renderWithRefs(m.text, jumpToRef)}
+                  <AnswerText text={m.text} onJump={jumpToRef} />
                 </div>
             }
             {m.role === 'a' && !m.streaming && m.text && !m.text.startsWith('⚠') && (
@@ -211,18 +238,3 @@ export default function AskPanel() {
   );
 }
 
-// 渲染带【段落 #N】引用的文本：引用变成可点击 chip
-function renderWithRefs(text: string, jump: (ref: string) => void) {
-  const parts = text.split(/(【段落 #\d+】)/g);
-  return parts.map((p, i) => {
-    const m = p.match(/【段落 #(\d+)】/);
-    if (m) {
-      return (
-        <span key={i} className="ref-chip" onClick={() => jump(p)} title="点击跳转到该段落">
-          ¶{m[1]}
-        </span>
-      );
-    }
-    return <span key={i}>{p}</span>;
-  });
-}

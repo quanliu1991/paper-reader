@@ -9,9 +9,11 @@ import NotesView from './components/NotesView';
 import CommandPalette from './components/CommandPalette';
 import ToastHost from './components/Toast';
 import { IconLibrary, IconReview, IconSettings, IconSearch, IconGraph, IconNotes } from './components/icons';
+import { modKeyLabel } from './platform';
 
 export default function App() {
   const view = useStore(s => s.view);
+  const currentPaper = useStore(s => s.currentPaper);
   const loadPapers = useStore(s => s.loadPapers);
 
   useEffect(() => { loadPapers(); }, []);
@@ -48,6 +50,7 @@ export default function App() {
             title="论文库"
           >
             <IconLibrary />
+            <span className="nav-label">论文库</span>
           </button>
           <button
             className={`nav-btn ${view === 'topics' ? 'on' : ''}`}
@@ -55,6 +58,7 @@ export default function App() {
             title="主题依赖库"
           >
             <IconGraph />
+            <span className="nav-label">主题</span>
           </button>
           <button
             className={`nav-btn ${view === 'notes' ? 'on' : ''}`}
@@ -62,6 +66,7 @@ export default function App() {
             title="沉淀：高亮与笔记"
           >
             <IconNotes />
+            <span className="nav-label">沉淀</span>
           </button>
           <button
             className={`nav-btn ${view === 'review' ? 'on' : ''}`}
@@ -69,6 +74,7 @@ export default function App() {
             title="闪卡复习"
           >
             <IconReview />
+            <span className="nav-label">复习</span>
           </button>
         </nav>
         <div className="sidebar-bottom">
@@ -78,6 +84,7 @@ export default function App() {
             title="设置"
           >
             <IconSettings />
+            <span className="nav-label">设置</span>
           </button>
         </div>
       </aside>
@@ -89,13 +96,13 @@ export default function App() {
             <div className="topbar-search" onClick={() => useStore.setState({ paletteOpen: true })}>
               <IconSearch s={15} />
               <span>搜索论文、执行命令…</span>
-              <kbd>Ctrl K</kbd>
+              <kbd>{modKeyLabel} K</kbd>
             </div>
           </header>
         )}
         <main className="content">
           {view === 'list' && <PaperList />}
-          {view === 'reader' && <Reader />}
+          {view === 'reader' && currentPaper && <Reader />}
           {view === 'settings' && <Settings />}
           {view === 'review' && <Review />}
           {view === 'topics' && <TopicView />}

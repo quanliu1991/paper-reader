@@ -174,6 +174,47 @@ export function suggestQuestions(
   ];
 }
 
+// 精炼笔记：只根据读者留下的材料写，引用标记必须原样保留以便跳回记录
+export async function genRefinedNote(
+  provider: ProviderConfig,
+  strategy: ReaderStrategy,
+  scope: 'paper' | 'topic',
+  ledger: string,
+): Promise<string> {
+  let shape: string;
+  switch (scope) {
+    case 'paper':
+      shape = `写这一篇的精炼笔记，固定四个二级标题：
+## 我想搞清的问题
+## 论文在这些地方说了什么
+## 我的理解
+## 还没想通的`;
+      break;
+    case 'topic':
+      shape = `写这个主题的精炼笔记，固定四个二级标题：
+## 这条线在讲什么
+## 各篇分别站住的位置
+## 我串起来的理解
+## 还没想通的
+按材料给出的阅读顺序谈这些论文怎么接上，不要写成每篇各一段的独立摘要。`;
+      break;
+    default: {
+      const _never: never = scope;
+      throw new Error(`未知的精炼范围：${_never}`);
+    }
+  }
+  return chatOnce(provider, [
+    { role: 'system', content: `你是读者的笔记整理人。只根据材料写，材料里没有的结论不要写。
+${shape}
+每条判断后面用材料中的标记引用依据，标记原样保留，例如【H12】【N3】【Q5】，不要改成其他格式。
+用中文，500 字以内，不要开场白。
+写给这个读者：
+${strategy.depthRule}
+${strategy.vocabRule}` },
+    { role: 'user', content: ledger },
+  ], 1400);
+}
+
 function parseJsonLoose<T>(raw: string): T {
   // 容错：剥 markdown 代码块、找第一个 { 或 [
   let s = raw.replace(/```(json)?/g, '').trim();

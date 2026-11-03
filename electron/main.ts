@@ -7,6 +7,7 @@ import * as gh from './github-bridge';
 import * as insights from './insights';
 import * as tr from './translate';
 import * as topicGraph from './topic-graph';
+import * as digest from './digest';
 import * as library from './library';
 import fs from 'fs';
 
@@ -2321,12 +2322,14 @@ export function registerIpc() {
 
 
   wrap('qa:ask', async (e, arg: {
-    paperId: number; pid: number; question: string; context: string; highlightId?: number;
+    paperId: number; pid: number; question: string; context: string; highlightId?: number; streamId?: string;
   }) => {
     const provider = getDefaultProvider();
     if (!provider) throw new Error('未配置 LLM Provider，请先到设置页添加');
     const qaId = db.addQa({ paperId: arg.paperId, highlightId: arg.highlightId, pid: arg.pid, question: arg.question, answer: '', provider: provider.name, model: provider.model });
-    const ch = `qa:stream:${qaId}`;
+    // 渲染进程用自己生成的 streamId 在 invoke 之前订阅。频道若等 qaId 返回再订，
+    // 整段流（含 done）已经发完，界面只会留下空气泡。
+    const ch = `qa:stream:${arg.streamId || qaId}`;
     const ctl = new AbortController();
     activeAbort.add(ctl);
     let acc = '';
@@ -2400,6 +2403,8 @@ ${strategy.vocabRule}${profile.bg ? `\n用户自述背景：${profile.bg.slice(0
     if (retrievedCtx) userParts.push(`【与问题相关的段落（检索）】\n${retrievedCtx}`);
     userParts.push(`我的问题：${arg.question}`);
 
+    let answer = '';
+    let failed: string | null = null;
     await llm.chatStream(provider, [
       { role: 'system', content: sys },
       ...histMsgs,
@@ -2407,13 +2412,14 @@ ${strategy.vocabRule}${profile.bg ? `\n用户自述背景：${profile.bg.slice(0
     ], {
       onDelta: (d) => { acc += d; e.sender.send(ch, { delta: d }); },
       onDone: (full) => {
-        const answer = (full || acc).trim();
+        answer = (full || acc).trim();
         db.getDb().prepare('UPDATE qa_pairs SET answer=? WHERE id=?').run(answer, qaId);
-        e.sender.send(ch, { done: true });
+        e.sender.send(ch, { done: true, answer, qaId });
       },
-      onError: (err) => e.sender.send(ch, { error: err }),
+      onError: (err) => { failed = err; e.sender.send(ch, { error: err }); },
     }, { temperature: 0.4, maxTokens: 4096, signal: ctl.signal }).finally(() => activeAbort.delete(ctl));
-    return qaId;
+    if (failed) throw new Error(failed);
+    return { qaId, answer };
   });
 
   // ---------- 读者画像 ----------
@@ -2436,6 +2442,66 @@ ${strategy.vocabRule}${profile.bg ? `\n用户自述背景：${profile.bg.slice(0
   });
 
   wrap('qa:list', (_e, paperId: number) => db.listQa(paperId));
+  wrap('qa:listAll', () => db.listAllQa());
+
+  function loadPaperLedger(paperId: number, heading: boolean): string | null {
+    const paper = db.getPaper(paperId) as { title: string; arxiv_id?: string } | undefined;
+    if (!paper) throw new Error('论文不存在');
+    return digest.buildPaperLedger({
+      title: paper.title,
+      arxivId: paper.arxiv_id || '',
+      highlights: db.listHighlights(paperId) as digest.LedgerHighlight[],
+      notes: db.listNotes(paperId) as digest.LedgerNote[],
+      qas: db.listQa(paperId) as digest.LedgerQa[],
+    }, { heading });
+  }
+
+  function packDigest(kind: 'paper' | 'topic', refId: number) {
+    const row = db.getDigest(kind, refId);
+    if (!row) return null;
+    return { ...row, cites: db.resolveCites(row.body) };
+  }
+
+  wrap('digest:listPapers', () => db.listDigests('paper').map(r => ({ ...r, cites: db.resolveCites(r.body) })));
+  wrap('digest:get', (_e, kind: 'paper' | 'topic', refId: number) => {
+    if (kind !== 'paper' && kind !== 'topic') throw new Error('未知的笔记类型');
+    return packDigest(kind, refId);
+  });
+  wrap('digest:paper', async (_e, paperId: number) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider');
+    const ledger = loadPaperLedger(paperId, true);
+    if (!ledger) throw new Error('这篇还没有划线、笔记或提问。先留下记录，再生成精炼笔记。');
+    const strategy = insights.deriveReaderStrategy(db.getReaderProfile());
+    const body = await insights.genRefinedNote(provider, strategy, 'paper', ledger);
+    if (!body.trim()) throw new Error('模型没有返回笔记');
+    db.upsertDigest('paper', paperId, body);
+    return packDigest('paper', paperId);
+  });
+  wrap('digest:topic', async (_e, topicId: number) => {
+    const provider = getDefaultProvider();
+    if (!provider) throw new Error('未配置 LLM Provider');
+    const topic = db.getTopic(topicId) as { name: string; query?: string } | undefined;
+    if (!topic) throw new Error('主题不存在');
+    const papers = db.listTopicPapers(topicId) as Array<{
+      library_paper_id: number | null; title: string; layer: string; read_order: number | null;
+    }>;
+    const sections: digest.TopicLedgerSection[] = [];
+    for (const p of papers) {
+      if (!p.library_paper_id) continue;
+      let body: string | null = null;
+      try { body = loadPaperLedger(p.library_paper_id, false); } catch { body = null; }
+      if (!body) continue;
+      sections.push({ order: p.read_order, title: p.title, layer: p.layer, body });
+    }
+    const ledger = digest.buildTopicLedger(topic.name, topic.query || '', sections);
+    if (!ledger) throw new Error('这个主题里还没有留下划线、笔记或提问的论文。先打开论文读一段，再生成主题笔记。');
+    const strategy = insights.deriveReaderStrategy(db.getReaderProfile());
+    const body = await insights.genRefinedNote(provider, strategy, 'topic', ledger);
+    if (!body.trim()) throw new Error('模型没有返回笔记');
+    db.upsertDigest('topic', topicId, body);
+    return packDigest('topic', topicId);
+  });
 
   // ---------- flashcards ----------
   wrap('fc:save', (_e, f: { paperId: number; pid: number; front: string; back: string }) => db.addFlashcard(f));
@@ -2614,11 +2680,18 @@ ${strategy.vocabRule}${profile.bg ? `\n用户自述背景：${profile.bg.slice(0
     if (!root) return null;
     return gh.readNote(root, name);
   });
-  wrap('gh:writeQa', (_e, arg: { arxivId: string; question: string; answer: string }) => {
+  wrap('gh:writeQa', (_e, arg: { arxivId: string; question: string; answer: string; paperId?: number; pid?: number | null }) => {
+    // 笔记先落在应用内「沉淀」。知识库仓库是可选项，连上了再追加一份，没连不能让写回失败。
+    let paperId = arg.paperId;
+    if (!paperId) paperId = db.findPaperByArxiv(arg.arxivId)?.id;
+    if (!paperId) throw new Error('找不到这篇论文，无法写入笔记');
+    const text = `问：${arg.question.trim()}\n\n答：${arg.answer.trim()}`;
+    const noteId = db.addNote({ paperId, pid: arg.pid ?? undefined, text });
     const root = gh.getRepoRoot();
-    if (!root) throw new Error('未连接仓库');
+    if (!root) return { ok: true, local: true, noteId };
     const date = new Date().toISOString().slice(0, 10);
-    return gh.appendQaToNote(root, arg.arxivId, { question: arg.question, answer: arg.answer, date });
+    const r = gh.appendQaToNote(root, arg.arxivId, { question: arg.question, answer: arg.answer, date });
+    return { ok: true, local: true, noteId, note: r.ok ? r.note : undefined, repoError: r.ok ? undefined : r.error };
   });
   // 导出阅读摘要到知识库
   wrap('gh:exportSummary', (_e, paperId: number) => {

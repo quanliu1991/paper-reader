@@ -89,15 +89,20 @@ const api = {
   deleteNote: (id: number) => call('notes:delete', id),
   listPaperNotes: (paperId: number) => call('notes:list', paperId),
   listAllNotes: () => call('notes:listAll'),
-  askQuestion: (arg: { paperId: number; pid: number; question: string; context: string; highlightId?: number }) =>
-    call('qa:ask', arg),
-  onQaStream: (qaId: number, cb: (m: any) => void): (() => void) => {
-    const ch = `qa:stream:${qaId}`;
+  askQuestion: (arg: { paperId: number; pid: number; question: string; context: string; highlightId?: number; streamId?: string }) =>
+    call<{ qaId: number; answer: string }>('qa:ask', arg),
+  onQaStream: (id: number | string, cb: (m: any) => void): (() => void) => {
+    const ch = `qa:stream:${id}`;
     const l = (_e: any, m: any) => cb(m);
     ipcRenderer.on(ch, l);
     return () => { ipcRenderer.removeListener(ch, l); };
   },
   listQa: (paperId: number) => call('qa:list', paperId),
+  listAllQa: () => call('qa:listAll'),
+  listPaperDigests: () => call<any[]>('digest:listPapers'),
+  getDigest: (kind: 'paper' | 'topic', refId: number) => call<any>('digest:get', kind, refId),
+  genPaperDigest: (paperId: number) => call<any>('digest:paper', paperId),
+  genTopicDigest: (topicId: number) => call<any>('digest:topic', topicId),
   // reader profile
   getProfile: () => call('profile:get'),
   setProfileBg: (bg: string) => call('profile:setBg', bg),
@@ -128,7 +133,7 @@ const api = {
   importFulltext: (arxivId: string) => call('gh:importFulltext', arxivId),
   listNotes: () => call('gh:listNotes'),
   readNote: (name: string) => call('gh:readNote', name),
-  writeQa: (arg: { arxivId: string; question: string; answer: string }) => call('gh:writeQa', arg),
+  writeQa: (arg: { arxivId: string; question: string; answer: string; paperId?: number; pid?: number | null }) => call('gh:writeQa', arg),
   exportSummaryToRepo: (paperId: number) => call('gh:exportSummary', paperId),
   // topics（主题依赖库）
   buildTopic: (arg: { name: string; query: string }) => call('topic:build', arg),

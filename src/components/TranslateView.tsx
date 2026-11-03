@@ -4,12 +4,12 @@ import FigTable from './FigTable';
 import ParaNotes from './ParaNotes';
 import type { BlockRow, NoteRow } from '../store';
 import { figSrc } from '../figsrc';
+import { highlightHtml } from '../highlights';
 
 // 豆包式「翻译全文」双栏同构对照视图：
 // - 行级网格：每行左英文格 + 右中文格，天然空间对应（无需滚动同步算法）
 // - 段落联动：点击任一格 → 整行高亮，两侧同亮
-// - 长内容淡化折叠（豆包细节）：超长段落 max-height + 渐变 mask + 点击展开
-// - 划词：左栏文本可选中，onMouseUp 冒泡到 Reader 划词工具条
+// - 划词：中英文都可以选，高亮画在选中的那一侧
 export default function TranslateView({
   blocks, fontSize, hlByPid, translating, paperId, notesByPid,
 }: {
@@ -113,23 +113,23 @@ const TvRow = memo(function TvRow({
   return (
     <div className={`tv-row tv-para-row ${active ? 'active' : ''}`} data-pid={b.pid} onClick={onActivate}>
       <CellEn b={b} hlItems={hlItems} />
-      <CellZh b={b} />
+      <CellZh b={b} hlItems={hlItems} />
     </div>
   );
 });
 
 function CellEn({ b, hlItems }: { b: BlockRow; hlItems: Array<{ text: string; color: string }> }) {
-  const enHtml = hlItems.length ? markHighlights(b.en, hlItems) : undefined;
+  const enHtml = highlightHtml(b.en, hlItems);
   return (
     <div className="tv-cell en">
       {enHtml
         ? <p className="tv-p" dangerouslySetInnerHTML={{ __html: enHtml }} />
-        : <CollapsibleText className="tv-p"><RichText text={b.en} /></CollapsibleText>}
+        : <p className="tv-p"><RichText text={b.en} /></p>}
     </div>
   );
 }
 
-function CellZh({ b }: { b: BlockRow }) {
+function CellZh({ b, hlItems }: { b: BlockRow; hlItems: Array<{ text: string; color: string }> }) {
   if (!b.zh) {
     return (
       <div className="tv-cell zh">
@@ -137,54 +137,12 @@ function CellZh({ b }: { b: BlockRow }) {
       </div>
     );
   }
+  const zhHtml = highlightHtml(b.zh, hlItems);
   return (
     <div className="tv-cell zh">
-      <CollapsibleText className="tv-p"><RichText text={b.zh} /></CollapsibleText>
+      {zhHtml
+        ? <p className="tv-p" dangerouslySetInnerHTML={{ __html: zhHtml }} />
+        : <p className="tv-p"><RichText text={b.zh} /></p>}
     </div>
   );
-}
-
-// 长内容淡化折叠（豆包细节）：超长时收起 + 渐变 mask + 点击展开
-const COLLAPSE_MAX = 260; // px
-function CollapsibleText({ className, children }: { className?: string; children: React.ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [over, setOver] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    setOver(el.scrollHeight > COLLAPSE_MAX + 24);
-  }, [children]);
-
-  return (
-    <div
-      ref={ref}
-      className={`${className ?? ''} ${over && !expanded ? 'tv-collapsed' : ''}`}
-      onClick={e => { if (over && !expanded) { e.stopPropagation(); setExpanded(true); } }}
-    >
-      {children}
-      {over && !expanded && <div className="tv-expand-hint">展开全部 ▾</div>}
-    </div>
-  );
-}
-
-function markHighlights(en: string, items: Array<{ text: string; color: string }>): string {
-  let html = escapeHtml(en);
-  for (const it of items) {
-    const esc = escapeHtml(it.text.trim()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    try {
-      html = html.replace(new RegExp(esc), m => // ux-lint-allow: 高亮色板应用（业务数据）
-        `<mark class="hl" style="background:${COLORS[it.color] ?? '#fff3b0'}">${m}</mark>`);
-    } catch { /* skip */ }
-  }
-  return html;
-}
-
-const COLORS: Record<string, string> = { // ux-lint-allow: 高亮功能色板（业务数据非主题色）
-  yellow: '#fff3b0', green: '#c8e6c9', blue: '#bbdefb', pink: '#f8bbd0',
-};
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

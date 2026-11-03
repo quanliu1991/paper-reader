@@ -173,6 +173,14 @@ function migrate(d: Database.Database) {
     updated_at TEXT DEFAULT (datetime('now','localtime'))
   );
   CREATE INDEX IF NOT EXISTS idx_note_paper ON notes(paper_id);
+
+  CREATE TABLE IF NOT EXISTS digests (
+    kind TEXT NOT NULL,                       -- paper | topic
+    ref_id INTEGER NOT NULL,                  -- papers.id 或 topics.id
+    body TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (kind, ref_id)
+  );
   `);
   migrateColumns(d);
 }
@@ -238,7 +246,9 @@ export function touchPaper(id: number) {
 }
 
 export function deletePaper(id: number) {
-  getDb().prepare('DELETE FROM papers WHERE id=?').run(id);
+  const d = getDb();
+  d.prepare(`DELETE FROM digests WHERE kind='paper' AND ref_id=?`).run(id);
+  d.prepare('DELETE FROM papers WHERE id=?').run(id);
 }
 
 // ---------- 论文组织：状态 + 标签（v0.3）----------
@@ -355,6 +365,55 @@ export function deleteNote(id: number) {
 
 export function listNotes(paperId: number) {
   return getDb().prepare('SELECT * FROM notes WHERE paper_id=? ORDER BY pid, updated_at').all(paperId);
+}
+
+export function listAllQa() {
+  return getDb().prepare(
+    `SELECT q.*, p.title AS paper_title, p.arxiv_id FROM qa_pairs q
+     LEFT JOIN papers p ON p.id = q.paper_id
+     WHERE TRIM(COALESCE(q.answer, '')) <> ''
+     ORDER BY q.created_at DESC, q.id DESC`
+  ).all();
+}
+
+// ---------- 精炼笔记（由划线 / 笔记 / 问答生成，可重做）----------
+export function upsertDigest(kind: 'paper' | 'topic', refId: number, body: string) {
+  getDb().prepare(
+    `INSERT INTO digests (kind, ref_id, body, updated_at) VALUES (?, ?, ?, datetime('now','localtime'))
+     ON CONFLICT(kind, ref_id) DO UPDATE SET body=excluded.body, updated_at=excluded.updated_at`
+  ).run(kind, refId, body);
+}
+
+export function getDigest(kind: 'paper' | 'topic', refId: number) {
+  return getDb().prepare('SELECT kind, ref_id, body, updated_at FROM digests WHERE kind=? AND ref_id=?').get(kind, refId) as
+    { kind: string; ref_id: number; body: string; updated_at: string } | undefined;
+}
+
+export function listDigests(kind: 'paper' | 'topic') {
+  return getDb().prepare('SELECT kind, ref_id, body, updated_at FROM digests WHERE kind=?').all(kind) as Array<{
+    kind: string; ref_id: number; body: string; updated_at: string;
+  }>;
+}
+
+export function resolveCites(body: string): Array<{ token: string; paperId: number; pid: number | null }> {
+  const d = getDb();
+  const seen = new Set<string>();
+  const out: Array<{ token: string; paperId: number; pid: number | null }> = [];
+  const re = /【([HNQ])(\d+)】/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body))) {
+    const token = m[0];
+    if (seen.has(token)) continue;
+    seen.add(token);
+    const id = Number(m[2]);
+    const row = (m[1] === 'H'
+      ? d.prepare('SELECT paper_id, pid FROM highlights WHERE id=?').get(id)
+      : m[1] === 'N'
+        ? d.prepare('SELECT paper_id, pid FROM notes WHERE id=?').get(id)
+        : d.prepare('SELECT paper_id, pid FROM qa_pairs WHERE id=?').get(id)) as { paper_id: number; pid: number | null } | undefined;
+    if (row) out.push({ token, paperId: row.paper_id, pid: row.pid ?? null });
+  }
+  return out;
 }
 
 // 跨论文笔记流（沉淀页用：join 论文标题，最近更新在前）
@@ -484,6 +543,7 @@ export function deleteTopic(id: number) {
   const d = getDb();
   d.prepare('DELETE FROM topic_papers WHERE topic_id=?').run(id);
   d.prepare('DELETE FROM topic_edges WHERE topic_id=?').run(id);
+  d.prepare(`DELETE FROM digests WHERE kind='topic' AND ref_id=?`).run(id);
   d.prepare('DELETE FROM topics WHERE id=?').run(id);
 }
 

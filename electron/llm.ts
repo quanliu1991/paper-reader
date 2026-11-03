@@ -170,19 +170,33 @@ async function readSse(body: ReadableStream<Uint8Array>, onDelta: (text: string)
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    const lines = buf.split('\n');
-    buf = lines.pop() ?? '';
-    for (const line of lines) {
-      const t = line.trim();
-      if (t.startsWith('data:')) {
-        const data = t.slice(5).trim();
-        if (data === '[DONE]') return full;
-        const delta = extractDelta(data);
-        if (delta) { full += delta; onDelta(delta); }
-      }
-    }
+    const parsed = consumeSseBuffer(buf, full, onDelta);
+    buf = parsed.buf;
+    full = parsed.full;
+    if (parsed.done) return full;
+  }
+  // 连接关闭时最后一行可能没有换行，不补处理的话整段回复会被丢掉
+  if (buf.trim()) {
+    const parsed = consumeSseBuffer(buf + '\n', full, onDelta);
+    full = parsed.full;
   }
   return full;
+}
+
+function consumeSseBuffer(
+  buf: string, full: string, onDelta: (text: string) => void,
+): { buf: string; full: string; done: boolean } {
+  const lines = buf.split('\n');
+  const rest = lines.pop() ?? '';
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t.startsWith('data:')) continue;
+    const data = t.slice(5).trim();
+    if (data === '[DONE]') return { buf: '', full, done: true };
+    const delta = extractDelta(data);
+    if (delta) { full += delta; onDelta(delta); }
+  }
+  return { buf: rest, full, done: false };
 }
 
 // 从 SSE data 行提取文本增量（OpenAI 兼容 + Anthropic 两种格式）
@@ -191,7 +205,11 @@ async function readSse(body: ReadableStream<Uint8Array>, onDelta: (text: string)
 function extractDelta(data: string): string {
   try {
     const j = JSON.parse(data);
-    return j.choices?.[0]?.delta?.content ?? j.delta?.text ?? '';
+    const content = j.choices?.[0]?.delta?.content
+      ?? j.choices?.[0]?.message?.content
+      ?? j.delta?.text
+      ?? '';
+    return typeof content === 'string' ? content : '';
   } catch { return ''; /* keep-alive 注释行等 */ }
 }
 

@@ -80,6 +80,7 @@ function parseArxivHtml(html, arxivId) {
       if (!text || NOISE.test(text)) continue;
       if (TOC_LINE.test(text) && text.length > 200) continue;
       if (text.length < 2) continue;
+      if (/^\d{1,4}$/.test(text)) continue;
       blocks.push({ seq: seq++, type: "para", level: 0, en: text });
     } else if (m[5] !== void 0) {
       const text = stripTags(replaceMath(m[5])).trim();

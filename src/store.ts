@@ -34,6 +34,7 @@ export interface NoteRow {
 export interface QaRow {
   id: number; paper_id: number; highlight_id: number | null; pid: number | null;
   question: string; answer: string; provider: string; model: string; created_at: string;
+  paper_title?: string; arxiv_id?: string;
 }
 
 export interface ProviderRow {
@@ -66,6 +67,9 @@ interface Store {
   // 侧栏问答
   askPanelOpen: boolean;
   pendingSelection: { pid: number; text: string } | null;
+  // 从主题库或沉淀页打开论文后，返回键回到来处
+  readerBack: View | null;
+  openTopicId: number | null;
   // actions
   setView: (v: View) => void;
   loadPapers: () => Promise<void>;
@@ -104,6 +108,8 @@ export const useStore = create<Store>((set, get) => ({
   toasts: [],
   askPanelOpen: false,
   pendingSelection: null,
+  readerBack: null,
+  openTopicId: null,
 
   setView: (v) => set({ view: v, immersive: false }),
   loadPapers: async () => {
@@ -112,11 +118,19 @@ export const useStore = create<Store>((set, get) => ({
   },
   openPaper: async (id) => {
     const paper = await window.api.getPaper(id);
+    if (!paper) {
+      get().toast({ type: 'error', msg: '论文不存在或已被删除' });
+      return;
+    }
+    const from = get().view;
+    const readerBack = from === 'reader'
+      ? get().readerBack
+      : (from === 'topics' || from === 'notes' ? from : null);
     const blocks = await window.api.getBlocks(id);
     const highlights = await window.api.listHighlights(id);
     const notes = await window.api.listPaperNotes(id);
     const qaList = await window.api.listQa(id);
-    set({ currentPaper: paper, blocks, highlights, notes, qaList, view: 'reader', paletteOpen: false });
+    set({ currentPaper: paper, blocks, highlights, notes, qaList, view: 'reader', paletteOpen: false, readerBack });
   },
   refreshNotes: async (paperId) => {
     const notes = await window.api.listPaperNotes(paperId);

@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useStore } from '../store';
 import { toast, toastErr } from './Toast';
 import { IconPlus, IconTrash, IconBack } from './icons';
+import DigestCard, { DigestDoc, toDigestDoc } from './DigestCard';
 
 interface TopicRow {
   id: number; name: string; query: string; status: string;
@@ -13,12 +14,17 @@ interface TopicPaper {
   imported: number; library_paper_id: number | null;
 }
 
+const LAYER_ORDER = ['series', 'foundation', 'key', 'bridge', 'node', 'frontier', 'discussion', 'context'] as const;
+
 const LAYER_META: Record<string, { label: string; cls: string; hint: string }> = {
+  series: { label: '系列正文', cls: 'series', hint: '标题就是这个系列的技术报告，按发表时间读' },
   foundation: { label: '地基', cls: 'foundation', hint: '领域早期的奠基性工作，被图内大量依赖' },
   key: { label: '核心', cls: 'key', hint: '图内被引最高的关键论文' },
   bridge: { label: '桥梁', cls: 'bridge', hint: '连接多方工作，引用与被引都多' },
   frontier: { label: '前沿', cls: 'frontier', hint: '近两年的最新工作' },
   node: { label: '节点', cls: 'node', hint: '主题相关论文' },
+  discussion: { label: '评测与转述', cls: 'discussion', hint: '别人写的评测、对比和解读，不是系列原文' },
+  context: { label: '外部参照', cls: 'context', hint: '引用图带出来的其他工作，需要时再读' },
 };
 
 export default function TopicView() {
@@ -30,6 +36,8 @@ export default function TopicView() {
   const [openId, setOpenId] = useState<number | null>(null);
   const [detail, setDetail] = useState<{ papers: TopicPaper[]; topic: TopicRow } | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
+  const [digest, setDigest] = useState<DigestDoc | null>(null);
+  const [digestBusy, setDigestBusy] = useState(false);
   const openPaper = useStore(s => s.openPaper);
   const setView = useStore(s => s.setView);
   const msgRef = useRef('');
@@ -37,6 +45,8 @@ export default function TopicView() {
   async function refresh() { setTopics(await window.api.listTopics()); }
   useEffect(() => {
     refresh();
+    const remembered = useStore.getState().openTopicId;
+    if (remembered) openTopic(remembered);
     const off = window.api.onTopicProgress((p: any) => {
       if (msgRef.current !== p.msg) { msgRef.current = p.msg; setBuildMsg(p.msg); }
     });
@@ -56,9 +66,35 @@ export default function TopicView() {
   }
 
   async function openTopic(id: number) {
+    useStore.setState({ openTopicId: id });
     setOpenId(id);
+    setDigest(null);
     const d = await window.api.getTopic(id);
     setDetail(d);
+    try {
+      if (typeof window.api.getDigest === 'function') {
+        setDigest(toDigestDoc(await window.api.getDigest('topic', id)));
+      }
+    } catch (e: any) { toastErr(e); }
+  }
+
+  async function genTopic() {
+    if (!openId || digestBusy) return;
+    if (typeof window.api.genTopicDigest !== 'function') {
+      toast('info', '请先停掉并重新运行 npm run electron:dev，再生成精炼笔记');
+      return;
+    }
+    setDigestBusy(true);
+    try {
+      const row = await window.api.genTopicDigest(openId);
+      setDigest(toDigestDoc(row));
+      toast('success', '已生成主题精炼笔记');
+    } catch (e: any) { toastErr(e); } finally { setDigestBusy(false); }
+  }
+
+  function openCite(paperId: number, pid: number | null) {
+    if (pid) localStorage.setItem(`paper:${paperId}:pid`, String(pid));
+    openPaper(paperId);
   }
 
   async function importPaper(p: TopicPaper) {
@@ -75,21 +111,39 @@ export default function TopicView() {
   }
 
   async function readNow(p: TopicPaper) {
-    if (p.library_paper_id) { useStore.getState().setView('reader'); await openPaper(p.library_paper_id); return; }
-    // imported=1 但 library_paper_id 为空：论文曾被导入但已删除 → 重新导入
+    if (importing) return;
+    // 先备齐论文再交给 openPaper 切视图。提前 setView('reader') 时 currentPaper 仍为空，
+    // Reader 会在渲染期读 paper.id 抛错，React 卸掉整棵树，页面变成空白且不再恢复。
     setImporting(p.arxiv_id);
     try {
-      const r = await window.api.importTopicPaper({ topicId: openId!, arxivId: p.arxiv_id });
-      useStore.getState().setView('reader');
-      await openPaper(r.paperId);
+      let paperId = p.library_paper_id;
+      if (!paperId) {
+        // imported=1 但 library_paper_id 为空：论文曾被导入但已删除 → 重新导入
+        const r = await window.api.importTopicPaper({ topicId: openId!, arxivId: p.arxiv_id });
+        paperId = r.paperId;
+      }
+      if (!paperId) throw new Error('没有得到可打开的论文');
+      await openPaper(paperId);
     } catch (e: any) { toastErr(e); } finally { setImporting(null); }
+  }
+
+  async function rebuild() {
+    if (!detail?.topic || building) return;
+    setBuilding(true); setBuildMsg('重新构建…'); msgRef.current = '';
+    try {
+      const r = await window.api.buildTopic({ name: detail.topic.name, query: detail.topic.query });
+      toast('success', `已按当前规则重新构建：${r.nodeCount} 篇`);
+      await refresh();
+      await openTopic(r.topicId);
+    } catch (e: any) { toastErr(e); } finally { setBuilding(false); setBuildMsg(''); }
   }
 
   async function removeTopic(e: React.MouseEvent, id: number, name: string) {
     e.stopPropagation();
     if (!confirm(`删除主题「${name}」？（只删主题图，不影响已导入的论文）`)) return;
     await window.api.deleteTopic(id);
-    if (openId === id) { setOpenId(null); setDetail(null); }
+    if (openId === id) { setOpenId(null); setDetail(null); setDigest(null); }
+    if (useStore.getState().openTopicId === id) useStore.setState({ openTopicId: null });
     refresh();
   }
 
@@ -100,14 +154,26 @@ export default function TopicView() {
     return (
       <div className="topic-page">
         <div className="list-head">
-          <button className="icon-btn" onClick={() => { setOpenId(null); setDetail(null); }} title="返回主题列表"><IconBack /></button>
+          <button className="icon-btn" onClick={() => { useStore.setState({ openTopicId: null }); setOpenId(null); setDetail(null); setDigest(null); }} title="返回主题列表"><IconBack /></button>
           <h1>{detail.topic?.name}</h1>
           <span className="count">{papers.length} 篇 · {detail.topic?.query}</span>
+          <button className="ghost-btn" onClick={rebuild} disabled={building}>{building ? (buildMsg || '重新构建中…') : '重新构建'}</button>
         </div>
+        {building && buildMsg && <div className="topic-progress">{buildMsg}</div>}
         <div className="topic-order-hint">
-          阅读顺序建议：从地基（领域奠基工作）→ 核心 → 桥梁 → 前沿（最新进展）。编号即推荐顺序。
+          {papers.some(p => p.layer === 'series')
+            ? '这是一个系列：先按发表时间读「系列正文」。评测和外部参照放在后面，编号即阅读顺序。'
+            : '阅读顺序建议：从地基（领域奠基工作）→ 核心 → 桥梁 → 前沿（最新进展）。编号即推荐顺序。'}
         </div>
-        {(['foundation', 'key', 'bridge', 'node', 'frontier'] as const).map(layer => {
+        <DigestCard
+          kicker="这个主题我带走的"
+          doc={digest}
+          busy={digestBusy}
+          emptyHint="把这个主题里你已经留下划线、笔记或提问的论文合成一页，按推荐阅读顺序串起来。标记可以点回某一篇的段落。"
+          onGenerate={genTopic}
+          onOpen={openCite}
+        />
+        {LAYER_ORDER.map(layer => {
           const list = byLayer(layer);
           if (!list.length) return null;
           const meta = LAYER_META[layer];
@@ -122,22 +188,21 @@ export default function TopicView() {
                 <div key={p.arxiv_id} className="topic-paper">
                   <span className="read-order">#{p.read_order}</span>
                   <div className="tp-main">
-                    <div className="tp-title">{p.title}</div>
+                    <div className="tp-title" title={p.title}>{p.title}</div>
                     <div className="tp-meta">
                       <span>arXiv:{p.arxiv_id}</span>
                       {p.year && <span>{p.year}</span>}
-                      <span>被引 {p.citation_count}</span>
+                      {p.citation_count > 0 && <span>被引 {p.citation_count}</span>}
                       {p.in_degree > 0 && <span title="图内被引">图内被引 {p.in_degree}</span>}
                     </div>
                   </div>
                   <div className="tp-actions">
-                    {p.library_paper_id || p.imported ? (
-                      <button className="primary" onClick={() => readNow(p)} disabled={importing === p.arxiv_id}>
-                        {importing === p.arxiv_id ? '导入中…' : '阅读'}
-                      </button>
-                    ) : (
-                      <button onClick={() => importPaper(p)} disabled={importing === p.arxiv_id || !!importing}>
-                        {importing === p.arxiv_id ? '导入中…' : '导入'}
+                    <button className="primary" onClick={() => readNow(p)} disabled={!!importing}>
+                      {importing === p.arxiv_id ? (p.library_paper_id ? '打开中…' : '导入中…') : '阅读'}
+                    </button>
+                    {!(p.library_paper_id || p.imported) && (
+                      <button onClick={() => importPaper(p)} disabled={!!importing}>
+                        {importing === p.arxiv_id ? '导入中…' : '入库'}
                       </button>
                     )}
                     <a className="arxiv-link" href={`https://arxiv.org/abs/${p.arxiv_id}`} target="_blank" rel="noreferrer">arXiv</a>
