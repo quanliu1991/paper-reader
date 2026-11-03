@@ -1,19 +1,21 @@
 # 质量仪表盘（QUALITY.md）
 
-> 自动生成 by improve-loop --report · 2026-11-02T18:35:01.265Z
+> 自动生成 by improve-loop --report · 2026-11-03T18:35:51.743Z
 
 ## 总览
 
 | 指标 | 值 |
 |---|---|
-| 测试通过率 | 13/13 |
-| 未解决问题 | 0（high 0 / medium 0 / low 0） |
+| 测试通过率 | 11/13 |
+| 未解决问题 | 3（high 2 / medium 0 / low 1） |
 | 已解决 | 9 |
-| 问题来源 | — |
+| 问题来源 | test:2 · lint:1 |
 
 ## 未解决问题（按优先级）
 
-（全部清零 🎉）
+- **[high]** 测试层失败：interact-ui（命令面板/复习/问答/设置 UI）（`test-fail-node-tests-interact-ui-e2e-test-mjs`，test，出现 1 次）—— settings key masked: PASS | E2E ALL PASS |  | [interact-ui] 1 FAILURES
+- **[high]** 测试层失败：uex（用户旅程全流程）（`test-fail-node-tests-uex-e2e-test-mjs-timeout-240000`，test，出现 1 次）——   ✅ 论文卡显示「读至 X%」+ 进度条 | E2E FAIL |  | [uex-e2e] FAIL
+- **[low]** 组件内硬编码色值（`lint-hex-src/components/NotesView.tsx:9`，lint，出现 1 次）—— const HL_BAR: Record<string, string> = { yellow: '#e6c84a', green: '#7dcea0', blue: '#85b7eb', pink: '#f0a3bd' };
 
 ## 已解决
 
@@ -29,6 +31,7 @@
 
 ## 最近审计历史
 
+- 2026-11-03T18:35 audit: +3 new / 3 total signals
 - 2026-11-02T18:35 audit: +0 new / 0 total signals
 - 2026-11-01T18:33 audit: +0 new / 0 total signals
 - 2026-11-01T16:43 release-final: all open findings closed, v0.4.0 release-ready
@@ -38,4 +41,3 @@
 - 2026-10-31T18:33 audit: +1 new / 2 total signals
 - 2026-11-01T01:51 release-audit: 4 visual findings closed (3 misreport rules + 1 real layout fix); pollution incident fixed
 - 2026-11-01T01:18 fix+verify: fig-object-svg-not-rendered closed (round 4)
-- 2026-10-31T16:45 audit: +3 new / 3 total signals

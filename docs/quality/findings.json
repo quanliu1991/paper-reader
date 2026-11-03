@@ -148,6 +148,45 @@
       "fix": "同根因（launchd 环境截图敏感 + 间歇性 dedup 连带）。guard 交互终端复跑 ALL PASS；test-all 已加 needsGui 跳过策略（launchd 无 GUI 会话时标注跳过不算失败）。",
       "verified_by": "visual-guard ALL PASS（多次）+ test:all 12/12",
       "reopened": 1
+    },
+    {
+      "id": "test-fail-node-tests-interact-ui-e2e-test-mjs",
+      "severity": "high",
+      "view": "interact-ui（命令面板/复习/问答/设置 UI）",
+      "title": "测试层失败：interact-ui（命令面板/复习/问答/设置 UI）",
+      "evidence": "settings key masked: PASS | E2E ALL PASS |  | [interact-ui] 1 FAILURES",
+      "screenshot": null,
+      "source": "test",
+      "status": "open",
+      "firstSeen": "2026-11-03T18:35:51.452Z",
+      "lastSeen": "2026-11-03T18:35:51.454Z",
+      "count": 1
+    },
+    {
+      "id": "test-fail-node-tests-uex-e2e-test-mjs-timeout-240000",
+      "severity": "high",
+      "view": "uex（用户旅程全流程）",
+      "title": "测试层失败：uex（用户旅程全流程）",
+      "evidence": "  ✅ 论文卡显示「读至 X%」+ 进度条 | E2E FAIL |  | [uex-e2e] FAIL",
+      "screenshot": null,
+      "source": "test",
+      "status": "open",
+      "firstSeen": "2026-11-03T18:35:51.454Z",
+      "lastSeen": "2026-11-03T18:35:51.454Z",
+      "count": 1
+    },
+    {
+      "id": "lint-hex-src/components/NotesView.tsx:9",
+      "severity": "low",
+      "view": "src/components/NotesView.tsx",
+      "title": "组件内硬编码色值",
+      "evidence": "const HL_BAR: Record<string, string> = { yellow: '#e6c84a', green: '#7dcea0', blue: '#85b7eb', pink: '#f0a3bd' };",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-03T18:35:51.454Z",
+      "lastSeen": "2026-11-03T18:35:51.454Z",
+      "count": 1
     }
   ],
   "history": [
@@ -218,6 +257,10 @@
     {
       "at": "2026-11-02T18:35:01.003Z",
       "what": "audit: +0 new / 0 total signals"
+    },
+    {
+      "at": "2026-11-03T18:35:51.454Z",
+      "what": "audit: +3 new / 3 total signals"
     }
   ]
 }
