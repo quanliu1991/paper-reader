@@ -159,8 +159,8 @@
       "source": "test",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.452Z",
-      "lastSeen": "2026-11-03T18:35:51.454Z",
-      "count": 1
+      "lastSeen": "2026-11-04T18:35:51.722Z",
+      "count": 2
     },
     {
       "id": "test-fail-node-tests-uex-e2e-test-mjs-timeout-240000",
@@ -172,8 +172,8 @@
       "source": "test",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.454Z",
-      "lastSeen": "2026-11-03T18:35:51.454Z",
-      "count": 1
+      "lastSeen": "2026-11-04T18:35:51.723Z",
+      "count": 2
     },
     {
       "id": "lint-hex-src/components/NotesView.tsx:9",
@@ -185,7 +185,20 @@
       "source": "lint",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.454Z",
-      "lastSeen": "2026-11-03T18:35:51.454Z",
+      "lastSeen": "2026-11-04T18:35:51.723Z",
+      "count": 2
+    },
+    {
+      "id": "test-fail-node-tests-pdf-ui-e2e-test-mjs",
+      "severity": "high",
+      "view": "pdf-ui（PDF 原位翻译 UI）",
+      "title": "测试层失败：pdf-ui（PDF 原位翻译 UI）",
+      "evidence": "screenshots saved | E2E FAIL (see above) |  | [pdf-ui-e2e] FAIL",
+      "screenshot": null,
+      "source": "test",
+      "status": "open",
+      "firstSeen": "2026-11-04T18:35:51.723Z",
+      "lastSeen": "2026-11-04T18:35:51.723Z",
       "count": 1
     }
   ],
@@ -261,6 +274,10 @@
     {
       "at": "2026-11-03T18:35:51.454Z",
       "what": "audit: +3 new / 3 total signals"
+    },
+    {
+      "at": "2026-11-04T18:35:51.723Z",
+      "what": "audit: +1 new / 4 total signals"
     }
   ]
 }
