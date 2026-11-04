@@ -1,9 +1,9 @@
 import { memo, useEffect, useRef, useState, Fragment } from 'react';
 import RichText from './RichText';
-import FigTable from './FigTable';
+import { FigBlockBody, LocalFig } from './FigTable';
 import ParaNotes from './ParaNotes';
 import type { BlockRow, NoteRow } from '../store';
-import { figSrc } from '../figsrc';
+import { figAwaiting, figSrc } from '../figsrc';
 import { highlightHtml } from '../highlights';
 
 // 豆包式「翻译全文」双栏同构对照视图：
@@ -95,16 +95,20 @@ const TvRow = memo(function TvRow({
       <div className={`tv-row tv-fig-row ${active ? 'active' : ''}`} data-pid={b.pid} onClick={onActivate}>
         <figure className="tv-fig">
           {figUrl
-            ? <img src={figUrl} alt={b.en.slice(0, 60)} loading="lazy" />
+            ? <LocalFig src={figUrl} alt={b.en.slice(0, 60)} />
             : b.fig_table_rows
-              ? <FigTable rows={JSON.parse(b.fig_table_rows)} />
+              ? <FigBlockBody kind={b.fig_kind} rowsJson={b.fig_table_rows} />
               : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
                 ? <div className="tv-fig-placeholder">📊 表格 · 见原文 PDF</div>
-                : <div className="tv-fig-placeholder">🖼 图片下载中</div>}
-          <figcaption>
-            <span className="cap-en"><RichText text={b.en} /></span>
-            {b.zh && <span className="cap-zh"><RichText text={b.zh} /></span>}
-          </figcaption>
+                : figAwaiting(b.fig_path)
+                  ? <div className="tv-fig-placeholder">🖼 图片下载中</div>
+                  : null}
+          {(b.en.trim() || b.zh) && (
+            <figcaption>
+              {b.en.trim() && <span className="cap-en"><RichText text={b.en} /></span>}
+              {b.zh && <span className="cap-zh"><RichText text={b.zh} /></span>}
+            </figcaption>
+          )}
         </figure>
       </div>
     );

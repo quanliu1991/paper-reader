@@ -8,6 +8,7 @@ tests/.tmp-tg/
 tests/.tmp-ins/
 tests/.tmp-digest/
 tests/.tmp-hl/
+tests/.tmp-align/
 build/
 llm.txt
 .env.local

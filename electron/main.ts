@@ -1840,12 +1840,15 @@ export function registerIpc() {
     }
   }
   async function repairMissingFigures() {
-    // 找「有 fig 块但完全没有本地图」的 html 论文（arxiv 导入）
+    // 完全没下到本地图的论文，以及个别图/算法仍无本地文件、也没有抽出的表格或伪代码的论文。
     const targets = db.getDb().prepare(
-      `SELECT p.id, p.arxiv_id FROM papers p
+      `SELECT DISTINCT p.id, p.arxiv_id FROM papers p
+       JOIN blocks b ON b.paper_id = p.id
        WHERE p.import_type='html' AND p.arxiv_id NOT LIKE 'local:%'
-         AND EXISTS (SELECT 1 FROM blocks b WHERE b.paper_id=p.id AND b.type='fig')
-         AND NOT EXISTS (SELECT 1 FROM blocks b2 WHERE b2.paper_id=p.id AND b2.type='fig' AND b2.fig_path GLOB '[0-9]*/fig-*')`
+         AND b.type='fig'
+         AND (b.fig_path IS NULL OR b.fig_path NOT GLOB '[0-9]*/fig-*')
+         AND (b.fig_table_rows IS NULL OR b.fig_table_rows = '')
+         AND COALESCE(b.fig_html_table, 0) = 0`
     ).all() as any[];
     console.log(`[fig-repair] papers needing figures: ${targets.length}`);
     for (const t of targets) {
@@ -1862,7 +1865,11 @@ export function registerIpc() {
           if (nb.type !== 'fig') continue;
           const ob = oldBySeq.get(nb.seq);
           if (!ob || ob.type !== 'fig') continue;
-          stmtUpd.run(nb.figPath ?? ob.fig_path, nb.figKind ?? ob.fig_kind, nb.figHtmlTable ? 1 : 0, nb.figTableRows ? JSON.stringify(nb.figTableRows) : null, ob.pid);
+          const local = typeof ob.fig_path === 'string' && /^\d+\/fig-\d+\./.test(ob.fig_path);
+          const nextPath = local ? ob.fig_path : (nb.figPath ?? ob.fig_path);
+          const nextRows = ob.fig_table_rows ? ob.fig_table_rows : (nb.figTableRows ? JSON.stringify(nb.figTableRows) : null);
+          stmtUpd.run(nextPath, nb.figKind ?? ob.fig_kind, nb.figHtmlTable ? 1 : (ob.fig_html_table ? 1 : 0), nextRows, ob.pid);
+          if (!ob.fig_table_rows && nextRows) send('fig:updated', { pid: ob.pid, figRows: nextRows });
           updated++;
         }
         console.log(`[fig-repair] ${t.arxiv_id}: re-parsed ${updated} fig blocks`);
@@ -1908,23 +1915,40 @@ export function registerIpc() {
     const figuresDir = path.join(app.getPath('userData'), 'figures', String(paperId));
     fsMod.mkdirSync(figuresDir, { recursive: true });
     let i = 0;
+    let inlineCursor = 0;
+    // pgf 导出的 svg 常常没有 xmlns，<img> 会当成坏图。补上命名空间。
+    const withSvgNs = (raw: string) => /xmlns=/.test(raw) ? raw : raw.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
     const stmt = db.getDb().prepare('UPDATE blocks SET fig_path=? WHERE pid=?');
     // inline SVG / object SVG 提取：无 figPath 的 fig 块回源拉 HTML 兜底。
     // 两种形态：a) <object type="image/svg+xml" data="xxx.svg">（新版 LaTeXML 主力）→ 直接下 data URL；
     //           b) 内联 <svg>（老版）→ 序列化落盘。
     let inlineFigs: (string | null)[] | null = null; // 每个 <figure> 的 svg 源（object data URL 或内联 svg 内容），null=无
+    let inlineSvgOnly: string[] = []; // 与解析器 fig_path='inline:' 同序：无内容图、无 object 的内联 svg
     const getInlineFigs = async (): Promise<(string | null)[]> => {
       if (inlineFigs) return inlineFigs;
       try {
         const resp = await fetch(`https://arxiv.org/html/${arxivId}`, { signal: AbortSignal.timeout(60000) });
         const html = resp.ok ? await resp.text() : '';
+        const contentImg = (fragment: string) => {
+          const re = /<(?:img|graphics)\b[^>]*>/gi;
+          let mm: RegExpExecArray | null;
+          while ((mm = re.exec(fragment)) !== null) {
+            const src = (mm[0].match(/\b(?:src|xlink:href)="([^"]+)"/i) || [])[1];
+            if (!src || /^data:/i.test(src)) continue;
+            if (/\/static\/|arxiv-logo|smileybones|\/funders\//i.test(src)) continue;
+            return true;
+          }
+          return false;
+        };
+        inlineSvgOnly = [];
         inlineFigs = html
           ? [...html.matchAll(/<figure[^>]*>([\s\S]*?)<\/figure>/gi)].map(m => {
               // 优先 object data（可下载的独立 svg 文件）；退化找内联 <svg>
               const obj = m[1].match(/<object[^>]*type="image\/svg\+xml"[^>]*data="([^"]+)"[^>]*>/i)
                 || m[1].match(/<object[^>]*data="([^"]+\.svg)"[^>]*>/i);
-              if (obj) return { kind: 'url', src: obj[1] } as const;
               const svg = m[1].match(/<svg[\s\S]*?<\/svg>/i);
+              if (!obj && svg && !contentImg(m[1])) inlineSvgOnly.push(svg[0]);
+              if (obj) return { kind: 'url', src: obj[1] } as const;
               if (svg) return { kind: 'inline', src: svg[0] } as const;
               return null;
             }).map((x): string | null => {
@@ -1938,8 +1962,17 @@ export function registerIpc() {
               return `${base}/${rel}`;
             })
           : [];
-      } catch { inlineFigs = []; }
+      } catch { inlineFigs = []; inlineSvgOnly = []; }
       return inlineFigs;
+    };
+    // 解析器把「没有 <img> 的内联 svg」标成 fig_path='inline:'。只收集这一类，文档序对位。
+    // 不能用全体 fig 块下标——一张 figure 拆成多张子图后下标会错位。
+    let inlineSvgList: string[] | null = null;
+    const getInlineSvgList = async (): Promise<string[]> => {
+      if (inlineSvgList) return inlineSvgList;
+      await getInlineFigs();
+      inlineSvgList = inlineSvgOnly;
+      return inlineSvgList;
     };
     // fig 块在文档流中的序号（第几个 fig）——与 HTML <figure> 文档序对齐
     const figBlocks = blocks.filter(b => b.type === 'fig');
@@ -1960,8 +1993,18 @@ export function registerIpc() {
           send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
           console.log(`[fig-dl] ${fname}: OK (${buf.length}b)`);
         } catch (e) { console.log(`[fig-dl] ${fname}: FAIL ${e instanceof Error ? e.message : e}`); /* 单图失败跳过 */ }
-      } else {
-        // 兜底路径：figPath 为空（旧导入）或已是本地形态但文件丢失——回源按文档序对位提取
+      } else if (b.fig_path === 'inline:') {
+        try {
+          const svgs = await getInlineSvgList();
+          const src = svgs[inlineCursor++] ?? '';
+          if (!src) continue;
+          const fname = `fig-${i}.svg`;
+          fsMod.writeFileSync(path.join(figuresDir, fname), withSvgNs(src), 'utf8');
+          stmt.run(`${paperId}/${fname}`, b.pid);
+          send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
+        } catch { /* 跳过 */ }
+      } else if (b.fig_path) {
+        // 兜底路径：已是本地形态但文件丢失——回源按文档序对位提取
         try {
           const figsHtml = await getInlineFigs();
           // 对位序号：blocks 里第 k 个 fig ↔ HTML 第 k 个 <figure>。
@@ -1980,7 +2023,7 @@ export function registerIpc() {
           } else {
             // 内联 svg 内容：直接落盘
             const fname = `fig-${i}.svg`;
-            fsMod.writeFileSync(path.join(figuresDir, fname), src, 'utf8');
+            fsMod.writeFileSync(path.join(figuresDir, fname), withSvgNs(src), 'utf8');
             stmt.run(`${paperId}/${fname}`, b.pid);
             send('fig:updated', { pid: b.pid, figPath: `${paperId}/${fname}` });
           }

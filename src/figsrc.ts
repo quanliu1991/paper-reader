@@ -12,3 +12,10 @@ export function figSrc(figPath: string | null | undefined): string | null {
   }
   return null;
 }
+
+// 远端 URL 或内联 SVG 还在落盘。没有路径说明原文就没有可下载的图，阅读页不该停在「下载中」。
+export function figAwaiting(figPath: string | null | undefined): boolean {
+  if (!figPath) return false;
+  if (/^https?:/i.test(figPath)) return true;
+  return figPath === 'inline:';
+}

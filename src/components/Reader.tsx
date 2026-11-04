@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback, memo, Fragment } from 'react';
 import { useStore } from '../store';
 import RichText from './RichText';
-import FigTable from './FigTable';
-import { figSrc } from '../figsrc';
+import { FigBlockBody, LocalFig } from './FigTable';
+import { figAwaiting, figSrc } from '../figsrc';
 import AskPanel from './AskPanel';
 import CommandPalette from './CommandPalette';
 import TranslatedPanel from './TranslatedPanel';
@@ -35,6 +35,7 @@ export default function Reader() {
   const progress = useStore(s => s.translateProgress);
   const updateBlockZh = useStore(s => s.updateBlockZh);
   const updateBlockFig = useStore(s => s.updateBlockFig);
+  const updateBlockFigRows = useStore(s => s.updateBlockFigRows);
   const askPanelOpen = useStore(s => s.askPanelOpen);
   const readerBack = useStore(s => s.readerBack);
   const fontSize = useStore(s => s.fontSize);
@@ -105,9 +106,10 @@ export default function Reader() {
   useEffect(() => {
     const off = window.api.onFigUpdated((p: any) => {
       if (p?.pid && p?.figPath) updateBlockFig(p.pid, p.figPath);
+      if (p?.pid && p?.figRows) updateBlockFigRows(p.pid, p.figRows);
     });
     return off;
-  }, [updateBlockFig]);
+  }, [updateBlockFig, updateBlockFigRows]);
 
   // 进度记忆（pid 锚点，跨布局通用）：
   // 保存视口内最靠上的段落 pid；切换布局后按 pid 找到对应元素滚回去。
@@ -630,16 +632,18 @@ function FigureView({ b, side }: { b: import('../store').BlockRow; side: 'en' | 
   return (
     <figure className="paper-fig">
       {figUrl
-        ? <img src={figUrl} alt={b.en.slice(0, 60)} loading="lazy" onClick={() => setZoom(true)} />
+        ? <LocalFig src={figUrl} alt={b.en.slice(0, 60)} onClick={() => setZoom(true)} />
         : b.fig_table_rows
-          ? <FigTable rows={JSON.parse(b.fig_table_rows)} />
+          ? <FigBlockBody kind={b.fig_kind} rowsJson={b.fig_table_rows} />
           : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
             ? <div className="fig-placeholder">📊 表格 · 见原文 PDF</div>
-            : <div className="fig-placeholder">🖼 {b.fig_kind === 'table' ? '表格' : '图'} · 图片下载中</div>}
-      <figcaption><RichText text={caption} /></figcaption>
+            : figAwaiting(b.fig_path)
+              ? <div className="fig-placeholder">🖼 {b.fig_kind === 'table' ? '表格' : '图'} · 图片下载中</div>
+              : null}
+      {caption.trim() && <figcaption><RichText text={caption} /></figcaption>}
       {zoom && figUrl && (
         <div className="fig-zoom-mask" onClick={() => setZoom(false)}>
-          <img src={figUrl} alt="" onClick={e => e.stopPropagation()} />
+          <LocalFig src={figUrl} alt="" onClick={e => e.stopPropagation()} />
         </div>
       )}
     </figure>

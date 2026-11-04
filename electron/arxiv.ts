@@ -88,7 +88,19 @@ export function parseArxivHtml(html: string, arxivId: string): ParsedPaper {
   // 逐块抽取。顺序扫描，保持文档流。
   // 块级公式独立容器：<table class="ltx_equation..."> 或 <div class="ltx_equation...">
   // 行内公式在 <p> 内，由 replaceMath 处理
-  const re = /<(h[1-6])[^>]*>([\s\S]*?)<\/\1>|<p[^>]*>([\s\S]*?)<\/p>|<(table|div)[^>]*class="[^"]*ltx_equation[^"]*"[^>]*>([\s\S]*?)<\/\4>|<figure[^>]*>([\s\S]*?)<\/figure>/gi;
+  const pushFig = (
+    en: string, figPath: string | undefined, figKind: 'figure' | 'table',
+    rows?: string[][], htmlTable?: boolean,
+  ) => {
+    blocks.push({
+      seq: seq++, type: 'fig', level: 0, en,
+      figPath, figKind,
+      figHtmlTable: htmlTable || undefined,
+      figTableRows: rows,
+    });
+  };
+
+  const re = /<(h[1-6])[^>]*>([\s\S]*?)<\/\1>|<p[^>]*>([\s\S]*?)<\/p>|<(table|div)[^>]*class="[^"]*ltx_equation[^"]*"[^>]*>([\s\S]*?)<\/\4>|<figure[^>]*>([\s\S]*?)<\/figure>|<img\b[^>]*>/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(cleaned)) !== null) {
     if (m[1]) {
@@ -97,12 +109,16 @@ export function parseArxivHtml(html: string, arxivId: string): ParsedPaper {
       if (!text || NOISE.test(text)) continue;
       blocks.push({ seq: seq++, type: 'heading', level, en: text });
     } else if (m[3] !== undefined) {
-      const text = stripTags(replaceMath(m[3])).trim();
-      if (!text || NOISE.test(text)) continue;
-      if (TOC_LINE.test(text) && text.length > 200) continue;
-      if (text.length < 2) continue;
-      if (/^\d{1,4}$/.test(text)) continue; // 页码 / 行号，不是正文
-      blocks.push({ seq: seq++, type: 'para', level: 0, en: text });
+      // 段落里直接嵌的图（不在 figure 里）也要留下，否则 teaser 这类图会消失
+      // 脚注在 LaTeXML 里嵌进段落（标记会重复三遍）。抽出来单独成段，正文里不再出现「7 7 7」。
+      const pulled = extractNotes(m[3], replaceMath);
+      for (const src of collectImgSrcs(pulled.html)) pushFig('', absolutizeImg(src, arxivId), 'figure');
+      const text = stripTags(replaceMath(pulled.html)).trim();
+      const drop = !text || NOISE.test(text) || (TOC_LINE.test(text) && text.length > 200)
+        || text.length < 2 || /^\d{1,4}$/.test(text)
+        || /hereby grants permission to reproduce/i.test(text);
+      if (!drop) blocks.push({ seq: seq++, type: 'para', level: 0, en: text });
+      for (const note of pulled.notes) blocks.push({ seq: seq++, type: 'para', level: 0, en: note });
     } else if (m[5] !== undefined) {
       // 独立块级公式（equation 容器）
       const text = stripTags(replaceMath(m[5])).trim();
@@ -114,28 +130,52 @@ export function parseArxivHtml(html: string, arxivId: string): ParsedPaper {
       const figClass = (m[0].match(/class="([^"]*)"/) || [])[1] ?? '';
       const kind: 'figure' | 'table' = /ltx_table/.test(figClass) ? 'table' : 'figure';
       const capMatch = figHtml.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i);
-      const cap = capMatch ? stripTags(replaceMath(capMatch[1])).trim() : '';
-      // 图片：优先 graphics/img 的 href|src；LaTeXML 主力形态 <object type="image/svg+xml" data="...">（实测 2609.34683 的 4 张图全是）；inline svg 无 src 则占位（下载阶段处理）
-      const imgMatch = figHtml.match(/<(?:img|graphics)[^>]*(?:xlink:href|src)="([^"]+)"[^>]*>/i)
-        || figHtml.match(/<object[^>]*type="image\/svg\+xml"[^>]*data="([^"]+)"[^>]*>/i)
+      const capPulled = extractNotes(capMatch ? capMatch[1] : '', replaceMath);
+      const cap = stripTags(replaceMath(capPulled.html)).trim();
+      const capOk = !!cap && !NOISE.test(cap);
+      const pushCapNotes = () => {
+        for (const note of capPulled.notes) blocks.push({ seq: seq++, type: 'para', level: 0, en: note });
+      };
+      // 一张 figure 里常有多张子图（网格图、左右面板）。只留第一张的话，其余图在阅读页里不存在。
+      const srcs = collectImgSrcs(figHtml).map(s => absolutizeImg(s, arxivId));
+      if (srcs.length) {
+        srcs.forEach((src, idx) => {
+          // 续图用空格占位：图注只写在第一张上，空串会被后面的「无图图注」误粘过来
+          const en = idx === 0 ? (capOk ? cap : (kind === 'table' ? '表格' : '图')) : ' ';
+          pushFig(en, src, kind);
+        });
+        pushCapNotes();
+        continue;
+      }
+      // 图片：LaTeXML 主力形态 <object type="image/svg+xml" data="...">；内联 <svg> 无 src，用 inline: 标记，下载阶段落盘
+      const objMatch = figHtml.match(/<object[^>]*type="image\/svg\+xml"[^>]*data="([^"]+)"[^>]*>/i)
         || figHtml.match(/<object[^>]*data="([^"]+\.svg)"[^>]*>/i);
-      let img = imgMatch ? imgMatch[1] : '';
-      if (img && !/^data:/.test(img)) img = absolutizeImg(img, arxivId);
+      const img = objMatch && !/^data:/i.test(objMatch[1]) ? absolutizeImg(objMatch[1], arxivId) : '';
       const hasSvg = /<svg/i.test(figHtml);
+      // 算法环境（ltx_listingline）没有图片。抽成逐行文本，避免翻译页永远停在「图片下载中」。
+      const listingRows = (!img && !hasSvg) ? extractListingLines(figHtml, replaceMath) : undefined;
       // HTML 表格实体（ltx_tabular：span 嵌套或原生 <table> 两种形态）：无图源时提取表格数据，
       // 渲染层还原为真表格——用户不再需要「见原文 PDF」跳转。
-      const tableRows = (!img && !hasSvg && /ltx_tabular/i.test(figHtml)) ? extractTableRows(figHtml) : undefined;
-      const hasTabular = !!tableRows;
-      if ((cap && !NOISE.test(cap)) || img || hasSvg) {
-        blocks.push({
-          seq: seq++, type: 'fig', level: 0,
-          en: cap || (kind === 'table' ? '表格' : '图'),
-          figPath: img || undefined,
-          figKind: kind,
-          figHtmlTable: hasTabular || undefined,
-          figTableRows: tableRows,
-        });
+      const tableRows = (!img && !hasSvg && !listingRows && /ltx_tabular/i.test(figHtml)) ? extractTableRows(figHtml) : undefined;
+      // 图里是排好的正文（生成样本、标注说明），不是图片。抽成段落，避免永远「图片下载中」。
+      const proseRows = (!img && !hasSvg && !listingRows && !tableRows) ? extractFigureProse(figHtml, replaceMath) : undefined;
+      const rows = listingRows || tableRows || proseRows;
+      if (img || hasSvg || rows) {
+        pushFig(
+          capOk ? cap : (kind === 'table' ? '表格' : '图'),
+          img || (hasSvg ? 'inline:' : undefined),
+          kind, rows, !!tableRows,
+        );
+        pushCapNotes();
+      } else if (capOk) {
+        // 图注单独成 figure、图片在前一个裸 <img> 里（SAM teaser）。把图注补到那张图上。
+        const prev = blocks[blocks.length - 1];
+        if (prev && prev.type === 'fig' && prev.figPath && !prev.en.trim()) prev.en = cap;
+        else pushFig(cap, undefined, kind);
+        pushCapNotes();
       }
+    } else if (/^<img\b/i.test(m[0])) {
+      for (const src of collectImgSrcs(m[0])) pushFig('', absolutizeImg(src, arxivId), 'figure');
     }
   }
   return { arxivId, title, authors, blocks, importType: 'html' };
@@ -177,6 +217,22 @@ async function downloadToFile(url: string, dest: string) {
   fs.writeFileSync(dest, buf);
 }
 
+// 算法 / 伪代码：LaTeXML 用 ltx_listingline，没有 img/svg。每行一个单元格，行首缩进保留。
+function extractListingLines(figHtml: string, replaceMath: (s: string) => string): string[][] | undefined {
+  if (!/ltx_listingline/i.test(figHtml)) return undefined;
+  const lines: string[][] = [];
+  const re = /<div[^>]*class="[^"]*\bltx_listingline\b[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(figHtml)) !== null) {
+    const mathDone = replaceMath(m[1]);
+    const indented = /[\u2002\u2003]/.test(mathDone.slice(0, 160));
+    let text = stripTags(mathDone).replace(/^\d+\s*:\s*/, '');
+    if (!text) continue;
+    lines.push([indented ? `    ${text}` : text]);
+  }
+  return lines.length ? lines : undefined;
+}
+
 // LaTeXML 表格提取：两种形态
 //  a) span 嵌套（transformed 布局）：ltx_tr/ltx_td 都是 <span>，无法正则配对，深度扫描
 //  b) 原生 <table class="ltx_tabular">：<tr>/<td> 直接 DOM 语义
@@ -187,7 +243,7 @@ function extractTableRows(figHtml: string): string[][] | undefined {
       const alt = (attrs.match(/alttext="([^"]*)"/) || [])[1];
       return alt ? ` $${decodeEntities(alt)}$ ` : ' ';
     });
-    return ' ' + withMath.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+    return ' ' + stripTags(withMath) + ' ';
   };
   // 深度扫描配对 span 块
   const spanBlocks = (fragment: string, cls: string) => {
@@ -264,17 +320,90 @@ export function parsePlainText(text: string, arxivId: string, title: string): Pa
 
 // ---------- helpers ----------
 function decodeEntities(s: string): string {
-  return s
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+  let out = s;
+  // 两遍：&amp;lt; 先还原成 &lt;，再还原成 <
+  for (let i = 0; i < 2; i++) {
+    out = out
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&middot;/g, '·')
+      .replace(/&times;/g, '×')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+      .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/&amp;/g, '&');
+  }
+  return out;
 }
 
+// 行内标签（span/em/a）紧贴字母，不能换成空格。
+// LaTeXML 把缩写写成 <span>B</span>idirectional，按标签插空格会显示成「B idirectional」。
 function stripTags(s: string): string {
-  return s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const t = s
+    .replace(/<br\b[^>]*>/gi, ' ')
+    .replace(/<\/?(?:span|em|strong|b|i|a|cite|code)\b[^>]*>/gi, '')
+    .replace(/<[^>]+>/g, ' ');
+  return decodeEntities(t).replace(/\s+/g, ' ').trim();
+}
+
+// 脚注整段嵌在段落里。按 span 深度摘掉 ltx_note，正文只留句子，注释放到后面。
+function extractNotes(html: string, replaceMath: (s: string) => string): { html: string; notes: string[] } {
+  const notes: string[] = [];
+  const re = /<span\b[^>]*class="[^"]*\bltx_note\b[^"]*"[^>]*>/gi;
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    out += html.slice(last, m.index);
+    let depth = 1;
+    let pos = m.index + m[0].length;
+    while (depth > 0 && pos < html.length) {
+      const op = html.indexOf('<span', pos);
+      const cl = html.indexOf('</span>', pos);
+      if (cl === -1) { pos = html.length; break; }
+      if (op !== -1 && op < cl) { depth++; pos = html.indexOf('>', op) + 1; }
+      else { depth--; pos = cl + 7; }
+    }
+    const inner = html.slice(m.index + m[0].length, Math.max(m.index + m[0].length, pos - 7));
+    const cleaned = inner
+      .replace(/<sup\b[^>]*>[\s\S]*?<\/sup>/gi, ' ')
+      .replace(/<span\b[^>]*\bltx_tag_note\b[^>]*>[\s\S]*?<\/span>/gi, ' ');
+    const text = stripTags(replaceMath(cleaned));
+    if (text.length > 2) notes.push(text);
+    last = pos;
+    re.lastIndex = pos;
+  }
+  out += html.slice(last);
+  return { html: out, notes };
+}
+
+// figure 里的内容图。页眉 logo、data: 占位像素不收。
+function collectImgSrcs(fragment: string): string[] {
+  const out: string[] = [];
+  const re = /<(?:img|graphics)\b[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(fragment)) !== null) {
+    const src = (m[0].match(/\b(?:src|xlink:href)="([^"]+)"/i) || [])[1];
+    if (!src || /^data:/i.test(src)) continue;
+    if (/\/static\/|arxiv-logo|smileybones|\/funders\//i.test(src)) continue;
+    out.push(src);
+  }
+  return out;
+}
+
+// 没有图片的 figure：生成样本、标注说明这类排版文本。
+function extractFigureProse(figHtml: string, replaceMath: (s: string) => string): string[][] | undefined {
+  const body = figHtml.replace(/<figcaption[\s\S]*?<\/figcaption>/gi, '');
+  const parts = /<p\b|<br\b/i.test(body) ? body.split(/<br\b[^>]*>|<\/p>/i) : [body];
+  const lines: string[][] = [];
+  for (const part of parts) {
+    const text = stripTags(replaceMath(part));
+    if (text.length < 2) continue;
+    lines.push([text]);
+  }
+  if (lines.map(l => l[0]).join(' ').length < 40) return undefined;
+  return lines;
 }
 
 function extractTitle(html: string): string {

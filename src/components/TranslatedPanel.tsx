@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 import RichText from './RichText';
 import type { BlockRow } from '../store';
 import { figSrc } from '../figsrc';
+import { LocalFig } from './FigTable';
 
 // 学术样式译文面板：按论文原始结构（章节层级/段落/图表标题）排版
 // 豆包式交互：点击译文段落 → 高亮并联动 PDF 跳到对应页；页头点击反向跳 PDF
@@ -114,7 +115,7 @@ function TranslatedBlock({ b, selected, onClick }: {
     const figUrl = figSrc(b.fig_path); // 仅本地落地形态出图，防死链
     return (
       <figure className={`tp-fig ${selected ? 'tp-selected' : ''}`} onClick={onClick}>
-        {figUrl && <img src={figUrl} alt={b.en.slice(0, 50)} loading="lazy" />}
+        {figUrl && <LocalFig src={figUrl} alt={b.en.slice(0, 50)} />}
         <figcaption className="tp-figcap">
           {b.fig_kind === 'table' ? '表' : '图'} · {b.zh ?? b.en}
         </figcaption>

@@ -83,6 +83,7 @@ interface Store {
   setTranslating: (b: boolean, p?: { done: number; total: number } | null) => void;
   updateBlockZh: (pid: number, zh: string) => void;
   updateBlockFig: (pid: number, figPath: string) => void;
+  updateBlockFigRows: (pid: number, figRows: string) => void;
   setAskPanel: (open: boolean, sel?: { pid: number; text: string } | null) => void;
   toast: (t: Omit<ToastMsg, 'id'>) => void;
   dismissToast: (id: number) => void;
@@ -148,6 +149,9 @@ export const useStore = create<Store>((set, get) => ({
   updateBlockFig: (pid, figPath) => set(s => ({
     // 图表下载完成推送（fig:updated）：内存 blocks 同步，否则各视图一直拿旧 fig_path 显示占位框
     blocks: s.blocks.map(b => b.pid === pid ? { ...b, fig_path: figPath } : b),
+  })),
+  updateBlockFigRows: (pid, figRows) => set(s => ({
+    blocks: s.blocks.map(b => b.pid === pid ? { ...b, fig_table_rows: figRows } : b),
   })),
   setAskPanel: (open, sel = null) => set({ askPanelOpen: open, pendingSelection: sel }),
   toast: (t) => {

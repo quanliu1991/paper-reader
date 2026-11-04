@@ -2,15 +2,20 @@ import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import RichText from './RichText';
-import FigTable from './FigTable';
+import { FigBlockBody, LocalFig } from './FigTable';
 import type { BlockRow } from '../store';
-import { figSrc } from '../figsrc';
+import { figAwaiting, figSrc } from '../figsrc';
+import {
+  PAGE_DEAD, PAGE_TOP_PAD, PAGE_TOP_PAD_L, PARA_DEAD, READ_LINE,
+  boxScreenTop, fractionIn, inPageTopBand, nextScrollTop, pickBlockPid, pickBoxAtAnchor, pidSpan,
+} from '../pdfAlign';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 // PDF 双语对照视图（方案 A）：左栏原版 PDF canvas 分页（原汁原味），
-// 右栏 HTML 译文流（纯文档流，按页分组）。两栏独立滚动 + 页级同步（互斥锁防回环）。
+// 右栏 HTML 译文流（纯文档流）。两栏独立滚动：页首仍按页对齐（误差 ≤50px），
+// 页内按阅读线上的段落对齐，避免滚到一页中段时对侧还停在该页第一段。
 // 三态：en（仅原文）/ both（双语对照，默认）/ zh（仅译文）。窄屏（≤760px）自动上下分屏。
 // 禁止任何绝对定位文字排版：译文在独立滚动容器中，结构上不可能覆盖 PDF。
 export interface TextBlockBox {
@@ -44,6 +49,9 @@ export default function DualPdfView({
   const [visiblePage, setVisiblePage] = useState(1);
   const [failedPages, setFailedPages] = useState<Set<number>>(new Set());
   const renderedRef = useRef<Set<number>>(new Set());
+  const syncRightFromLeftRef = useRef<() => void>(() => {});
+  const syncLeftFromRightRef = useRef<() => void>(() => {});
+  const blockNormCache = useRef<{ key: string; rows: { pid: number; norm: string }[] }>({ key: '', rows: [] });
 
   // ---- 右栏（译文）状态 ----
   const rightScrollRef = useRef<HTMLDivElement>(null);
@@ -265,6 +273,8 @@ export default function DualPdfView({
       }
       host.appendChild(tl);
       translatePageIfNeeded(n);
+      // 页刚画完才有文本框几何。滚动往往发生在 canvas 出现之前，这里补一次跟随。
+      syncRightFromLeftRef.current();
       setFailedPages(s => { if (!s.has(n)) return s; const x = new Set(s); x.delete(n); return x; });
     } catch {
       renderedRef.current.delete(n);
@@ -309,6 +319,7 @@ export default function DualPdfView({
   const visiblePageRef = useRef(visiblePage);
   visiblePageRef.current = visiblePage;
   const rightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const leftSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const SYNC_LOCK_MS = 600;
@@ -364,6 +375,154 @@ export default function DualPdfView({
     return true;
   }, []);
 
+  const blockNorms = () => {
+    if (blockNormCache.current.key !== enKey) {
+      blockNormCache.current = {
+        key: enKey,
+        rows: blocksRef.current
+          .filter(b => b.type !== 'fig')
+          .map(b => ({ pid: b.pid, norm: normText(b.en || '') }))
+          .filter(x => x.norm.length >= 8),
+      };
+    }
+    return blockNormCache.current.rows;
+  };
+
+  const scrollPaneTo = (pane: HTMLElement, side: 'left' | 'right', top: number) => {
+    const max = Math.max(0, pane.scrollHeight - pane.clientHeight);
+    const clamped = Math.min(Math.max(0, top), max);
+    lastSyncAtRef.current = Date.now();
+    progScrollRef.current = { side, top: clamped, at: Date.now() };
+    pane.scrollTo({ top: clamped, behavior: 'auto' });
+  };
+
+  // 左→右：页首（页顶落在视口上沿附近）仍把该页第一个锚点对齐到视口顶+12px，
+  // 保证翻页时误差 ≤50px。页顶已经滚出上沿后，改按阅读线上的文本框对齐对应译文段，
+  // 不再因为「两侧页码相同」就停在该页第一段。
+  syncRightFromLeftRef.current = () => {
+    if (mode !== 'both') return;
+    const left = leftScrollRef.current;
+    const right = rightScrollRef.current;
+    if (!left || !right) return;
+    if (isProgScroll('left')) return;
+    if (Date.now() - lastSyncAtRef.current < SYNC_THROTTLE_MS) return;
+    const lr = left.getBoundingClientRect();
+    const anchorY = lr.top + READ_LINE;
+    const host = pageElAtY(left, anchorY) ?? pageElFromTop(left, lr.top);
+    if (!host) return;
+    const pg = Number(host.dataset.page);
+    if (!pg) return;
+    const hostRect = host.getBoundingClientRect();
+    if (inPageTopBand(hostRect.top, lr.top)) {
+      const g = right.querySelector<HTMLElement>(`[data-page="${pg}"]`);
+      if (!g) return;
+      const rr = right.getBoundingClientRect();
+      const dest = rr.top + PAGE_TOP_PAD;
+      if (Math.abs(g.getBoundingClientRect().top - dest) <= PAGE_DEAD) return;
+      scrollPaneTo(right, 'right', nextScrollTop(right.scrollTop, g.getBoundingClientRect().top, dest));
+      return;
+    }
+    if (!host.querySelector('canvas') || hostRect.height < 2) return;
+    const line = visibleLine(host, anchorY);
+    const linePid = line ? pickBlockPid(normText(line.text), blockNorms()) : 0;
+    const picked = pickBoxAtAnchor(boxesRef.current, pg, hostRect.top, hostRect.height, anchorY);
+    const boxAgrees = !!(picked && line && agreesWithLine(picked.text, normText(line.text)));
+    // 眼睛所在的那一行和文本框不是同一段时，以看得见的文字为准（标题常常没有框）。
+    if (line && linePid && (!picked || (linePid !== picked.pid && !boxAgrees))) {
+      const el = right.querySelector<HTMLElement>(`[data-pid="${linePid}"]`);
+      if (!el) return;
+      const rr = right.getBoundingClientRect();
+      const dest = rr.top + (line.top - lr.top);
+      if (Math.abs(el.getBoundingClientRect().top - dest) <= PARA_DEAD) return;
+      scrollPaneTo(right, 'right', nextScrollTop(right.scrollTop, el.getBoundingClientRect().top, dest));
+      return;
+    }
+    if (!picked) return;
+    const el = right.querySelector<HTMLElement>(`[data-pid="${picked.pid}"]`);
+    const span = pidSpan(boxesRef.current, picked.pid, pg, hostRect.top, hostRect.height);
+    if (!el || !span) return;
+    const er = el.getBoundingClientRect();
+    if (er.height < 1) return;
+    const point = er.top + fractionIn(span.top, span.height, anchorY) * er.height;
+    const dest = right.getBoundingClientRect().top + READ_LINE;
+    if (Math.abs(point - dest) <= PARA_DEAD) return;
+    scrollPaneTo(right, 'right', nextScrollTop(right.scrollTop, point, dest));
+  };
+
+  // 右→左：跨页仍把 PDF 页顶对齐到视口顶+8px（翻页验收）。同一页内，阅读线上的译文段
+  // 对应到左栏文本框的同一比例位置。右栏停在页首且左栏页顶也在上沿时不再互拉，避免边界乒乓。
+  syncLeftFromRightRef.current = () => {
+    if (mode !== 'both') return;
+    const left = leftScrollRef.current;
+    const right = rightScrollRef.current;
+    if (!left || !right) return;
+    if (isProgScroll('right')) return;
+    if (Date.now() - lastSyncAtRef.current < SYNC_THROTTLE_MS) return;
+    const rr = right.getBoundingClientRect();
+    const lr = left.getBoundingClientRect();
+    const topEl = firstElPast(right, rr.top + 4);
+    if (!topEl) return;
+    const pg = Number(topEl.dataset.page);
+    if (!pg) return;
+    const lTop = pageElFromTop(left, lr.top);
+    const crossed = !lTop || Number(lTop.dataset.page) !== pg;
+    if (crossed) {
+      const t = left.querySelector<HTMLElement>(`.pdf-page[data-page="${pg}"]`);
+      if (!t) return;
+      const dest = lr.top + PAGE_TOP_PAD_L;
+      if (Math.abs(t.getBoundingClientRect().top - dest) <= PAGE_DEAD) return;
+      scrollPaneTo(left, 'left', nextScrollTop(left.scrollTop, t.getBoundingClientRect().top, dest));
+      return;
+    }
+    if (!lTop) return;
+    const first = right.querySelector<HTMLElement>(`[data-page="${pg}"]`);
+    const firstOff = first ? first.getBoundingClientRect().top - rr.top : 999;
+    const rightAtStart = firstOff >= -20 && firstOff <= 80;
+    const pageTop = lTop.getBoundingClientRect().top;
+    if (inPageTopBand(pageTop, lr.top) && rightAtStart) return;
+    const anchorY = rr.top + READ_LINE;
+    const el = elAtY(right, anchorY) ?? topEl;
+    const pid = Number(el.dataset.pid);
+    const elPage = Number(el.dataset.page) || pg;
+    const host = hostsRef.current.get(elPage);
+    if (!pid) return;
+    if (!host?.querySelector('canvas')) {
+      const block = blocksRef.current.find(b => b.pid === pid);
+      const lineTop = block ? lineTopForBlock(left, normText(block.en || ''), lr.top + READ_LINE) : null;
+      if (lineTop === null) return;
+      const er0 = el.getBoundingClientRect();
+      const dest0 = lr.top + Math.min(Math.max(er0.top - rr.top, 12), Math.max(12, lr.height * 0.7));
+      if (Math.abs(lineTop - dest0) <= PARA_DEAD) return;
+      scrollPaneTo(left, 'left', nextScrollTop(left.scrollTop, lineTop, dest0));
+      return;
+    }
+    const hr = host.getBoundingClientRect();
+    let span = pidSpan(boxesRef.current, pid, elPage, hr.top, hr.height);
+    if (!span && pg !== elPage) {
+      const hostPg = hostsRef.current.get(pg);
+      if (hostPg && hostPg.querySelector('canvas')) {
+        const pr = hostPg.getBoundingClientRect();
+        span = pidSpan(boxesRef.current, pid, pg, pr.top, pr.height);
+      }
+    }
+    if (!span) {
+      const block = blocksRef.current.find(b => b.pid === pid);
+      const lineTop = block ? lineTopForBlock(left, normText(block.en || ''), lr.top + READ_LINE) : null;
+      if (lineTop === null) return;
+      const erMiss = el.getBoundingClientRect();
+      const destLine = lr.top + Math.min(Math.max(erMiss.top - rr.top, 12), Math.max(12, lr.height * 0.7));
+      if (Math.abs(lineTop - destLine) <= PARA_DEAD) return;
+      scrollPaneTo(left, 'left', nextScrollTop(left.scrollTop, lineTop, destLine));
+      return;
+    }
+    const er = el.getBoundingClientRect();
+    if (er.height < 1) return;
+    const point = span.top + fractionIn(er.top, er.height, anchorY) * span.height;
+    const dest = lr.top + READ_LINE;
+    if (Math.abs(point - dest) <= PARA_DEAD) return;
+    scrollPaneTo(left, 'left', nextScrollTop(left.scrollTop, point, dest));
+  };
+
   // 左栏可见页追踪 + 驱动右栏跟随 + 按需翻译
   useEffect(() => {
     if (!doc || !numPages || mode === 'en') return;
@@ -380,45 +539,33 @@ export default function DualPdfView({
       if (!best) return;
       // 直接跟随主导可见页（此前的 |prev-best|<=2 钳位会让逐页滚动时锚点永远停在旧页——正是失焦的根源）
       setVisiblePage(best);
-      if (mode !== 'both') return;
-      // 左栏程序化滚动中（R2L 联动/点击定位）→ 本回调是回环源头，忽略
-      if (isProgScroll('left')) return;
-      // 节流：打断同帧级联（见 lastSyncAtRef 注释）
-      const now = Date.now();
-      if (now - lastSyncAtRef.current < SYNC_THROTTLE_MS) return;
-      lastSyncAtRef.current = now;
-      // 右栏跟随：连续段落流模式——找 data-page=best 的第一个段落，严格对齐到视口顶+12px。
-      // 验收标准：左右锚点误差 ≤50px。此前「已在视口就不滚」的跳过条件会让段落挂在视口中段
-      // （实测误差 224px），改为：与目标位偏差 >50px 就滚；≤50px 不动（防微调抖动/回环）。
-      {
-        const right = rightScrollRef.current;
-        if (!right) return;
-        // 页级滞回：R 视口顶已停在本页（顶部第一个 data-page 锚点 == best）就不动。
-        // 只按像素差滚会在 50px 阈值边界与 R2L 互斥重对齐 → 双栏乒乓永不收敛（14 表布局挂死根因）。
-        const rr0 = right.getBoundingClientRect();
-        let topAnchorPg = 0;
-        for (const p of right.querySelectorAll<HTMLElement>('[data-page]')) {
-          if (p.getBoundingClientRect().bottom > rr0.top + 4) { topAnchorPg = Number(p.dataset.page); break; }
-        }
-        if (topAnchorPg === best) return;
-        const g = right.querySelector(`[data-page="${best}"]`) as HTMLElement | null;
-        if (!g) return;
-        const rr = right.getBoundingClientRect();
-        const gr = g.getBoundingClientRect();
-        const targetTop = rr.top + 12;
-        if (Math.abs(gr.top - targetTop) > 50) {
-          // 用 rect 几何算 scrollTop（offsetTop 相对的 offsetParent 在嵌套布局下不是滚动容器，曾致 R2L 错位数百 px）
-          const top = Math.max(0, right.scrollTop + (gr.top - rr.top) - 12);
-          progScrollRef.current = { side: 'right', top, at: Date.now() };
-          // 瞬移（不用 smooth）：14 表布局下右栏高度数万 px，smooth 动画在 IO 连续重定向下
-          // 无限爬行（实测 >180s 不收敛）；联动是「对齐」语义，即时落位才是正确行为。
-          right.scrollTo({ top, behavior: 'auto' });
-        }
-      }
-    }, { root: leftScrollRef.current, threshold: [0, 0.25, 0.6] });
+      syncRightFromLeftRef.current();
+    }, { root: leftScrollRef.current, threshold: [0, 0.25, 0.6, 0.9] });
     hosts.forEach(el => io.observe(el));
     return () => { io.disconnect(); };
   }, [doc, numPages, mode]);
+
+  // 页内滚动往往跨不过 IO 阈值，右栏会停在该页第一段。滚动事件补上段落级跟随。
+  useEffect(() => {
+    const left = leftScrollRef.current;
+    if (!left || mode !== 'both') return;
+    let lastExecAt = 0;
+    const MAX_WAIT = 320;
+    const onScroll = () => {
+      const now = Date.now();
+      const wait = Math.min(80, Math.max(0, lastExecAt + MAX_WAIT - now));
+      if (leftSyncTimerRef.current) clearTimeout(leftSyncTimerRef.current);
+      leftSyncTimerRef.current = setTimeout(() => {
+        lastExecAt = Date.now();
+        syncRightFromLeftRef.current();
+      }, wait);
+    };
+    left.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      left.removeEventListener('scroll', onScroll);
+      if (leftSyncTimerRef.current) clearTimeout(leftSyncTimerRef.current);
+    };
+  }, [mode]);
 
   // 6b) 右→左 滚动跟随：右栏发生用户滚动（非程序化）→ 视口顶部段落所属页 → 左栏滚到该页。
   // 防抖 200ms；程序化滚动（左栏联动/复位）通过 isProgScroll 时间窗排除（含动画进行中）。
@@ -436,52 +583,8 @@ export default function DualPdfView({
       if (rightSyncTimerRef.current) clearTimeout(rightSyncTimerRef.current);
       rightSyncTimerRef.current = setTimeout(() => {
         lastExecAt = Date.now();
-        if (isProgScroll('right')) return;
-        // 节流：打断同帧级联（见 lastSyncAtRef 注释）
-        const nowSync = Date.now();
-        if (nowSync - lastSyncAtRef.current < SYNC_THROTTLE_MS) return;
-        lastSyncAtRef.current = nowSync;
-        // 视口顶部往下第一个仍与视口相交的带 data-page 锚点（段落 + 图表统一——图表缺锚时此处跳过
-        // 表格会选中其上方旧页段落，把左栏拉回旧页触发回环，2026-11 dedup L2R 长跳失准根因）。
-        // 命中阈值 4px：短标题段（高 ~30px）滚到视口顶时，+30px 阈值会跳过它落到下一段
-        // → 页锚错一页（dedup-scroll R2L pg4 -897px 根因）。只要段落底部还没出视口就算。
-        const rr = right.getBoundingClientRect();
-        const paras = right.querySelectorAll<HTMLElement>('[data-page]');
-        let target: HTMLElement | null = null;
-        for (const p of paras) {
-          const r = p.getBoundingClientRect();
-          if (r.bottom > rr.top + 4) { target = p; break; }
-        }
-        const pg = target ? Number(target.dataset.page) : 0;
-        if (!pg) return;
-        // 用户真实滚动 → 直接滚左栏（不经 withSyncLock：600ms 锁会吞掉连续用户滚动，
-        // pg4 采样 -897px 错位的根因之一）。回环防护由 isProgScroll('left') 在 IO 侧完成。
-        // 去重判定用几何而非 visiblePage：IO「交集最大页」在跨页动画/临界视口下会抖动
-        // （pg3 停稳时 pg4 顶露出一点可能反超），导致 pg===visiblePage 误吞真实滚动（根因之二）。
-        {
-          const left = leftScrollRef.current;
-          if (!left) return;
-          // 页级滞回：L 视口顶已在 pg（顶部第一个 pdf-page == pg）就不动——与 IO 侧对称，
-          // 消除 50px 边界乒乓。
-          const lr0 = left.getBoundingClientRect();
-          const lTopPage = [...left.querySelectorAll<HTMLElement>('.pdf-page')]
-            .find(p => p.getBoundingClientRect().bottom > lr0.top + 4);
-          if (lTopPage && Number(lTopPage.dataset.page) === pg) return;
-          const t = left.querySelector(`[data-page="${pg}"]`) as HTMLElement | null;
-          if (t) {
-            // 与左→右同标准：目标位（视口顶+8px）偏差 >50px 才滚，≤50px 不动（防回环抖动）
-            const lr = left.getBoundingClientRect();
-            const tr = t.getBoundingClientRect();
-            if (Math.abs(tr.top - (lr.top + 8)) > 50) {
-              // rect 几何算 scrollTop（offsetTop 在嵌套布局下 offsetParent 不是滚动容器，曾致错位）
-              const top = Math.max(0, left.scrollTop + (tr.top - lr.top) - 8);
-              progScrollRef.current = { side: 'left', top, at: Date.now() };
-              // 瞬移：与 L→R 同理，联动对齐即时落位（smooth 在长距离下爬行不收敛）。
-              left.scrollTo({ top, behavior: 'auto' });
-            }
-          }
-        }
-      }, 200);
+        syncLeftFromRightRef.current();
+      }, wait);
     };
     right.addEventListener('scroll', onScroll, { passive: true });
     return () => {
@@ -507,13 +610,40 @@ export default function DualPdfView({
     });
   }, []);
   const jumpToPid = useCallback((pid: number) => {
-    const box = boxesRef.current.find(b => b.pid === pid);
-    if (box) {
-      jumpToPage(box.page);
-      flashBoxAt(pid);
-    }
     setActivePid(pid);
-  }, [jumpToPage, flashBoxAt]);
+    const box = boxesRef.current.find(b => b.pid === pid);
+    const left = leftScrollRef.current;
+    const host = box ? hostsRef.current.get(box.page) : null;
+    if (!box || !left || !host || !box.pageH) {
+      if (box) jumpToPage(box.page);
+      return;
+    }
+    const align = () => {
+      const hr = host.getBoundingClientRect();
+      if (hr.height < 2) return;
+      const lr = left.getBoundingClientRect();
+      const right = rightScrollRef.current;
+      const el = right?.querySelector<HTMLElement>(`[data-pid="${pid}"]`);
+      const raw = el && right ? el.getBoundingClientRect().top - right.getBoundingClientRect().top : READ_LINE;
+      const offset = Math.min(Math.max(raw, 12), Math.max(12, lr.height * 0.7));
+      const boxTop = boxScreenTop(box, hr.top, hr.height);
+      const top = nextScrollTop(left.scrollTop, boxTop, lr.top + offset);
+      progScrollRef.current = { side: 'left', top, at: Date.now() };
+      left.scrollTo({ top, behavior: 'auto' });
+      flashBoxAt(pid);
+    };
+    if (host.querySelector('canvas')) {
+      align();
+      return;
+    }
+    const lr = left.getBoundingClientRect();
+    const hr = host.getBoundingClientRect();
+    const top = nextScrollTop(left.scrollTop, hr.top, lr.top + PAGE_TOP_PAD_L);
+    progScrollRef.current = { side: 'left', top, at: Date.now() };
+    left.scrollTo({ top, behavior: 'auto' });
+    if (!doc) return;
+    void renderPage(doc, box.page).then(() => requestAnimationFrame(align));
+  }, [doc, flashBoxAt, jumpToPage, renderPage]);
 
   // activePid 高亮：作用于右栏段落本身（背景色 + 左线，非悬浮层）
   useEffect(() => {
@@ -581,9 +711,107 @@ export default function DualPdfView({
   );
 }
 
+// 阅读线 / 页顶探测。命中阈值 4px：短标题段滚到视口顶时，更大的阈值会跳过它落到下一段。
+function visibleLine(host: HTMLElement, anchorY: number): { text: string; top: number } | null {
+  const pr = host.getBoundingClientRect();
+  const midX = pr.left + pr.width * 0.5;
+  const groups = new Map<number, { top: number; cy: number; items: HTMLElement[] }>();
+  for (const sp of host.querySelectorAll<HTMLElement>('.dpv-textlayer span')) {
+    const raw = sp.textContent || '';
+    if (!raw.trim()) continue;
+    const r = sp.getBoundingClientRect();
+    const cy = (r.top + r.bottom) / 2;
+    if (Math.abs(cy - anchorY) > 24) continue;
+    const bucket = Math.round(r.top / 3);
+    const g = groups.get(bucket);
+    if (g) g.items.push(sp);
+    else groups.set(bucket, { top: r.top, cy, items: [sp] });
+  }
+  let best: { top: number; cy: number; items: HTMLElement[] } | null = null;
+  for (const g of groups.values()) {
+    if (!best || Math.abs(g.cy - anchorY) < Math.abs(best.cy - anchorY)) best = g;
+  }
+  if (!best) return null;
+  const join = (items: HTMLElement[]) => items
+    .slice()
+    .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+    .map(sp => sp.textContent || '')
+    .join(' ');
+  const left = best.items.filter(sp => sp.getBoundingClientRect().left < midX);
+  const right = best.items.filter(sp => sp.getBoundingClientRect().left >= midX);
+  const leftText = join(left);
+  const rightText = join(right);
+  const text = normText(leftText).length >= 10 ? leftText
+    : normText(rightText).length >= 10 ? rightText
+    : join(best.items);
+  if (normText(text).length < 8) return null;
+  return { text, top: best.top };
+}
+
+function agreesWithLine(boxText: string, lineNorm: string): boolean {
+  const key = lineNorm.slice(0, 16);
+  if (key.length < 10) return true;
+  const n = normText(boxText);
+  return n.includes(key) || (n.length >= 8 && key.includes(n));
+}
+
+function lineTopForBlock(root: HTMLElement, blockNorm: string, anchorY: number): number | null {
+  const key = blockNorm.slice(0, 24);
+  if (key.length < 10) return null;
+  const short = key.slice(0, Math.min(18, key.length));
+  let bestTop = 0;
+  let bestDist = Infinity;
+  for (const host of root.querySelectorAll<HTMLElement>('.pdf-page')) {
+    const layer = host.querySelector('.dpv-textlayer');
+    if (!layer) continue;
+    const groups = new Map<number, { top: number; text: string }>();
+    for (const sp of layer.querySelectorAll<HTMLElement>('span')) {
+      const r = sp.getBoundingClientRect();
+      const bucket = Math.round(r.top / 4);
+      const g = groups.get(bucket);
+      if (g) g.text += sp.textContent || '';
+      else groups.set(bucket, { top: r.top, text: sp.textContent || '' });
+    }
+    for (const g of groups.values()) {
+      const n = normText(g.text);
+      if (!n.includes(short) && !(n.length >= 8 && key.includes(n))) continue;
+      const dist = Math.abs(g.top - anchorY);
+      if (dist < bestDist) { bestDist = dist; bestTop = g.top; }
+    }
+  }
+  return bestDist === Infinity ? null : bestTop;
+}
+
+function pageElAtY(root: HTMLElement, y: number): HTMLElement | null {
+  for (const p of root.querySelectorAll<HTMLElement>('.pdf-page')) {
+    const r = p.getBoundingClientRect();
+    if (r.top <= y && r.bottom > y) return p;
+  }
+  return null;
+}
+function pageElFromTop(root: HTMLElement, paneTop: number): HTMLElement | null {
+  for (const p of root.querySelectorAll<HTMLElement>('.pdf-page')) {
+    if (p.getBoundingClientRect().bottom > paneTop + 4) return p;
+  }
+  return null;
+}
+function firstElPast(root: HTMLElement, y: number): HTMLElement | null {
+  for (const p of root.querySelectorAll<HTMLElement>('[data-page]')) {
+    if (p.getBoundingClientRect().bottom > y) return p;
+  }
+  return null;
+}
+function elAtY(root: HTMLElement, y: number): HTMLElement | null {
+  for (const p of root.querySelectorAll<HTMLElement>('[data-pid]')) {
+    const r = p.getBoundingClientRect();
+    if (r.top <= y && r.bottom > y) return p;
+  }
+  return null;
+}
+
 // ---------- 右栏译文流（连续段落流：不按页切块） ----------
 // 段落按文档 seq 顺序排成一条顺滑的流；每段带 data-pid + data-page（首个匹配页）。
-// 左栏滚动同步：找 data-page 的第一个段落平滑滚过去，不依赖组头。
+// 页首按页对齐；页内按阅读线上的段落对齐。
 
 // 图表块（fig）不在 pidsByPage 里（无 PDF 文本映射），用其后第一个有映射的段落的页作锚。
 function nextParaPid(blocks: BlockRow[], from: number): number | undefined {
@@ -619,7 +847,7 @@ const ZhFlow = memo(function ZhFlow({
           // 图表按论文原位内联（seq 即文档流位置）：本地已落地 → 真图 + 中文图注 + 点击跳左栏；
           // 未落地 → 占位框（下载完成 fig:updated 自动变真图）
           const src = figSrc(b.fig_path);
-          const cap = b.zh ?? b.en ?? '';
+          const cap = (b.zh ?? b.en ?? '').trim();
           // data-page 与段落同标准：图表也是右栏文档流的一等锚点。此前表格/图片缺 data-page，
           // R2L 顶页探测与 L2R 滞回判断都跳过它们 → 表格贴近视口顶时页锚常年落在旧页，
           // R2L 把左栏拉回旧页 → IO 再跟随 → 乒乓回环（dedup-scroll pg8/9/11 err 1300-2700px 根因）。
@@ -634,13 +862,15 @@ const ZhFlow = memo(function ZhFlow({
               title="点击定位左栏原文页"
             >
               {src
-                ? <img src={src} alt={b.en.slice(0, 60)} decoding="async" />
+                ? <LocalFig src={src} alt={b.en.slice(0, 60)} />
                 : b.fig_table_rows
-                  ? <FigTable rows={JSON.parse(b.fig_table_rows)} />
+                  ? <FigBlockBody kind={b.fig_kind} rowsJson={b.fig_table_rows} />
                   : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
                     ? <div className="dpv-zhfigph">📊 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 表格见左栏</div>
-                    : <div className="dpv-zhfigph">🖼 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 图片下载中</div>}
-              {src && cap && <figcaption><RichText text={cap} /></figcaption>}
+                    : figAwaiting(b.fig_path)
+                      ? <div className="dpv-zhfigph">🖼 {cap.slice(0, 40)}{cap.length > 40 ? '…' : ''} · 图片下载中</div>
+                      : null}
+              {(src || b.fig_table_rows || (!figAwaiting(b.fig_path) && cap)) && cap && <figcaption><RichText text={cap} /></figcaption>}
             </figure>
           );
         }

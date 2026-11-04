@@ -20,7 +20,7 @@ export default function RichText({ text, className }: { text: string; className?
 function MathSpan({ tex, display }: { tex: string; display: boolean }) {
   const html = useMemo(() => {
     try {
-      return katex.renderToString(tex, {
+      return katex.renderToString(normalizeTex(tex), {
         displayMode: display,
         throwOnError: false,
         strict: false,
@@ -59,6 +59,14 @@ export function splitMath(s: string): Part[] {
     rest = rest.slice(idx + m[0].length);
   }
   return parts.filter(p => p.text.length > 0);
+}
+
+// KaTeX 没有 \textsc 等字体命令，原文里的 BERT BASE 会渲染成红色报错。
+function normalizeTex(tex: string): string {
+  return tex
+    .replace(/\\textsc\s*\{([^{}]*)\}/g, '\\text{$1}')
+    .replace(/\\textup\s*\{([^{}]*)\}/g, '\\text{$1}')
+    .replace(/\\textnormal\s*\{([^{}]*)\}/g, '\\text{$1}');
 }
 
 function escapeHtml(s: string): string {

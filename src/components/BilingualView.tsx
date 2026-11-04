@@ -2,9 +2,9 @@ import { memo, Fragment } from 'react';
 import RichText from './RichText';
 import { highlightHtml } from '../highlights';
 import ParaNotes from './ParaNotes';
-import FigTable from './FigTable';
+import { FigBlockBody, LocalFig } from './FigTable';
 import type { BlockRow, NoteRow } from '../store';
-import { figSrc } from '../figsrc';
+import { figAwaiting, figSrc } from '../figsrc';
 
 // 双语书模式：单栏流式，每段英文原文下方紧跟中文译文（段落交错，像双语书籍排版）。
 // 与左右对照（TranslateView）互补：窄窗口/长段落连读场景更自然，视线不用左右横跳。
@@ -51,16 +51,20 @@ const BiRow = memo(function BiRow({
     return (
       <figure className="bi-row bi-fig" data-pid={b.pid}>
         {figUrl
-          ? <img src={figUrl} alt={b.en.slice(0, 60)} loading="lazy" />
+          ? <LocalFig src={figUrl} alt={b.en.slice(0, 60)} />
           : b.fig_table_rows
-            ? <FigTable rows={JSON.parse(b.fig_table_rows)} />
+            ? <FigBlockBody kind={b.fig_kind} rowsJson={b.fig_table_rows} />
             : b.fig_html_table || (b.fig_kind === 'table' && !b.fig_path)
               ? <div className="bi-fig-ph">📊 表格 · 见原文 PDF</div>
-              : <div className="bi-fig-ph">🖼 图片下载中</div>}
-        <figcaption>
-          <span className="cap-en"><RichText text={b.en} /></span>
-          {b.zh && <span className="cap-zh"><RichText text={b.zh} /></span>}
-        </figcaption>
+              : figAwaiting(b.fig_path)
+                ? <div className="bi-fig-ph">🖼 图片下载中</div>
+                : null}
+        {(b.en.trim() || b.zh) && (
+          <figcaption>
+            {b.en.trim() && <span className="cap-en"><RichText text={b.en} /></span>}
+            {b.zh && <span className="cap-zh"><RichText text={b.zh} /></span>}
+          </figcaption>
+        )}
       </figure>
     );
   }
