@@ -159,8 +159,8 @@
       "source": "test",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.452Z",
-      "lastSeen": "2026-11-05T18:35:06.377Z",
-      "count": 3
+      "lastSeen": "2026-11-06T18:35:29.260Z",
+      "count": 4
     },
     {
       "id": "test-fail-node-tests-uex-e2e-test-mjs-timeout-240000",
@@ -172,8 +172,8 @@
       "source": "test",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.454Z",
-      "lastSeen": "2026-11-05T18:35:06.379Z",
-      "count": 3
+      "lastSeen": "2026-11-06T18:35:29.261Z",
+      "count": 4
     },
     {
       "id": "lint-hex-src/components/NotesView.tsx:9",
@@ -185,8 +185,8 @@
       "source": "lint",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.454Z",
-      "lastSeen": "2026-11-05T18:35:06.379Z",
-      "count": 3
+      "lastSeen": "2026-11-06T18:35:29.261Z",
+      "count": 4
     },
     {
       "id": "test-fail-node-tests-pdf-ui-e2e-test-mjs",
@@ -282,6 +282,10 @@
     {
       "at": "2026-11-05T18:35:06.379Z",
       "what": "audit: +0 new / 4 total signals"
+    },
+    {
+      "at": "2026-11-06T18:35:29.261Z",
+      "what": "audit: +0 new / 3 total signals"
     }
   ]
 }
