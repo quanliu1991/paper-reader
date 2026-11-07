@@ -173,6 +173,7 @@ export function translateDualPdf(
       return;
     }
     db.setPaperDualPdfPath(paperId, dualPath);
+    db.setPaperMonoPdfPath(paperId, monoPath);
     hooks.onDone(dualPath, monoPath);
   });
 }
@@ -197,15 +198,21 @@ function defaultProvider(): llm.ProviderConfig | null {
   };
 }
 
-// 探测某论文是否已有双语 PDF（阅读器入口按钮的显隐与直开依据）
-export function dualPdfStatus(paperId: number): { exists: boolean; path: string | null; generating: boolean } {
-  const dest = path.join(app.getPath('userData'), 'pdfs', `${paperId}-dual.pdf`);
+// 探测某论文是否已有双语/纯译 PDF（阅读器入口按钮的显隐与直开依据）
+export function dualPdfStatus(paperId: number): { exists: boolean; monoExists: boolean; path: string | null; monoPath: string | null; generating: boolean } {
+  const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
+  const dest = path.join(pdfsDir, `${paperId}-dual.pdf`);
+  const monoDest = path.join(pdfsDir, `${paperId}-mono.pdf`);
   const exists = fs.existsSync(dest);
   const paper = db.getPaper(paperId) as any;
   const recorded = paper?.dual_pdf_path ?? null;
+  const monoExists = fs.existsSync(monoDest);
+  const monoRecorded = paper?.mono_pdf_path ?? null;
   return {
     exists: exists || !!recorded,
+    monoExists: monoExists || !!monoRecorded,
     path: exists ? dest : recorded,
+    monoPath: monoExists ? monoDest : monoRecorded,
     generating: running.has(paperId),
   };
 }

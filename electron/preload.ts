@@ -83,6 +83,11 @@ const api = {
     ipcRenderer.on('pdf2zh:error', l);
     return () => { ipcRenderer.removeListener('pdf2zh:error', l); };
   },
+  // PDF 坐标高亮（原版对照阅读）
+  pdfhlAdd: (arg: { paperId: number; side: 'en' | 'zh'; page: number; rects: Array<{ x: number; y: number; w: number; h: number }>; text: string; note?: string; color?: string }) =>
+    call<number>('pdfhl:add', arg),
+  pdfhlList: (paperId: number) => call('pdfhl:list', paperId),
+  pdfhlRemove: (id: number) => call('pdfhl:remove', id),
   // 划词快捷三键（豆包式）
   quickAction: (arg: { kind: 'explain' | 'search' | 'translate'; text: string; context?: string }) => call('quick:action', arg),
   // 翻译版 PDF 导出

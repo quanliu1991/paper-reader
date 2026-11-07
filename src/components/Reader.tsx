@@ -10,6 +10,7 @@ import TranslateView from './TranslateView';
 import BilingualView from './BilingualView';
 import DualPdfView from './DualPdfView';
 import Pdf2zhView from './Pdf2zhView';
+import SplitPdfView from './SplitPdfView';
 import ParaNotes from './ParaNotes';
 import type { NoteRow } from '../store';
 import { IconBack, IconExport, IconImmersive, IconMore } from './icons';
@@ -57,11 +58,13 @@ export default function Reader() {
   const [pdfReady, setPdfReady] = useState(false);
   const [pageMap, setPageMap] = useState<Record<number, number> | null>(null);
   // ---------- pdf2zh 双语版式状态（feat/pdf2zh-reading 验证）----------
-  const [p2zStatus, setP2zStatus] = useState<{ cliOk: boolean; cliHint: string; exists: boolean; generating: boolean } | null>(null);
+  const [p2zStatus, setP2zStatus] = useState<{ cliOk: boolean; cliHint: string; exists: boolean; monoExists: boolean; generating: boolean } | null>(null);
   const [p2zLog, setP2zLog] = useState<string[]>([]);
   const p2zLogRef = useRef<HTMLDivElement>(null);
   const p2zBusyRef = useRef(false);
   const [p2zReloadKey, setP2zReloadKey] = useState(0);
+  // 用户显式切换过布局则不再自动跳转（尊重选择）
+  const userPickedLayoutRef = useRef(false);
   useEffect(() => {
     if (typeof window.api.pdf2zhStatus !== 'function') return; // 旧 preload 兜底
     let off1: (() => void) | undefined, off2: (() => void) | undefined, off3: (() => void) | undefined;
@@ -69,6 +72,12 @@ export default function Reader() {
       try {
         const st = await window.api.pdf2zhStatus(paper.id);
         setP2zStatus(st);
+        // 默认模式：已有 mono.pdf（原版对照素材齐）→ 自动进入原版对照；
+        // 仅当用户本次会话未显式切换布局时（首开论文场景）。
+        if (st.monoExists && !userPickedLayoutRef.current) {
+          const cur = useStore.getState().layout;
+          if (cur !== 'pdf-split') useStore.getState().setLayout('pdf-split');
+        }
       } catch { /* 状态探测失败不阻塞阅读 */ }
     })();
     off1 = window.api.onPdf2zhProgress?.((p: any) => {
@@ -79,12 +88,11 @@ export default function Reader() {
     off2 = window.api.onPdf2zhDone?.((p: any) => {
       if (p.paperId !== paper.id) return;
       p2zBusyRef.current = false;
-      setP2zStatus(s => s ? { ...s, exists: true, generating: false } : s);
+      setP2zStatus(s => s ? { ...s, exists: true, monoExists: true, generating: false } : s);
       setP2zLog(l => [...l.slice(-40), '✅ 双语 PDF 已生成']);
-      toast('success', '双语版式 PDF 已生成，正在打开…');
-      // 重新挂载视图（key 已变，Pdf2zhView 自动重载）
+      toast('success', '翻译完成，正在打开原版对照…');
       setP2zReloadKey(k => k + 1);
-      useStore.getState().setLayout('pdf2zh');
+      useStore.getState().setLayout('pdf-split');
     });
     off3 = window.api.onPdf2zhError?.((p: any) => {
       if (p.paperId !== paper.id) return;
@@ -239,7 +247,7 @@ export default function Reader() {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
         e.preventDefault();
-        const cycle = ['translate', 'bilingual', 'pdf-layout', 'pdf2zh', 'zh'] as const;
+        const cycle = ['pdf-split', 'translate', 'bilingual', 'pdf-layout', 'pdf2zh', 'zh'] as const;
         const cur = useStore.getState().layout;
         const idx = cycle.indexOf(cur as any);
         useStore.getState().setLayout(cycle[(idx + 1) % cycle.length] as any);
@@ -444,11 +452,12 @@ export default function Reader() {
           ><IconBack /></button>
           <span className="title">{paper.title}</span>
           <div className="mode-switch">
-            <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="左右对照：段落逐行双语">对照</button>
-            <button onClick={() => setLayout('bilingual')} className={layout === 'bilingual' ? 'active' : ''} title="双语书：一段英文下紧跟一段中文">双语</button>
-            <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="PDF 阅读：原版排版，译文原位覆盖">PDF 阅读</button>
-            <button onClick={() => setLayout('pdf2zh')} className={layout === 'pdf2zh' ? 'active' : ''} title="双语版式：pdf2zh 重排（每段原文下紧跟译文，公式图表保留）">双语版式</button>
-            <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''} title="纯中文译文">译文</button>
+            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('pdf-split'); }} className={layout === 'pdf-split' ? 'active' : ''} title="原版对照：左原版英文 PDF · 右中文 PDF（版式一致，支持划线/划词）">原版对照</button>
+            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('translate'); }} className={layout === 'translate' ? 'active' : ''} title="左右对照：段落逐行双语">对照</button>
+            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('bilingual'); }} className={layout === 'bilingual' ? 'active' : ''} title="双语书：一段英文下紧跟一段中文">双语</button>
+            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('pdf-layout'); }} className={layout === 'pdf-layout' ? 'active' : ''} title="PDF 阅读：原版排版，译文原位覆盖">PDF 阅读</button>
+            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('pdf2zh'); }} className={layout === 'pdf2zh' ? 'active' : ''} title="双语版式：pdf2zh 重排（每段原文下紧跟译文，公式图表保留）">双语版式</button>
+            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('zh'); }} className={layout === 'zh' ? 'active' : ''} title="纯中文译文">译文</button>
           </div>
           <div className="toolbar-actions">
             {layout !== 'pdf-layout' && (
@@ -520,7 +529,28 @@ export default function Reader() {
       )}
       {/* 内容 + 问答侧栏：横向 flex——AskPanel 占右侧 420px，不再叠压/挤压正文（视觉审计 03-ask-panel 修复） */}
       <div className={`reader-body-row ${askPanelOpen ? 'with-ask' : ''}`}>
-        {layout === 'pdf-layout' ? (
+        {layout === 'pdf-split' ? (
+          p2zStatus?.monoExists ? (
+            <SplitPdfView key={`split-${p2zReloadKey}`} paperId={paper.id} />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+              <div className="p2z-genbar">
+                {p2zStatus?.generating
+                  ? <span>生成中…（完成后自动打开对照）</span>
+                  : <button onClick={startPdf2zh} disabled={!p2zStatus?.cliOk} title={p2zStatus?.cliHint || '生成与原版版式一致的中文 PDF'}>
+                      {p2zStatus?.cliOk ? '生成中文 PDF（原版对照）' : 'pdf2zh 未安装'}
+                    </button>}
+                {p2zStatus?.generating && (
+                  <button onClick={() => window.api.pdf2zhCancel?.(paper.id)} style={{ background: 'rgba(239,68,68,0.85)' }}>取消</button>
+                )}
+                <div className="p2z-log" ref={p2zLogRef}>
+                  {p2zLog.length ? p2zLog.map((l, i) => <div key={i}>{l}</div>) : <span style={{ opacity: 0.5 }}>首次生成需下载排版模型（约 100MB）并调用翻译服务，长文约 10-45 分钟</span>}
+                </div>
+              </div>
+              <div className="dpv-wrap"><div className="pdf-loading" style={{ padding: '160px 0', textAlign: 'center', color: '#aaa' }}>尚无中文 PDF——点上方按钮生成后，左英文右中文版式对照阅读</div></div>
+            </div>
+          )
+        ) : layout === 'pdf-layout' ? (
           pdfReady
             ? <DualPdfView paperId={paper.id} blocks={blocks} onMouseUp={onMouseUp} />
             : <div className="reader-scroll"><div className="pdf-loading" style={{ padding: '120px 0', textAlign: 'center' }}>PDF 下载中…（首次导入论文时后台自动下载，稍后重开）</div></div>

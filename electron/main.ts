@@ -1777,7 +1777,7 @@ export function registerIpc() {
   });
 
   // ---------- pdf2zh（保留版式双语 PDF，feat/pdf2zh-reading）----------
-  // 状态探测：CLI 可用性 + 本论文双语 PDF 产物
+  // 状态探测：CLI 可用性 + 本论文双语/纯译 PDF 产物
   wrap('pdf2zh:status', (_e, paperId: number) => {
     const cli = p2z.resolveCli();
     return { cliOk: !!cli, cliHint: cli ? '' : p2z.cliHint(), ...p2z.dualPdfStatus(paperId) };
@@ -1794,6 +1794,18 @@ export function registerIpc() {
     return { started: true };
   });
   wrap('pdf2zh:cancel', (_e, paperId: number) => p2z.cancelTranslate(paperId));
+
+  // ---------- PDF 坐标高亮（原版对照阅读）----------
+  wrap('pdfhl:add', (_e, arg: {
+    paperId: number; side: 'en' | 'zh'; page: number;
+    rects: Array<{ x: number; y: number; w: number; h: number }>;
+    text: string; note?: string; color?: string;
+  }) => {
+    const pid = db.findPidByText(arg.paperId, arg.text);
+    return db.addPdfHighlight({ ...arg, pid });
+  });
+  wrap('pdfhl:list', (_e, paperId: number) => db.listPdfHighlights(paperId));
+  wrap('pdfhl:remove', (_e, id: number) => { db.removePdfHighlight(id); return true; });
 
   // text 降级论文自动升级入口（注册后异步执行）
   function scheduleUpgradeTextImports() {

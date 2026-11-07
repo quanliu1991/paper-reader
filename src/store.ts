@@ -55,7 +55,7 @@ interface Store {
   notes: NoteRow[];
   qaList: QaRow[];
   // 阅读状态
-  layout: 'translate' | 'bilingual' | 'dual' | 'en' | 'zh' | 'pdf-dual' | 'pdf' | 'pdf-layout' | 'pdf2zh';
+  layout: 'translate' | 'bilingual' | 'dual' | 'en' | 'zh' | 'pdf-dual' | 'pdf' | 'pdf-layout' | 'pdf2zh' | 'pdf-split';
   translating: boolean;
   translateProgress: { done: number; total: number } | null;
   fontSize: number;

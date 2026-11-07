@@ -181,6 +181,20 @@ function migrate(d: Database.Database) {
     updated_at TEXT DEFAULT (datetime('now','localtime')),
     PRIMARY KEY (kind, ref_id)
   );
+
+  CREATE TABLE IF NOT EXISTS pdf_highlights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    side TEXT NOT NULL DEFAULT 'en',           -- en（原版 PDF）| zh（mono PDF）
+    page INTEGER NOT NULL,                     -- 1-based 页码
+    rects TEXT NOT NULL,                       -- JSON [{x,y,w,h}]（PDF 归一化坐标 0-1，相对未旋转页）
+    text TEXT NOT NULL,                        -- 选中文本（展示与反查）
+    pid INTEGER,                               -- 尽力反查的段落 id（兼容闪卡/精炼笔记，可空）
+    note TEXT DEFAULT '',
+    color TEXT DEFAULT 'yellow',
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_pdfhl_paper ON pdf_highlights(paper_id);
   `);
   migrateColumns(d);
 }
@@ -214,6 +228,9 @@ function migrateColumns(d: Database.Database) {
   // v0.6 pdf2zh：保留版式双语 PDF 产物路径（feat/pdf2zh-reading 验证分支）
   if (pcols.length && !pcols.some(c => c.name === 'dual_pdf_path')) {
     d.prepare("ALTER TABLE papers ADD COLUMN dual_pdf_path TEXT").run();
+  }
+  if (pcols.length && !pcols.some(c => c.name === 'mono_pdf_path')) {
+    d.prepare("ALTER TABLE papers ADD COLUMN mono_pdf_path TEXT").run();
   }
 }
 
@@ -280,6 +297,49 @@ export function setPaperFilePath(id: number, filePath: string | null) {
 // ---------- pdf2zh 双语 PDF（v0.6 验证分支）----------
 export function setPaperDualPdfPath(id: number, dualPath: string | null) {
   getDb().prepare('UPDATE papers SET dual_pdf_path=? WHERE id=?').run(dualPath, id);
+}
+
+export function setPaperMonoPdfPath(id: number, monoPath: string | null) {
+  getDb().prepare('UPDATE papers SET mono_pdf_path=? WHERE id=?').run(monoPath, id);
+}
+
+// ---------- PDF 坐标高亮（原版对照阅读，feat/pdf2zh-reading）----------
+export interface PdfHighlightRow {
+  id: number; paper_id: number; side: string; page: number;
+  rects: string; text: string; pid: number | null;
+  note: string; color: string; created_at: string;
+}
+
+export function addPdfHighlight(h: {
+  paperId: number; side: 'en' | 'zh'; page: number;
+  rects: Array<{ x: number; y: number; w: number; h: number }>;
+  text: string; pid?: number | null; note?: string; color?: string;
+}): number {
+  const info = getDb().prepare(
+    'INSERT INTO pdf_highlights (paper_id, side, page, rects, text, pid, note, color) VALUES (?,?,?,?,?,?,?,?)'
+  ).run(h.paperId, h.side, h.page, JSON.stringify(h.rects), h.text, h.pid ?? null, h.note ?? '', h.color ?? 'yellow');
+  return Number(info.lastInsertRowid);
+}
+
+export function listPdfHighlights(paperId: number): PdfHighlightRow[] {
+  return getDb().prepare('SELECT * FROM pdf_highlights WHERE paper_id=? ORDER BY page, created_at').all(paperId) as PdfHighlightRow[];
+}
+
+export function removePdfHighlight(id: number) {
+  getDb().prepare('DELETE FROM pdf_highlights WHERE id=?').run(id);
+}
+
+// 选中文本 → 段落 pid 反查（兼容闪卡/精炼笔记挂靠；找不到返回 null 不阻塞）
+export function findPidByText(paperId: number, text: string): number | null {
+  const t = text.replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (t.length < 8) return null;
+  const blocks = getDb().prepare('SELECT pid, en, type FROM blocks WHERE paper_id=?').all(paperId) as any[];
+  const norm = (s: string) => s.replace(/\$[^$]*\$/g, ' ').replace(/\s+/g, ' ').trim();
+  for (const b of blocks) {
+    const be = norm(b.en ?? '');
+    if (be.includes(t) || t.includes(be.slice(0, 60))) return b.pid;
+  }
+  return null;
 }
 
 export function findPaperByArxiv(arxivId: string) {
