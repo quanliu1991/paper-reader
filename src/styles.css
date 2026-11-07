@@ -1128,6 +1128,21 @@ img, figure { max-width: 100%; }
   background: rgba(140,150,165,0.8); border: 2px solid transparent; background-clip: padding-box;
 }
 
+/* pdf2zh 双语版式视图（单一滚动流，无同步） */
+.p2z-genbar {
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  background: rgba(0,0,0,0.55); color: #ddd; font-size: 12px; flex-shrink: 0; flex-wrap: wrap;
+}
+.p2z-genbar button {
+  background: rgba(59,130,246,0.85); color: #fff; border: none; padding: 5px 12px;
+  border-radius: 6px; font-size: 12px; cursor: pointer;
+}
+.p2z-genbar button:disabled { opacity: 0.5; cursor: default; }
+.p2z-genbar .p2z-log {
+  flex: 1; min-width: 200px; max-height: 60px; overflow-y: auto; color: #9ca3af;
+  font-family: var(--mono-font, ui-monospace, monospace); font-size: 11px; white-space: nowrap;
+}
+
 /* 窄屏（≤760px）：上下分屏，各自内部滚动 */
 @media (max-width: 760px) {
   .dpv-split.both { flex-direction: column; }

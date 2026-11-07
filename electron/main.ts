@@ -9,6 +9,7 @@ import * as tr from './translate';
 import * as topicGraph from './topic-graph';
 import * as digest from './digest';
 import * as library from './library';
+import * as p2z from './pdf2zh';
 import fs from 'fs';
 
 let win: BrowserWindow | null = null;
@@ -1774,6 +1775,25 @@ export function registerIpc() {
       return { exists: true, map: {}, error: String(e) };
     }
   });
+
+  // ---------- pdf2zh（保留版式双语 PDF，feat/pdf2zh-reading）----------
+  // 状态探测：CLI 可用性 + 本论文双语 PDF 产物
+  wrap('pdf2zh:status', (_e, paperId: number) => {
+    const cli = p2z.resolveCli();
+    return { cliOk: !!cli, cliHint: cli ? '' : p2z.cliHint(), ...p2z.dualPdfStatus(paperId) };
+  });
+  // 生成（异步推进度，完成发 pdf2zh:done / 失败发 pdf2zh:error）
+  wrap('pdf2zh:translate', (_e, arg: { paperId: number; pages?: string; noMono?: boolean }) => {
+    if (p2z.isRunning(arg.paperId)) throw new Error('该论文的双语 PDF 正在生成中');
+    let lastLine = '';
+    p2z.translateDualPdf(arg, {
+      onLine: line => { lastLine = line; send('pdf2zh:progress', { paperId: arg.paperId, line }); },
+      onDone: (dualPath, monoPath) => send('pdf2zh:done', { paperId: arg.paperId, dualPath, monoPath }),
+      onError: err => send('pdf2zh:error', { paperId: arg.paperId, error: err }),
+    });
+    return { started: true };
+  });
+  wrap('pdf2zh:cancel', (_e, paperId: number) => p2z.cancelTranslate(paperId));
 
   // text 降级论文自动升级入口（注册后异步执行）
   function scheduleUpgradeTextImports() {

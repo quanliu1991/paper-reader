@@ -64,6 +64,25 @@ const api = {
   // pdf
   ensurePdf: (paperId: number) => call('pdf:ensure', paperId),
   pdfPageMap: (paperId: number) => call('pdf:pageMap', paperId),
+  // pdf2zh（保留版式双语 PDF）
+  pdf2zhStatus: (paperId: number) => call('pdf2zh:status', paperId),
+  pdf2zhTranslate: (arg: { paperId: number; pages?: string; noMono?: boolean }) => call('pdf2zh:translate', arg),
+  pdf2zhCancel: (paperId: number) => call('pdf2zh:cancel', paperId),
+  onPdf2zhProgress: (cb: (p: any) => void): (() => void) => {
+    const l = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('pdf2zh:progress', l);
+    return () => { ipcRenderer.removeListener('pdf2zh:progress', l); };
+  },
+  onPdf2zhDone: (cb: (p: any) => void): (() => void) => {
+    const l = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('pdf2zh:done', l);
+    return () => { ipcRenderer.removeListener('pdf2zh:done', l); };
+  },
+  onPdf2zhError: (cb: (p: any) => void): (() => void) => {
+    const l = (_e: any, p: any) => cb(p);
+    ipcRenderer.on('pdf2zh:error', l);
+    return () => { ipcRenderer.removeListener('pdf2zh:error', l); };
+  },
   // 划词快捷三键（豆包式）
   quickAction: (arg: { kind: 'explain' | 'search' | 'translate'; text: string; context?: string }) => call('quick:action', arg),
   // 翻译版 PDF 导出

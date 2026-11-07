@@ -211,6 +211,10 @@ function migrateColumns(d: Database.Database) {
   if (pcols.length && !pcols.some(c => c.name === 'file_path')) {
     d.prepare("ALTER TABLE papers ADD COLUMN file_path TEXT").run();
   }
+  // v0.6 pdf2zh：保留版式双语 PDF 产物路径（feat/pdf2zh-reading 验证分支）
+  if (pcols.length && !pcols.some(c => c.name === 'dual_pdf_path')) {
+    d.prepare("ALTER TABLE papers ADD COLUMN dual_pdf_path TEXT").run();
+  }
 }
 
 // ---------- papers ----------
@@ -271,6 +275,11 @@ export function setPaperTags(id: number, tags: string[]) {
 // ---------- 本地论文库（v0.4）----------
 export function setPaperFilePath(id: number, filePath: string | null) {
   getDb().prepare('UPDATE papers SET file_path=? WHERE id=?').run(filePath, id);
+}
+
+// ---------- pdf2zh 双语 PDF（v0.6 验证分支）----------
+export function setPaperDualPdfPath(id: number, dualPath: string | null) {
+  getDb().prepare('UPDATE papers SET dual_pdf_path=? WHERE id=?').run(dualPath, id);
 }
 
 export function findPaperByArxiv(arxivId: string) {

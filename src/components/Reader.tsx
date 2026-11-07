@@ -9,6 +9,7 @@ import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
 import BilingualView from './BilingualView';
 import DualPdfView from './DualPdfView';
+import Pdf2zhView from './Pdf2zhView';
 import ParaNotes from './ParaNotes';
 import type { NoteRow } from '../store';
 import { IconBack, IconExport, IconImmersive, IconMore } from './icons';
@@ -55,6 +56,59 @@ export default function Reader() {
   // ---------- PDF 原版模式状态 ----------
   const [pdfReady, setPdfReady] = useState(false);
   const [pageMap, setPageMap] = useState<Record<number, number> | null>(null);
+  // ---------- pdf2zh 双语版式状态（feat/pdf2zh-reading 验证）----------
+  const [p2zStatus, setP2zStatus] = useState<{ cliOk: boolean; cliHint: string; exists: boolean; generating: boolean } | null>(null);
+  const [p2zLog, setP2zLog] = useState<string[]>([]);
+  const p2zLogRef = useRef<HTMLDivElement>(null);
+  const p2zBusyRef = useRef(false);
+  const [p2zReloadKey, setP2zReloadKey] = useState(0);
+  useEffect(() => {
+    if (typeof window.api.pdf2zhStatus !== 'function') return; // 旧 preload 兜底
+    let off1: (() => void) | undefined, off2: (() => void) | undefined, off3: (() => void) | undefined;
+    (async () => {
+      try {
+        const st = await window.api.pdf2zhStatus(paper.id);
+        setP2zStatus(st);
+      } catch { /* 状态探测失败不阻塞阅读 */ }
+    })();
+    off1 = window.api.onPdf2zhProgress?.((p: any) => {
+      if (p.paperId !== paper.id) return;
+      setP2zLog(l => [...l.slice(-40), p.line]);
+      requestAnimationFrame(() => { p2zLogRef.current?.scrollTo(0, p2zLogRef.current.scrollHeight); });
+    });
+    off2 = window.api.onPdf2zhDone?.((p: any) => {
+      if (p.paperId !== paper.id) return;
+      p2zBusyRef.current = false;
+      setP2zStatus(s => s ? { ...s, exists: true, generating: false } : s);
+      setP2zLog(l => [...l.slice(-40), '✅ 双语 PDF 已生成']);
+      toast('success', '双语版式 PDF 已生成，正在打开…');
+      // 重新挂载视图（key 已变，Pdf2zhView 自动重载）
+      setP2zReloadKey(k => k + 1);
+      useStore.getState().setLayout('pdf2zh');
+    });
+    off3 = window.api.onPdf2zhError?.((p: any) => {
+      if (p.paperId !== paper.id) return;
+      p2zBusyRef.current = false;
+      setP2zStatus(s => s ? { ...s, generating: false } : s);
+      setP2zLog(l => [...l.slice(-40), `❌ ${p.error}`]);
+      toastErr(new Error(String(p.error).split('\n')[0]));
+    });
+    return () => { off1?.(); off2?.(); off3?.(); };
+  }, [paper.id]);
+  const startPdf2zh = useCallback(async () => {
+    if (p2zBusyRef.current) return;
+    p2zBusyRef.current = true;
+    setP2zStatus(s => s ? { ...s, generating: true } : s);
+    setP2zLog(['启动 pdf2zh…（首次运行需下载排版模型，约 100MB，请耐心）']);
+    try {
+      await window.api.pdf2zhTranslate({ paperId: paper.id });
+    } catch (e: any) {
+      p2zBusyRef.current = false;
+      setP2zStatus(s => s ? { ...s, generating: false } : s);
+      setP2zLog(l => [...l, `❌ ${e?.message ?? e}`]);
+      toastErr(e);
+    }
+  }, [paper.id]);
   // 豆包式段落联动：选中的译文段落（保留给后续联动功能）
   const [, setSelectedPid] = useState<number | null>(null);
   // 翻译版 PDF 导出
@@ -185,7 +239,7 @@ export default function Reader() {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
         e.preventDefault();
-        const cycle = ['translate', 'bilingual', 'pdf-layout', 'zh'] as const;
+        const cycle = ['translate', 'bilingual', 'pdf-layout', 'pdf2zh', 'zh'] as const;
         const cur = useStore.getState().layout;
         const idx = cycle.indexOf(cur as any);
         useStore.getState().setLayout(cycle[(idx + 1) % cycle.length] as any);
@@ -393,6 +447,7 @@ export default function Reader() {
             <button onClick={() => setLayout('translate')} className={layout === 'translate' ? 'active' : ''} title="左右对照：段落逐行双语">对照</button>
             <button onClick={() => setLayout('bilingual')} className={layout === 'bilingual' ? 'active' : ''} title="双语书：一段英文下紧跟一段中文">双语</button>
             <button onClick={() => setLayout('pdf-layout')} className={layout === 'pdf-layout' ? 'active' : ''} title="PDF 阅读：原版排版，译文原位覆盖">PDF 阅读</button>
+            <button onClick={() => setLayout('pdf2zh')} className={layout === 'pdf2zh' ? 'active' : ''} title="双语版式：pdf2zh 重排（每段原文下紧跟译文，公式图表保留）">双语版式</button>
             <button onClick={() => setLayout('zh')} className={layout === 'zh' ? 'active' : ''} title="纯中文译文">译文</button>
           </div>
           <div className="toolbar-actions">
@@ -469,6 +524,27 @@ export default function Reader() {
           pdfReady
             ? <DualPdfView paperId={paper.id} blocks={blocks} onMouseUp={onMouseUp} />
             : <div className="reader-scroll"><div className="pdf-loading" style={{ padding: '120px 0', textAlign: 'center' }}>PDF 下载中…（首次导入论文时后台自动下载，稍后重开）</div></div>
+        ) : layout === 'pdf2zh' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+            <div className="p2z-genbar">
+              {p2zStatus?.exists
+                ? <span title="双语 PDF 已生成">✅ 已生成</span>
+                : p2zStatus?.generating
+                  ? <span>生成中…</span>
+                  : <button onClick={startPdf2zh} disabled={!p2zStatus?.cliOk} title={p2zStatus?.cliHint || '用 pdf2zh 生成保留版式的双语 PDF'}>
+                      {p2zStatus?.cliOk ? '生成双语版式 PDF' : 'pdf2zh 未安装'}
+                    </button>}
+              {p2zStatus?.generating && (
+                <button onClick={() => window.api.pdf2zhCancel?.(paper.id)} style={{ background: 'rgba(239,68,68,0.85)' }}>取消</button>
+              )}
+              <div className="p2z-log" ref={p2zLogRef}>
+                {p2zLog.length ? p2zLog.map((l, i) => <div key={i}>{l}</div>) : <span style={{ opacity: 0.5 }}>日志将在此显示（排版模型首次下载约 100MB）</span>}
+              </div>
+            </div>
+            {p2zStatus?.exists
+              ? <Pdf2zhView key={p2zReloadKey} paperId={paper.id} />
+              : <div className="dpv-wrap"><div className="pdf-loading" style={{ padding: '160px 0', textAlign: 'center', color: '#aaa' }}>尚无双语版式 PDF——点上方按钮生成（由 pdf2zh 重排，公式图表保留）</div></div>}
+          </div>
         ) : layout === 'translate' ? (
           <div
             className="reader-scroll translate-host"
