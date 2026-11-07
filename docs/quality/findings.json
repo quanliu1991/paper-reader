@@ -159,8 +159,8 @@
       "source": "test",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.452Z",
-      "lastSeen": "2026-11-06T18:35:29.260Z",
-      "count": 4
+      "lastSeen": "2026-11-07T18:35:44.290Z",
+      "count": 5
     },
     {
       "id": "test-fail-node-tests-uex-e2e-test-mjs-timeout-240000",
@@ -172,8 +172,8 @@
       "source": "test",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.454Z",
-      "lastSeen": "2026-11-06T18:35:29.261Z",
-      "count": 4
+      "lastSeen": "2026-11-07T18:35:44.292Z",
+      "count": 5
     },
     {
       "id": "lint-hex-src/components/NotesView.tsx:9",
@@ -185,8 +185,8 @@
       "source": "lint",
       "status": "open",
       "firstSeen": "2026-11-03T18:35:51.454Z",
-      "lastSeen": "2026-11-06T18:35:29.261Z",
-      "count": 4
+      "lastSeen": "2026-11-07T18:35:44.292Z",
+      "count": 5
     },
     {
       "id": "test-fail-node-tests-pdf-ui-e2e-test-mjs",
@@ -198,8 +198,112 @@
       "source": "test",
       "status": "open",
       "firstSeen": "2026-11-04T18:35:51.723Z",
-      "lastSeen": "2026-11-05T18:35:06.379Z",
-      "count": 2
+      "lastSeen": "2026-11-07T18:35:44.292Z",
+      "count": 3
+    },
+    {
+      "id": "lint-hex-src/components/Pdf2zhView.tsx:99",
+      "severity": "low",
+      "view": "src/components/Pdf2zhView.tsx",
+      "title": "组件内硬编码色值",
+      "evidence": "<span className=\"dpv-mode-switch\" style={{ color: '#ddd' }}>双语版式（pdf2zh 重排）</span>",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-07T18:35:44.293Z",
+      "lastSeen": "2026-11-07T18:35:44.293Z",
+      "count": 1
+    },
+    {
+      "id": "lint-rgb-src/components/Reader.tsx:544",
+      "severity": "low",
+      "view": "src/components/Reader.tsx",
+      "title": "组件内 rgb() 色值",
+      "evidence": "<button onClick={() => window.api.pdf2zhCancel?.(paper.id)} style={{ background: 'rgba(239,68,68,0.85)' }}>取消</button>",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-07T18:35:44.293Z",
+      "lastSeen": "2026-11-07T18:35:44.293Z",
+      "count": 1
+    },
+    {
+      "id": "lint-hex-src/components/Reader.tsx:550",
+      "severity": "low",
+      "view": "src/components/Reader.tsx",
+      "title": "组件内硬编码色值",
+      "evidence": "<div className=\"dpv-wrap\"><div className=\"pdf-loading\" style={{ padding: '160px 0', textAlign: 'center', color: '#aaa' }",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-07T18:35:44.293Z",
+      "lastSeen": "2026-11-07T18:35:44.293Z",
+      "count": 1
+    },
+    {
+      "id": "lint-rgb-src/components/Reader.tsx:568",
+      "severity": "low",
+      "view": "src/components/Reader.tsx",
+      "title": "组件内 rgb() 色值",
+      "evidence": "<button onClick={() => window.api.pdf2zhCancel?.(paper.id)} style={{ background: 'rgba(239,68,68,0.85)' }}>取消</button>",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-07T18:35:44.293Z",
+      "lastSeen": "2026-11-07T18:35:44.293Z",
+      "count": 1
+    },
+    {
+      "id": "lint-hex-src/components/Reader.tsx:576",
+      "severity": "low",
+      "view": "src/components/Reader.tsx",
+      "title": "组件内硬编码色值",
+      "evidence": ": <div className=\"dpv-wrap\"><div className=\"pdf-loading\" style={{ padding: '160px 0', textAlign: 'center', color: '#aaa'",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-07T18:35:44.293Z",
+      "lastSeen": "2026-11-07T18:35:44.293Z",
+      "count": 1
+    },
+    {
+      "id": "lint-rgb-src/components/SplitPdfView.tsx:134",
+      "severity": "low",
+      "view": "src/components/SplitPdfView.tsx",
+      "title": "组件内 rgb() 色值",
+      "evidence": "yellow: 'rgba(255,240,90,0.42)', green: 'rgba(120,220,130,0.42)',",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-07T18:35:44.293Z",
+      "lastSeen": "2026-11-07T18:35:44.293Z",
+      "count": 1
+    },
+    {
+      "id": "lint-rgb-src/components/SplitPdfView.tsx:135",
+      "severity": "low",
+      "view": "src/components/SplitPdfView.tsx",
+      "title": "组件内 rgb() 色值",
+      "evidence": "blue: 'rgba(100,170,255,0.42)', pink: 'rgba(255,140,190,0.42)',",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-07T18:35:44.293Z",
+      "lastSeen": "2026-11-07T18:35:44.293Z",
+      "count": 1
+    },
+    {
+      "id": "lint-hex-src/components/SplitPdfView.tsx:337",
+      "severity": "low",
+      "view": "src/components/SplitPdfView.tsx",
+      "title": "组件内硬编码色值",
+      "evidence": "<span className=\"dpv-mode-switch\" style={{ color: '#ddd' }}>原版对照：左英文 · 右中文（版式一致）</span>",
+      "screenshot": null,
+      "source": "lint",
+      "status": "open",
+      "firstSeen": "2026-11-07T18:35:44.293Z",
+      "lastSeen": "2026-11-07T18:35:44.293Z",
+      "count": 1
     }
   ],
   "history": [
@@ -286,6 +390,10 @@
     {
       "at": "2026-11-06T18:35:29.261Z",
       "what": "audit: +0 new / 3 total signals"
+    },
+    {
+      "at": "2026-11-07T18:35:44.293Z",
+      "what": "audit: +8 new / 12 total signals"
     }
   ]
 }
