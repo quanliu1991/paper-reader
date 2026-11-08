@@ -18,6 +18,12 @@ function configPath(): string {
 
 let sink: VaultSink | null = null;
 let currentDir = '';
+let flushListeners: Array<() => void> = [];
+
+// vault 落盘成功后回调（sync scheduler 挂 dirty 用）
+export function onVaultFlush(fn: () => void): void {
+  flushListeners.push(fn);
+}
 
 // Provider：把 db 读函数适配为 vault-wiring 需要的形状（唯一 import db 的地方）
 const provider: VaultProvider = {
@@ -70,7 +76,10 @@ export function initVault(): void {
   if (sink && currentDir === dir) return;
   const processor = createVaultProcessor({ vaultDir: dir, provider });
   sink = createSink({
-    flush: (tasks) => processor.handle(tasks),
+    flush: async (tasks) => {
+      await processor.handle(tasks);
+      for (const fn of flushListeners) { try { fn(); } catch { /* 监听器故障不影响 */ } }
+    },
     journalPath: path.join(app.getPath('userData'), 'vault-journal.jsonl'),
     delayMs: 800,
   });

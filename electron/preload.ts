@@ -35,6 +35,14 @@ const api = {
   vaultMigrate: () => call('vault:migrate'),
   vaultRebuild: () => call('vault:rebuild'),
   vaultReconcile: () => call('vault:reconcile'),
+  // vault 同步（P3）
+  syncGetConfig: () => call('sync:getConfig'),
+  syncSetConfig: (patch: any) => call('sync:setConfig', patch),
+  syncStatus: () => call('sync:status'),
+  syncNow: () => call('sync:now'),
+  onSyncState: (cb: (s: any) => void) => {
+    ipcRenderer.on('sync:state', (_e: any, s: any) => cb(s));
+  },
   libScan: () => call('lib:scan'),
   libImportFiles: (paths: string[]) => call('lib:importFiles', paths),
   libMoveFile: (arg: { paperId: number; dir: string; newFolder?: string }) => call('lib:moveFile', arg),

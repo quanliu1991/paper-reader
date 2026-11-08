@@ -132,6 +132,31 @@ References
   const dup = (before.papers !== after.papers || before.highlights !== after.highlights || before.notes !== after.notes || before.qa !== after.qa);
   log(`rebuild idempotent: ${!dup && rb.report.errors.length === 0 ? 'PASS' : `FAIL (${JSON.stringify({ before, after })} errs=${rb.report.errors.length})`}`);
 
+  // 9. 增量导入（P3）：模拟远端改动 vault 文件 → importChanges upsert DB
+  const { importChanges } = await import('../electron/vault-import');
+  // 9a. annotations.json 增加一条远端划线
+  const annoPath2 = path.join(vaultDir, 'papers', `${new Date().getFullYear()}-9999.00003`, 'annotations.json');
+  const annoObj = JSON.parse(fs.readFileSync(annoPath2, 'utf8'));
+  const maxLegacy = Math.max(0, ...annoObj.items.map((x: any) => x.legacy_id ?? 0));
+  annoObj.items.push({ sid: `h${annoObj.items.length + 1}`, legacy_id: maxLegacy + 1, kind: 'text', seq: 1, text_en: 'remote highlight', note: '', color: 'yellow', created_at: '2026-11-09 00:00:00' });
+  fs.writeFileSync(annoPath2, JSON.stringify(annoObj, null, 2) + '\n');
+  // 9b. notes.md 追加远端笔记
+  const notePath2 = path.join(vaultDir, 'papers', `${new Date().getFullYear()}-9999.00003`, 'notes.md');
+  fs.appendFileSync(notePath2, `\n<!-- note sid=n99 legacy=9999 seq= created=2026-11-09 00:00:00 updated=2026-11-09 00:00:00 -->\n远端设备的笔记\n`);
+  const p3row = (db.listPapers() as any[]).find(p => p.arxiv_id === '9999.00003');
+  const hBefore = (db.listHighlights(p3row.id) as any[]).length;
+  const nBefore = (db.listNotes(p3row.id) as any[]).length;
+  const ir = importChanges(vaultDir, [
+    { file: `papers/${new Date().getFullYear()}-9999.00003/annotations.json`, status: 'M' },
+    { file: `papers/${new Date().getFullYear()}-9999.00003/notes.md`, status: 'M' },
+  ]);
+  const hAfter2 = (db.listHighlights(p3row.id) as any[]).length;
+  const nAfter2 = (db.listNotes(p3row.id) as any[]).length;
+  const remoteHl = (db.listHighlights(p3row.id) as any[]).find(h => h.text_en === 'remote highlight');
+  const remoteNote = (db.listNotes(p3row.id) as any[]).find(n => n.text === '远端设备的笔记');
+  log(`import upsert: ${ir.errors.length === 0 && hAfter2 === hBefore + 1 && !!remoteHl ? 'PASS' : `FAIL (h ${hBefore}→${hAfter2}, errs=${JSON.stringify(ir.errors)})`}`);
+  log(`import notes: ${!!remoteNote && nAfter2 === nBefore + 1 ? 'PASS' : `FAIL (n ${nBefore}→${nAfter2})`}`);
+
   log('ALL DONE');
   finish();
   app.quit();

@@ -27,15 +27,26 @@ export default function Settings() {
 function VaultSection() {
   const [dir, setDir] = useState('');
   const [status, setStatus] = useState<any>(null);
+  const [syncCfg, setSyncCfg] = useState<any>(null);
+  const [syncState, setSyncState] = useState<any>(null);
+  const [remoteUrl, setRemoteUrl] = useState('');
 
   async function load() {
     try {
       const d = await window.api.vaultGetDir();
       setDir(d ?? '');
       setStatus(await window.api.vaultStatus());
+      const c = await window.api.syncGetConfig();
+      setSyncCfg(c);
+      setRemoteUrl(c.remoteUrl ?? '');
+      setSyncState(await window.api.syncStatus());
     } catch { /* 静默 */ }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const off = (window.api as any).onSyncState?.((s: any) => setSyncState(s));
+    return () => { off?.(); };
+  }, []);
 
   async function pick() {
     try {
@@ -48,11 +59,23 @@ function VaultSection() {
     } catch (e: any) { toastErr(e); }
   }
 
+  async function saveSync(patch: any) {
+    try {
+      const c = await window.api.syncSetConfig(patch);
+      setSyncCfg(c);
+      toast('success', '同步配置已保存');
+    } catch (e: any) { toastErr(e); }
+  }
+
   const errors = status?.errors ?? 0;
+  const stateLabel: Record<string, string> = {
+    unconfigured: '未配置', idle: '已同步', dirty: '待提交', syncing: '同步中',
+    conflict: '有冲突（已自动留档）', offline: '离线',
+  };
   return (
     <section className="settings-section">
       <h2>vault 知识库</h2>
-      <p className="section-desc">把全部沉淀资产（划线/笔记/问答/精炼/译文/闪卡）以人类可读文件写入本地文件夹——文件即事实源，可用任何编辑器打开，后续可接 Git 远端同步。</p>
+      <p className="section-desc">把全部沉淀资产（划线/笔记/问答/精炼/译文/闪卡）以人类可读文件写入本地文件夹——文件即事实源，可用任何编辑器打开；配置 Git 远端后多设备同步。</p>
       <div className="repo-status">
         <span>{status?.enabled ? `✓ 已连接：${dir}` : '未连接'}</span>
         {status?.enabled && errors > 0 && <span className="dim" style={{ marginLeft: 8 }}>（{errors} 次写入失败）</span>}
@@ -82,6 +105,35 @@ function VaultSection() {
               toast('success', `索引重建完成：${r.report.papers} 篇论文 / ${r.report.highlights} 条划线 / ${r.report.flashcards} 张闪卡`);
             } catch (e: any) { toastErr(e); }
           }}>重建索引</button>
+        </div>
+      )}
+      {status?.enabled && (
+        <div style={{ marginTop: 14, borderTop: '1px solid rgba(128,128,128,.2)', paddingTop: 12 }}>
+          <div className="repo-status">
+            <span>Git 同步：{stateLabel[syncState?.state] ?? '未配置'}</span>
+            <button className="ghost-btn" onClick={async () => {
+              try { await window.api.syncNow(); toast('success', '同步已执行'); } catch (e: any) { toastErr(e); }
+            }}>立即同步</button>
+          </div>
+          <div className="import-row" style={{ marginTop: 8 }}>
+            <input type="text" value={remoteUrl} placeholder="git 远端 URL（如 git@gitlab.com:user/papers.git）" onChange={e => setRemoteUrl(e.target.value)} />
+            <button className="ghost-btn" onClick={() => saveSync({ remoteUrl })}>保存</button>
+          </div>
+          <div className="import-row" style={{ marginTop: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={!!syncCfg?.pushEnabled} onChange={e => saveSync({ pushEnabled: e.target.checked })} />
+              推送到远端
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 14 }}>
+              <input type="checkbox" checked={syncCfg?.dryRun !== false} onChange={e => saveSync({ dryRun: e.target.checked })} />
+              干跑模式（只本地提交不推送，验证稳定后关闭）
+            </label>
+          </div>
+          {syncState?.lastResult?.conflicts?.length ? (
+            <div className="hint" style={{ marginTop: 8 }}>
+              冲突文件已自动以远端为准，本地副本存为 .conflict.* 文件（vault 目录内可查）。
+            </div>
+          ) : null}
         </div>
       )}
       <div className="hint" style={{ marginTop: 10 }}>

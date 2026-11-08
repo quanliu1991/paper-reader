@@ -32,8 +32,8 @@ export function createGitAgent(vaultDir: string, cfg: SyncConfig, gitOverride?: 
       await git.init();
     }
     // identity：同步专用（不动全局配置）
-    await git.addConfig('user.name', deviceIdentity(), false, true);
-    await git.addConfig('user.email', `${deviceIdentity()}@paper-reader.local`, false, true);
+    await git.addConfig('user.name', deviceIdentity(), false, 'local');
+    await git.addConfig('user.email', `${deviceIdentity()}@paper-reader.local`, false, 'local');
     // 远端
     const remotes = await git.getRemotes(true);
     const origin = remotes.find(r => r.name === 'origin');

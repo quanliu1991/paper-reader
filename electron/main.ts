@@ -12,9 +12,31 @@ import * as library from './library';
 import * as p2z from './pdf2zh';
 import * as vaultInit from './vault-init';
 import * as vaultMig from './vault-migrate';
+import * as syncSvc from './vault-sync-service';
+import * as vaultImp from './vault-import';
 import fs from 'fs';
 
 let win: BrowserWindow | null = null;
+
+// vault 同步调度器单例（vault_dir + remote 配好后启动）
+let syncScheduler: ReturnType<typeof syncSvc.createSyncScheduler> | null = null;
+function ensureSyncScheduler(): void {
+  const vaultDir = vaultInit.getVaultDir();
+  if (!vaultDir) return;
+  if (!syncScheduler) {
+    syncScheduler = syncSvc.createSyncScheduler({
+      vaultDir,
+      quietMs: 90_000,
+      pollMs: 300_000,
+      onStateChange: (s) => { try { win?.webContents.send('sync:state', s); } catch { /* 窗口未就绪 */ } },
+    });
+    // 双写 flush 后 vault 有新内容 → 同步标脏
+    vaultInit.onVaultFlush(() => syncScheduler?.markDirty());
+    if (syncSvc.getSyncConfig().remoteUrl) syncScheduler.start();
+  } else if (syncSvc.getSyncConfig().remoteUrl && !syncScheduler.status().lastSyncAt) {
+    syncScheduler.start();
+  }
+}
 
 // E2E 总开关：打包版永不进入任何测试分支（用户 shell 残留 PR_* 变量也不可能触发）。
 // 双层防护：①此处 isPackaged 守卫；②各分支入口文件不存在（打包 asar 里没有）时回落正常启动。
@@ -1566,13 +1588,16 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// 退出前：vault 队列落盘 + 取消所有在途请求
+// 退出前：vault 队列落盘 + 同步 flush + 取消所有在途请求
 let vaultFlushed = false;
 app.on('before-quit', (ev) => {
-  if (!vaultFlushed && vaultInit.vaultStatus().enabled) {
+  if (!vaultFlushed && (vaultInit.vaultStatus().enabled || syncScheduler)) {
     ev.preventDefault();
     vaultFlushed = true;
-    vaultInit.flushVault().catch(() => {}).finally(() => app.quit());
+    (async () => {
+      try { await vaultInit.flushVault(); } catch { /* 尽力而为 */ }
+      try { await syncScheduler?.flushPending(); } catch { /* 尽力而为 */ }
+    })().finally(() => app.quit());
     return;
   }
   for (const ctl of activeAbort) { try { ctl.abort(); } catch {} }
@@ -1602,7 +1627,7 @@ function send(channel: string, payload: any) {
 // ==================== IPC ====================
 export function registerIpc() {
   // vault 写穿通道（幂等）：任何写路径的 IPC 打开前挂好 hook
-  try { vaultInit.initVault(); } catch { /* vault 初始化失败不阻塞 App */ }
+  try { vaultInit.initVault(); ensureSyncScheduler(); } catch { /* vault 初始化失败不阻塞 App */ }
   // ---------- vault ----------
   wrap('vault:getDir', () => vaultInit.getVaultDir());
   wrap('vault:setDir', (_e, dir: string) => { vaultInit.setVaultDir(String(dir || '')); return true; });
@@ -1626,6 +1651,14 @@ export function registerIpc() {
     const dir = vaultInit.getVaultDir();
     if (!dir) throw new Error('先选择 vault 文件夹');
     return vaultMig.vaultReconcile(dir);
+  });
+  // ---------- vault 同步（P3）----------
+  wrap('sync:getConfig', () => syncSvc.getSyncConfig());
+  wrap('sync:setConfig', (_e, patch: any) => { syncSvc.setSyncConfig(patch); return syncSvc.getSyncConfig(); });
+  wrap('sync:status', () => syncScheduler?.status() ?? { state: 'unconfigured' });
+  wrap('sync:now', async () => {
+    if (!syncScheduler) throw new Error('先配置 vault 目录');
+    return syncScheduler.syncNow('deposit: 手动同步');
   });
 
   // ---------- papers ----------
