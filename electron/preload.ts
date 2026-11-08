@@ -27,6 +27,11 @@ const api = {
   libGetDir: () => call('lib:getDir'),
   libSetDir: (dir: string) => call('lib:setDir', dir),
   libPickDir: () => call('lib:pickDir'),
+  // vault 写穿通道（P1）
+  vaultGetDir: () => call('vault:getDir'),
+  vaultSetDir: (dir: string) => call('vault:setDir', dir),
+  vaultPickDir: () => call('vault:pickDir'),
+  vaultStatus: () => call('vault:status'),
   libScan: () => call('lib:scan'),
   libImportFiles: (paths: string[]) => call('lib:importFiles', paths),
   libMoveFile: (arg: { paperId: number; dir: string; newFolder?: string }) => call('lib:moveFile', arg),

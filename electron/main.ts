@@ -10,6 +10,7 @@ import * as topicGraph from './topic-graph';
 import * as digest from './digest';
 import * as library from './library';
 import * as p2z from './pdf2zh';
+import * as vaultInit from './vault-init';
 import fs from 'fs';
 
 let win: BrowserWindow | null = null;
@@ -439,6 +440,14 @@ app.whenReady().then(async () => {
   }
   if (e2eEnabled && process.env.PR_E2E) {
     const entry = path.join(__dirname, 'e2e-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
+  }
+  if (e2eEnabled && process.env.PR_VAULT_E2E) {
+    // vault 写穿链路 E2E：DB 写 → hook → sink → sidecar 文件断言
+    const entry = path.join(__dirname, 'vault-entry.js');
     if (fs.existsSync(entry)) {
       require(entry);
       return;
@@ -1543,8 +1552,15 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// 退出前取消所有在途请求
-app.on('before-quit', () => {
+// 退出前：vault 队列落盘 + 取消所有在途请求
+let vaultFlushed = false;
+app.on('before-quit', (ev) => {
+  if (!vaultFlushed && vaultInit.vaultStatus().enabled) {
+    ev.preventDefault();
+    vaultFlushed = true;
+    vaultInit.flushVault().catch(() => {}).finally(() => app.quit());
+    return;
+  }
   for (const ctl of activeAbort) { try { ctl.abort(); } catch {} }
 });
 
@@ -1571,6 +1587,17 @@ function send(channel: string, payload: any) {
 
 // ==================== IPC ====================
 export function registerIpc() {
+  // vault 写穿通道（幂等）：任何写路径的 IPC 打开前挂好 hook
+  try { vaultInit.initVault(); } catch { /* vault 初始化失败不阻塞 App */ }
+  // ---------- vault ----------
+  wrap('vault:getDir', () => vaultInit.getVaultDir());
+  wrap('vault:setDir', (_e, dir: string) => { vaultInit.setVaultDir(String(dir || '')); return true; });
+  wrap('vault:pickDir', async () => {
+    const r = await dialog.showOpenDialog(win ?? undefined as any, { properties: ['openDirectory', 'createDirectory'] });
+    return r.canceled || !r.filePaths?.length ? null : r.filePaths[0];
+  });
+  wrap('vault:status', () => vaultInit.vaultStatus());
+
   // ---------- papers ----------
   wrap('papers:list', () => db.listPapers());
   wrap('papers:get', (_e, id: number) => { db.touchPaper(id); return db.getPaper(id); });
