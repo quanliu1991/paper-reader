@@ -46,6 +46,16 @@ onNsEvent: (cb) => { const l = (_e, p) => cb(p); ipcRenderer.on('ns:event', l);
 - 外键 `ON DELETE CASCADE`，保证删论文不残留孤儿数据
 - `data/index.json` 类多日累积文件只允许插入/追加，禁止全文件重写（对齐 D:\paper 知识库规范）
 
+## vault 规范（P1+P2 存储边界）
+
+- **SQL 只在 `electron/db.ts`；sidecar 序列化只在 `electron/vault.ts`**——两处是各自唯一权威，P4 Web 端对齐 vault.ts 契约
+- **新写函数必须发 writeHook 事件**（emit({kind, paperId/topicId})），否则 vault 双写漏数据；kind 联合类型在 `vault-sink.ts`
+- **新表须进重建路径**：S 级资产（用户创造）必须同时进 `vault-migrate.ts` 的导出与 `vaultRebuild` 导入；B 级（派生/缓存）明确不进并在本节登记
+- B 级不入 vault：blocks 解析表、figures 缓存、orphan_translations（重建后由重导入的 src_hash 重挂消费）、providers/settings（密钥）
+- sidecar 写入只走 `writeAtomic`（tmp+rename）；sidecar 是全量重写语义（幂等），禁做增量拼接
+- vault 写失败绝不阻塞主路径：异常只进 sink stats；`before-quit` flush 有 preventDefault 单次重入保护
+- 格式契约（sid/legacy_id/src_hash/paperKey）冻结见 `docs/superpowers/plans/2026-11-08-vault-storage-p1-p2.md`，改动须同步 P4 对齐测试
+
 ## 翻译引擎规范
 
 - 提示词改动跑：`node tests/translate-qc.test.mjs`（20 项离线断言：铁律存在性、术语提取、QC 规则）

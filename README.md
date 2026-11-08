@@ -130,6 +130,11 @@ electron/                 # 主进程
   topic-graph.ts          # 主题依赖库：搜索/图扩展/分层/排序
   llm.ts                  # 多厂商 LLM 流式层
   github-bridge.ts        # 知识库仓库桥（读写笔记/术语表/全文缓存）
+  vault-sink.ts           # vault 写穿队列（合并去脏/journal 崩溃恢复/毒丸隔离）
+  vault.ts                # vault 文件格式序列化（meta/标注/笔记/问答/译文/闪卡，唯一权威）
+  vault-wiring.ts         # 事件→sidecar 全量重序列化处理器（幂等/原子写）
+  vault-init.ts           # 启动接线（hook 注册/vault_dir 持久化/启动引导）
+  vault-migrate.ts        # 迁移导出 + 索引重建 + 对账
   preload.ts              # contextBridge API（{ok,data,error,hint} 统一结构）
 src/                      # 渲染层（React + zustand）
   components/Reader.tsx          # 阅读器壳（模式切换/划词/工具栏）
@@ -138,13 +143,39 @@ src/                      # 渲染层（React + zustand）
   components/TopicView.tsx       # 主题依赖库页
   components/PaperList.tsx       # 论文库卡片流
   components/Review.tsx          # 闪卡复习
-  components/Settings.tsx        # Provider/仓库/偏好设置
+  components/Settings.tsx        # Provider/vault/仓库/偏好设置
   components/CommandPalette.tsx  # Ctrl+K 命令面板
 ```
 
 - **IPC**：统一 `{ok, data, error, hint}` 返回，contextIsolation + nodeIntegration:false 安全隔离
 - **导入队列**：串行链防 SQLite 写锁；翻译并发 3 + 可取消（AbortController 生命周期挂在 app before-quit）
 - **字体**：@fontsource 分包 woff2 按 unicode-range 懒加载，启动时 `font-preload.ts` 显式预载 CJK 常用区间
+
+## vault 知识库（存储边界）
+
+全部沉淀资产以**人类可读文件**写入本地 vault 文件夹——文件即事实源，SQLite 退化为可重建索引：
+
+```
+<vault>/
+├── papers/<年份>-<arxivId>/     # 每篇论文一个文件夹
+│   ├── paper.pdf / paper-dual.pdf / paper-mono.pdf
+│   ├── meta.yaml                # 题录/状态/标签/进度（App 管辖区）
+│   ├── annotations.json         # 划线（文本 + 坐标；sid/legacy_id 稳定）
+│   ├── notes.md                 # 段落锚定笔记（<!-- note --> 定界，正文可外部编辑）
+│   ├── qa.jsonl                 # 问答
+│   ├── translations.jsonl       # 译文（src_hash 锚定，自带原文——Web 端可直接渲染）
+│   └── digest.md                # 精炼笔记（【H12】【N3】【Q5】 引用令牌）
+├── topics/<slug>.json           # 主题图谱
+├── glossary/terms.yaml          # 术语表
+├── flashcards.jsonl             # 闪卡 + SM-2 调度
+└── profile.md                   # 读者画像
+```
+
+- **双写**：数据库每次写操作经 writeHook → 防抖队列 → 全量重序列化对应 sidecar（幂等、原子写）；写失败绝不阻塞 App
+- **迁移**：设置 → vault 知识库 →「全量迁移到 vault」（含 PDF 复制与 proto-vault 历史笔记并入）
+- **重建**：换设备/库损坏时，DB 缺失 + vault 存在 → 启动自动重建索引（整型 id 跨设备不变，精炼令牌零失效）
+- **译文保护**：blocks 重解析按源文哈希重挂译文，孤儿译文保留不静默删除
+- **限制**：blocks 解析表是派生数据不入 vault——重建后需重新导入原文（升级路径自动重挂译文）；providers/settings（密钥）永不离开本机
 
 ## 数据与隐私
 
