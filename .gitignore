@@ -13,3 +13,4 @@ build/
 llm.txt
 .env.local
 .env.*.local
+tests/.tmp-vault/
