@@ -83,6 +83,8 @@ export function createGitAgent(vaultDir: string, cfg: SyncConfig, gitOverride?: 
         try { await git.rebase(['--continue']); } catch {
           try { await git.rebase(['--abort']); } catch { /* 已结束 */ }
         }
+      } else if (msg.includes("couldn't find remote ref") || msg.includes('no remote branch')) {
+        // 远端还是空仓（首次推送前）——正常，继续 push
       } else {
         // 网络失败等：静默离线
         throw e;

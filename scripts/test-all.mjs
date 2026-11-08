@@ -24,6 +24,8 @@ const LAYERS = [
   { name: 'e2e（黄金路径主进程）', cmd: ['node', 'tests/e2e.test.mjs'], timeout: 120000, offline: true },
   { name: 'vault-e2e（写穿/迁移/重建）', cmd: ['node', 'tests/vault-e2e.test.mjs'], timeout: 120000, offline: true },
   { name: 'vault-bootstrap（启动引导）', cmd: ['node', 'tests/vault-bootstrap.test.mjs'], timeout: 120000, offline: true },
+  { name: 'vault-sync-unit（git agent 双 repo）', cmd: ['node', 'tests/vault-sync.test.mjs'], timeout: 120000, offline: true },
+  { name: 'vault-sync-e2e（双设备同步）', cmd: ['node', 'tests/vault-sync-e2e.test.mjs'], timeout: 120000, offline: true },
   { name: 'features-e2e（问答/复习/Provider/导出/笔记）', cmd: ['node', 'tests/features-e2e.test.mjs'], timeout: 120000, offline: true },
   { name: 'interact-ui（命令面板/复习/问答/设置 UI）', cmd: ['node', 'tests/interact-ui-e2e.test.mjs'], timeout: 240000, offline: true },
   { name: 'dedup-scroll（滚动同步 UI）', cmd: ['node', 'tests/dedup-scroll.test.mjs'], timeout: 240000, offline: true, needsGui: true },

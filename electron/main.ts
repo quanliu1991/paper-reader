@@ -484,6 +484,14 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  if (e2eEnabled && process.env.PR_VAULT_SYNC_E2E) {
+    // P3 双设备同步 E2E：A 写→push→B pull→B 的 DB 出现 A 的资产
+    const entry = path.join(__dirname, 'vault-sync-e2e-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
+  }
   if (e2eEnabled && process.env.PR_FEATURES_E2E) {
     // 功能覆盖 E2E：问答/闪卡复习/Provider/导出/笔记（fake-LLM，主进程级）
     const entry = path.join(__dirname, 'features-e2e-entry.js');
