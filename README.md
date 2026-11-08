@@ -115,7 +115,12 @@ node tests/topic-e2e.mjs            # 主题构建真实网络 E2E（arXiv + S2�
 node tests/pdf-ui-e2e.test.mjs      # PDF 视图 UI E2E（真实窗口 + 字体断言）
 node tests/topic-ui-e2e.test.mjs    # 主题库 UI E2E（真实窗口全流程）
 node tests/soak.test.mjs            # 稳定性（30 轮导入+300 读，内存增长 <30%）
+node tests/vault-unit.test.mjs      # vault 写穿层离线单元（sink/序列化/处理器）
+node tests/vault-sync.test.mjs      # git 同步 agent 离线单测（裸仓库 pull/rebase/push）
+node tests/vault-format-align.test.mjs  # desktop↔web 序列化格式对齐
 ```
+
+全量回归：`npm run test:all`（含真实窗口 e2e：vault 双写/迁移/重建/双设备同步）。
 
 测试规范详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
@@ -135,7 +140,13 @@ electron/                 # 主进程
   vault-wiring.ts         # 事件→sidecar 全量重序列化处理器（幂等/原子写）
   vault-init.ts           # 启动接线（hook 注册/vault_dir 持久化/启动引导）
   vault-migrate.ts        # 迁移导出 + 索引重建 + 对账
+  sync-agent.ts           # simple-git 封装（init/commit/pull-rebase/push + 冲突保真）
+  vault-sync-service.ts   # 防抖调度（90s 静默提交 + 5min 轮询 + 退出 flush）
+  vault-import.ts         # pull 后增量导入（diff → sidecar upsert → SQLite）
   preload.ts              # contextBridge API（{ok,data,error,hint} 统一结构）
+web/                     # Web 阅读端（独立 Vite+React 工程，零后端）
+  src/gitlab.ts           # GitLab REST（PAT/tree/raw/commits）
+  src/vault-format.ts     # sidecar 解析（与 electron/vault.ts 对齐）
 src/                      # 渲染层（React + zustand）
   components/Reader.tsx          # 阅读器壳（模式切换/划词/工具栏）
   components/DualPdfView.tsx     # PDF 原位翻译视图（canvas+译文层+按需翻译）
@@ -176,6 +187,13 @@ src/                      # 渲染层（React + zustand）
 - **重建**：换设备/库损坏时，DB 缺失 + vault 存在 → 启动自动重建索引（整型 id 跨设备不变，精炼令牌零失效）
 - **译文保护**：blocks 重解析按源文哈希重挂译文，孤儿译文保留不静默删除
 - **限制**：blocks 解析表是派生数据不入 vault——重建后需重新导入原文（升级路径自动重挂译文）；providers/settings（密钥）永不离开本机
+
+## Git 同步与 Web 阅读
+
+vault 本身是 git 仓库——**文件即事实源，git 即传输层**：
+
+- **同步**（设置 → vault 知识库）：填远端 URL，90s 静默防抖自动 commit+push，5min 拉取增量导入；冲突取远端 + 本地副本存 `*.conflict.<device>.<ts>`，桌面 DB 为本地权威自动重写回。dry-run 默认开（只 commit 不 push），PDF 总量 >5GB 提示 LFS。
+- **Web 端**（`web/`）：手机/平板浏览器读 vault。GitLab Pages 静态部署，PAT 存浏览器本地直连 GitLab API；双语流阅读 + 段落锚挂载笔记/问答/划线 + 划选英文一键回写 `annotations.json`。部署见 [web/DEPLOY.md](web/DEPLOY.md)。
 
 ## 数据与隐私
 

@@ -14,3 +14,5 @@ llm.txt
 .env.local
 .env.*.local
 tests/.tmp-vault/
+web/node_modules/
+web/dist/
