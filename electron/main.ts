@@ -995,6 +995,167 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  if (e2eEnabled && process.env.PR_SPLIT_UI_E2E) {
+    // 原版对照 UI E2E：像素滚动同步 + 选区镜像 + 划线双边 + 工具栏极简（隔离 userData，真实 mono 产物拷入）
+    if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
+    const win = new BrowserWindow({
+      width: 1400, height: 900, show: true,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+    });
+    registerIpc();
+    const logFile = process.env.PR_E2E_LOG!;
+    const doneFile = process.env.PR_E2E_DONE!;
+    const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
+    try {
+      win.webContents.on('did-finish-load', async () => {
+        await new Promise(r => setTimeout(r, 1200));
+        // 种子：真实库的 202（58 页 DeepSeek-V4.1）原版 + mono（几何已验证逐页零偏差）
+        // 注意：先插记录拿 id，再按 id 落文件（Reader 按 <id>-mono.pdf 探测）
+        const realPdfs = path.join(app.getPath('home'), 'Library/Application Support/Paper Reader/pdfs');
+        const paperId = db.insertPaper({ arxivId: '2609.19969', title: 'Split E2E Paper', authors: 'e2e', sourceUrl: '', importType: 'pdf' });
+        const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
+        fs.mkdirSync(pdfsDir, { recursive: true });
+        fs.copyFileSync(path.join(realPdfs, '202.pdf'), path.join(pdfsDir, `${paperId}.pdf`));
+        fs.copyFileSync(path.join(realPdfs, '202-mono.pdf'), path.join(pdfsDir, `${paperId}-mono.pdf`));
+        log(`seed: paper=${paperId}, orig+mono copied (58 pages expected)`);
+
+        // 打开论文 → 自动进入原版对照（monoExists=true → Reader 自动 setLayout('pdf-split')）
+        await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId})`);
+        await new Promise(r => setTimeout(r, 1500));
+        // 工具栏自动切换（非用户选择）需要等 p2zStatus 探测
+        let layout = '';
+        for (let i = 0; i < 20; i++) {
+          layout = await win.webContents.executeJavaScript(`window.__store.getState().layout`);
+          if (layout === 'pdf-split') break;
+          await new Promise(r => setTimeout(r, 300));
+        }
+        log(`auto-layout: ${layout} ${layout === 'pdf-split' ? 'PASS' : 'FAIL'}`);
+
+        // 等 SplitPdfView 挂载 + 首页渲染（canvas 出现）
+        let mount: any = null;
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          mount = await win.webContents.executeJavaScript(`(() => {
+            const panes = document.querySelectorAll('.spv-pane');
+            const canvases = document.querySelectorAll('.spv-pane canvas');
+            const pages = document.querySelectorAll('.spv-pane .pdf-page');
+            const toolbarBtns = [...document.querySelectorAll('.reader-toolbar .mode-switch button')];
+            const chip = document.querySelector('.p2z-chip.ok');
+            return { panes: panes.length, canvases: canvases.length, pages: pages.length,
+                     modeBtns: toolbarBtns.length, chipOk: !!chip };
+          })()`);
+          if (mount.canvases >= 2 || (mount as any).err) break;
+        }
+        log(`mount: panes=${mount.panes}, canvases=${mount.canvases}, pages=${mount.pages}, modeBtns(toolbar)=${mount.modeBtns}, chip=${mount.chipOk}`);
+        log(`mount panes+canvases: ${mount.panes === 2 && mount.canvases >= 2 ? 'PASS' : 'FAIL'}`);
+        log(`toolbar minimal (no mode-switch, chip ok): ${mount.modeBtns === 0 && mount.chipOk ? 'PASS' : 'FAIL'}`);
+
+        // 【核心】像素级滚动同步：左滚 → 右 scrollTop 相等（误差 ≤2px）
+        const scrollSync: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            const panes = [...document.querySelectorAll('.spv-pane')];
+            const en = panes.find(p => p.classList.contains('spv-en'));
+            const zh = panes.find(p => p.classList.contains('spv-zh'));
+            if (!en || !zh) return { ok: false, reason: 'no panes' };
+            const samples = [];
+            // 慢滚/跳滚/快滚三种方式，各取终点断言
+            for (const top of [300, 1200, 5000, 0]) {
+              en.scrollTop = top;
+              en.dispatchEvent(new Event('scroll'));
+              await new Promise(r => setTimeout(r, 250));
+              samples.push({ set: top, en: Math.round(en.scrollTop), zh: Math.round(zh.scrollTop), diff: Math.round(Math.abs(zh.scrollTop - en.scrollTop)) });
+            }
+            // 反向：右滚 → 左跟随
+            zh.scrollTop = 2500;
+            zh.dispatchEvent(new Event('scroll'));
+            await new Promise(r => setTimeout(r, 250));
+            const reverse = { zh: Math.round(zh.scrollTop), en: Math.round(en.scrollTop), diff: Math.round(Math.abs(zh.scrollTop - en.scrollTop)) };
+            // 滚动栈同构：总高差 ≤ 2px
+            const stackDiff = Math.abs(en.scrollHeight - zh.scrollHeight);
+            return { samples, reverse, stackDiff, maxDiff: Math.max(...samples.map(s => s.diff), reverse.diff) };
+          })()
+        `);
+        log(`scroll-sync: ${JSON.stringify(scrollSync.samples)} reverse=${JSON.stringify(scrollSync.reverse)} stackDiff=${scrollSync.stackDiff}`);
+        log(`pixel scroll sync (maxDiff ≤ 2): ${scrollSync.maxDiff <= 2 && scrollSync.stackDiff <= 2 ? 'PASS' : 'FAIL'}`);
+
+        // 划线双边：add 高亮后重开论文（真实持久化路径：挂载 → loadHl → 双侧渲染）
+        const hlBoth: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            const api = window.api;
+            await api.pdfhlAdd({ paperId: ${paperId}, side: 'en', page: 1, rects: [{x:0.1,y:0.1,w:0.3,h:0.02}], text: 'e2e test highlight', color: 'yellow' });
+            // 切走再切回（卸载/重挂 SplitPdfView，触发 loadHl 全新拉取）
+            window.__store.getState().setLayout('translate');
+            await new Promise(r => setTimeout(r, 400));
+            window.__store.getState().setLayout('pdf-split');
+            // 等 SplitPdfView 重挂 + 首页渲染
+            for (let i = 0; i < 20; i++) {
+              await new Promise(r => setTimeout(r, 500));
+              const layers = [...document.querySelectorAll('.spv-pane .pdf-page[data-page="1"] .spv-hllayer')];
+              if (layers.length === 2 && layers.every(l => l.querySelectorAll('.spv-hlrect').length >= 1)) {
+                return { layers: 2, counts: layers.map(l => l.querySelectorAll('.spv-hlrect').length), persisted: true };
+              }
+            }
+            const layers = [...document.querySelectorAll('.spv-pane .pdf-page[data-page="1"] .spv-hllayer')];
+            return { layers: layers.length, counts: layers.map(l => l.querySelectorAll('.spv-hlrect').length), persisted: false };
+          })()
+        `);
+        log(`highlight both sides (persist+remount): layers=${hlBoth.layers}, counts=${JSON.stringify(hlBoth.counts)} ${hlBoth.layers === 2 && hlBoth.counts.every((c: any) => c >= 1) ? 'PASS' : 'FAIL'}`);
+
+        // 截图
+        await win.webContents.executeJavaScript(`
+          (async () => {
+            const panes = [...document.querySelectorAll('.spv-pane')];
+            for (const p of panes) { p.scrollTop = 0; p.dispatchEvent(new Event('scroll')); }
+            await new Promise(r => setTimeout(r, 500));
+          })()
+        `);
+        const img = await win.webContents.capturePage();
+        fs.mkdirSync(path.resolve('build'), { recursive: true });
+        fs.writeFileSync(path.resolve('build/split-ui-e2e.png'), img.toPNG());
+        log('screenshot saved');
+
+        // 【回退】无 mono 论文：新 paper 无 mono → 自动回退 translate + 工具栏生成按钮
+        // 在主进程直接造一篇无 mono 论文再探测
+        const paperId2 = db.insertPaper({ arxivId: '2609.00001', title: 'No Mono Paper', authors: 'e2e', sourceUrl: '', importType: 'pdf' });
+        fs.copyFileSync(path.join(realPdfs, '202.pdf'), path.join(pdfsDir, `${paperId2}.pdf`));
+        const st2 = await win.webContents.executeJavaScript(`window.api.pdf2zhStatus(${paperId2})`);
+        log(`no-mono status: monoExists=${st2.monoExists} ${st2.monoExists === false ? 'PASS' : 'FAIL'}`);
+        await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId2})`);
+        await new Promise(r => setTimeout(r, 2000));
+        let layout2 = '';
+        for (let i = 0; i < 20; i++) {
+          layout2 = await win.webContents.executeJavaScript(`window.__store.getState().layout`);
+          if (layout2 === 'translate') break;
+          await new Promise(r => setTimeout(r, 300));
+        }
+        const genBtn: any = await win.webContents.executeJavaScript(`
+          (() => {
+            const btn = [...document.querySelectorAll('.reader-toolbar button')].find(b => b.textContent?.includes('生成中文 PDF'));
+            return { found: !!btn };
+          })()
+        `);
+        log(`fallback: layout=${layout2} ${layout2 === 'translate' ? 'PASS' : 'FAIL'}; genBtn=${genBtn.found} ${genBtn.found ? 'PASS' : 'FAIL'}`);
+
+        // 汇总
+        const allPass = layout === 'pdf-split'
+          && mount.panes === 2 && mount.canvases >= 2 && mount.modeBtns === 0 && mount.chipOk
+          && scrollSync.maxDiff <= 2 && scrollSync.stackDiff <= 2
+          && hlBoth.layers === 2 && hlBoth.counts.every((c: any) => c >= 1)
+          && st2.monoExists === false && layout2 === 'translate' && genBtn.found;
+        if (allPass) log('E2E ALL PASS');
+        else log('E2E FAIL (see above)');
+        fs.writeFileSync(doneFile, '1');
+        app.quit();
+      });
+      const url = process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199';
+      await win.loadURL(url);
+    } catch (e: any) {
+      log(`FATAL: ${e?.stack ?? e}`);
+      fs.writeFileSync(doneFile, '1');
+      app.quit();
+    }
+    return;
+  }
   if (e2eEnabled && process.env.PR_TOPIC_UI_E2E) {
     // 主题依赖库 UI E2E：真实网络构建 → 断言分层列表 + 阅读顺序（隔离 userData）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);

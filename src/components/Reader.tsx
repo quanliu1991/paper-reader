@@ -77,6 +77,10 @@ export default function Reader() {
         if (st.monoExists && !userPickedLayoutRef.current) {
           const cur = useStore.getState().layout;
           if (cur !== 'pdf-split') useStore.getState().setLayout('pdf-split');
+        } else if (!st.monoExists && !userPickedLayoutRef.current && useStore.getState().layout === 'pdf-split') {
+          // 无 mono.pdf：一次性回退旧对照视图（translate），不循环；
+          // 工具栏常驻生成入口，完成后自动切回原版对照（onPdf2zhDone）。
+          useStore.getState().setLayout('translate');
         }
       } catch { /* 状态探测失败不阻塞阅读 */ }
     })();
@@ -451,14 +455,16 @@ export default function Reader() {
             title={readerBack === 'topics' ? '返回主题' : readerBack === 'notes' ? '返回沉淀' : '返回论文库'}
           ><IconBack /></button>
           <span className="title">{paper.title}</span>
-          <div className="mode-switch">
-            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('pdf-split'); }} className={layout === 'pdf-split' ? 'active' : ''} title="原版对照：左原版英文 PDF · 右中文 PDF（版式一致，支持划线/划词）">原版对照</button>
-            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('translate'); }} className={layout === 'translate' ? 'active' : ''} title="左右对照：段落逐行双语">对照</button>
-            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('bilingual'); }} className={layout === 'bilingual' ? 'active' : ''} title="双语书：一段英文下紧跟一段中文">双语</button>
-            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('pdf-layout'); }} className={layout === 'pdf-layout' ? 'active' : ''} title="PDF 阅读：原版排版，译文原位覆盖">PDF 阅读</button>
-            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('pdf2zh'); }} className={layout === 'pdf2zh' ? 'active' : ''} title="双语版式：pdf2zh 重排（每段原文下紧跟译文，公式图表保留）">双语版式</button>
-            <button onClick={() => { userPickedLayoutRef.current = true; setLayout('zh'); }} className={layout === 'zh' ? 'active' : ''} title="纯中文译文">译文</button>
-          </div>
+          {/* 生成状态区：mono.pdf 就绪显示徽章；未就绪常驻生成入口（进度/取消） */}
+          {p2zStatus?.generating ? (
+            <span className="p2z-chip" title="正在生成与原版版式一致的中文 PDF">
+              <span className="p2z-spin" /> 生成中文 PDF 中… <button className="link-btn" onClick={() => window.api.pdf2zhCancel?.(paper.id)}>取消</button>
+            </span>
+          ) : p2zStatus?.monoExists ? (
+            <span className="p2z-chip ok" title="左右版式一致，逐像素滚动同步">✓ 原版对照</span>
+          ) : p2zStatus?.cliOk ? (
+            <button className="primary slim" onClick={startPdf2zh} title="生成与原版版式一致的中文 PDF（左英文右中文对照）">生成中文 PDF</button>
+          ) : null}
           <div className="toolbar-actions">
             {layout !== 'pdf-layout' && (
               <div className="font-stepper" role="group" aria-label="字号">
@@ -478,6 +484,21 @@ export default function Reader() {
                     <button role="menuitem" onClick={() => { setMoreOpen(false); useStore.getState().setImmersive(true); }}>
                       <IconImmersive /> 沉浸模式 <span className="kbd">{modKeyLabel}+Shift+F</span>
                     </button>
+                    <div className="more-sep" />
+                    <div className="more-label">阅读视图</div>
+                    {([
+                      ['pdf-split', '原版对照', '左原版英文 PDF · 右中文 PDF（版式一致，像素级滚动同步）'],
+                      ['translate', '段落对照', '左右对照：段落逐行双语（无中文 PDF 时自动回退）'],
+                      ['bilingual', '双语书', '一段英文下紧跟一段中文'],
+                      ['pdf-layout', 'PDF 阅读', '原版排版，译文原位覆盖'],
+                      ['pdf2zh', '双语版式', 'pdf2zh 重排（每段原文下紧跟译文，公式图表保留）'],
+                      ['zh', '纯译文', '只看中文译文'],
+                    ] as const).map(([l, name, tip]) => (
+                      <button key={l} role="menuitem" className={layout === l ? 'active' : ''} title={tip}
+                        onClick={() => { userPickedLayoutRef.current = true; setMoreOpen(false); useStore.getState().setLayout(l); }}>
+                        {layout === l ? '✓ ' : ''}{name}
+                      </button>
+                    ))}
                     <button role="menuitem" onClick={() => { setMoreOpen(false); exportTranslatedPdf(); }} disabled={exporting}>
                       <IconExport /> {exporting ? '导出中…' : '导出翻译版 PDF'}
                     </button>

@@ -1143,6 +1143,24 @@ img, figure { max-width: 100%; }
   font-family: var(--mono-font, ui-monospace, monospace); font-size: 11px; white-space: nowrap;
 }
 
+/* 工具栏生成状态 chip：进行中 / 就绪徽章 / slim 生成按钮 */
+.p2z-chip {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px;
+  background: rgba(59,130,246,0.15); color: #93c5fd; border: 1px solid rgba(59,130,246,0.35);
+}
+.p2z-chip.ok { background: rgba(34,197,94,0.12); color: #86efac; border-color: rgba(34,197,94,0.3); }
+.p2z-chip .link-btn { background: none; border: none; color: #f87171; cursor: pointer; font-size: 12px; padding: 0; text-decoration: underline; }
+.p2z-spin {
+  width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0;
+  border: 2px solid rgba(147,197,253,0.3); border-top-color: #93c5fd;
+  animation: p2zspin 0.9s linear infinite;
+}
+@keyframes p2zspin { to { transform: rotate(360deg); } }
+button.primary.slim { padding: 4px 12px; font-size: 12px; flex-shrink: 0; }
+.more-popover .more-label { font-size: 11px; color: #6b7280; padding: 6px 12px 2px; }
+.more-popover button.active { color: #60a5fa; }
+
 /* ==================== 原版对照视图（左原版 PDF + 右 mono PDF） ==================== */
 .spv-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; background: #525659; }
 .spv-split { flex: 1; display: flex; min-height: 0; }
@@ -1162,8 +1180,9 @@ img, figure { max-width: 100%; }
 }
 /* 高亮层：canvas 上、文本层下 */
 .spv-hllayer { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
-.spv-hlbox { position: absolute; inset: 0; }
-.spv-hlbox > div { border-radius: 2px; mix-blend-mode: multiply; }
+.spv-hlrect { position: absolute; border-radius: 2px; mix-blend-mode: multiply; }
+/* 镜像层：对侧选区投影（比高亮层更低，仍可见） */
+.spv-mirror { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
 /* 划线弹层 */
 .spv-wrap .tp-popover {
   position: fixed; z-index: 60; display: flex; gap: 4px; align-items: center;
