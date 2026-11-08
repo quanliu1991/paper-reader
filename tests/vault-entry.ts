@@ -90,6 +90,22 @@ References
   const trash = fs.existsSync(path.join(vaultDir, 'trash')) ? fs.readdirSync(path.join(vaultDir, 'trash')) : [];
   log(`paperDelete→trash: ${!stillThere && trash.some(t => t.startsWith(key)) ? 'PASS' : 'FAIL'}`);
 
+  // 7. 译文重锚：重解析 blocks 后译文按源文哈希保留（upgradeTextImports 的真实场景：相同源重解析，pid 全变）
+  const paperId2 = db.insertPaper({ arxivId: '9999.00003', title: 'Reanchor', authors: '', sourceUrl: '', importType: 'text' });
+  const src = 'Title\n\n1 Introduction\nKV cache is like scratch paper.\n\n2 Method\nPaged mgmt gives 64x.\n\nRefs';
+  db.insertBlocks(paperId2, parsePlainText(src, '9999.00003', 'Reanchor').blocks);
+  const b2 = (db.getBlocks(paperId2) as any[]).find(b => /scratch paper/.test(b.en));
+  db.saveTranslation(paperId2, b2.pid, '旧译文保留断言', 'e2e', 'e2e');
+  // 重解析：同一源文本（parser 幂等）→ 新 pid，译文按源文哈希重挂
+  db.insertBlocks(paperId2, parsePlainText(src, '9999.00003', 'Reanchor').blocks);
+  const b2new = (db.getBlocks(paperId2) as any[]).find(b => /scratch paper/.test(b.en));
+  log(`reanchor keep: ${b2new?.zh === '旧译文保留断言' && b2new.pid !== b2.pid ? 'PASS' : 'FAIL (zh=' + b2new?.zh + ', pidMoved=' + (b2new?.pid !== b2?.pid) + ')'}`);
+  // 重解析：源文彻底改变 → 孤儿表，绝不静默删
+  db.insertBlocks(paperId2, parsePlainText('Title\n\n1 Introduction\n完全不同的内容换了主题词\n\nRefs', '9999.00003', 'Reanchor').blocks);
+  const orphan = db.getDb().prepare('SELECT COUNT(*) AS n FROM orphan_translations WHERE paper_id=?').get(paperId2) as any;
+  const goneFromTr = db.getDb().prepare("SELECT COUNT(*) AS n FROM translations WHERE paper_id=? AND zh='旧译文保留断言'").get(paperId2) as any;
+  log(`reanchor orphan: ${orphan.n >= 1 && goneFromTr.n === 0 ? 'PASS' : `FAIL (orphan=${orphan.n})`}`);
+
   log('ALL DONE');
   finish();
   app.quit();

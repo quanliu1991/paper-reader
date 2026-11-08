@@ -210,6 +210,16 @@ function migrate(d: Database.Database) {
     created_at TEXT DEFAULT (datetime('now','localtime'))
   );
   CREATE INDEX IF NOT EXISTS idx_pdfhl_paper ON pdf_highlights(paper_id);
+
+  -- 孤儿译文（blocks 重解析时源文已变的译文：保留待人工处理，绝不静默删除）
+  CREATE TABLE IF NOT EXISTS orphan_translations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    zh TEXT NOT NULL,
+    provider TEXT DEFAULT '',
+    model TEXT DEFAULT '',
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+  );
   `);
   migrateColumns(d);
 }
@@ -386,13 +396,44 @@ export function listLocalPapers() {
 export function insertBlocks(paperId: number, blocks: Array<{ seq: number; type: string; level: number; en: string; figPath?: string; figKind?: string; figHtmlTable?: boolean; figTableRows?: string[][] }>) {
   const d = getDb();
   const tx = d.transaction((rows: typeof blocks) => {
+    // 译文重锚（P1 修复）：重解析会 DELETE blocks → CASCADE 删译文（花钱的资产被静默销毁）。
+    // 先按源文哈希快照译文 → 删 blocks → 插新 blocks → 哈希精确重挂；挂不上的进孤儿表，绝不静默删。
+    const oldTrs = d.prepare(
+      `SELECT t.zh, t.provider, t.model, t.updated_at, b.en FROM translations t
+       JOIN blocks b ON b.pid=t.pid AND b.paper_id=t.paper_id WHERE t.paper_id=?`
+    ).all(paperId) as any[];
+    const byHash = new Map<string, any>();
+    for (const t of oldTrs) byHash.set(srcHashOf(t.en), t);
     d.prepare('DELETE FROM blocks WHERE paper_id=?').run(paperId);
     const stmt = d.prepare('INSERT INTO blocks (paper_id, seq, type, level, en, fig_path, fig_kind, fig_html_table, fig_table_rows) VALUES (?,?,?,?,?,?,?,?,?)');
     for (const b of rows) stmt.run(paperId, b.seq, b.type, b.level, b.en, b.figPath ?? null, b.figKind ?? null, b.figHtmlTable ? 1 : 0, b.figTableRows ? JSON.stringify(b.figTableRows) : null);
+    // 重挂：新 block 哈希命中即恢复译文
+    const newBlocks = d.prepare('SELECT pid, en FROM blocks WHERE paper_id=?').all(paperId) as any[];
+    for (const nb of newBlocks) {
+      const hit = byHash.get(srcHashOf(nb.en));
+      if (hit) {
+        d.prepare(
+          `INSERT INTO translations (paper_id, pid, zh, provider, model, updated_at) VALUES (?,?,?,?,?,?)
+           ON CONFLICT(paper_id, pid) DO UPDATE SET zh=excluded.zh, provider=excluded.provider, model=excluded.model, updated_at=excluded.updated_at`
+        ).run(paperId, nb.pid, hit.zh, hit.provider, hit.model, hit.updated_at);
+        byHash.delete(srcHashOf(nb.en));
+      }
+    }
+    // 孤儿：源文已不存在（改版/去噪差异），保留待人工处理
+    for (const t of byHash.values()) {
+      d.prepare('INSERT INTO orphan_translations (paper_id, zh, provider, model, updated_at) VALUES (?,?,?,?,?)')
+        .run(paperId, t.zh, t.provider, t.model, t.updated_at);
+    }
   });
   tx(blocks);
   emit({ kind: 'meta', paperId });
   emit({ kind: 'translations', paperId });
+}
+
+// 与 vault.ts srcHash 同规则的规范化哈希（db.ts 不 import vault.ts，避免序列化层反向依赖）
+function srcHashOf(en: string): string {
+  const norm = (en ?? '').replace(/\$[^$]*\$/g, ' ').replace(/\s+/g, ' ').trim();
+  return norm.length + ':' + norm.slice(0, 200); // 廉尔键：长度+前缀（同段文本碰撞率极低，全文 sha256 在此无必要）
 }
 
 export function getBlocks(paperId: number) {
