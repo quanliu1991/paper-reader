@@ -11,6 +11,7 @@ import * as digest from './digest';
 import * as library from './library';
 import * as p2z from './pdf2zh';
 import * as vaultInit from './vault-init';
+import * as vaultMig from './vault-migrate';
 import fs from 'fs';
 
 let win: BrowserWindow | null = null;
@@ -448,6 +449,14 @@ app.whenReady().then(async () => {
   if (e2eEnabled && process.env.PR_VAULT_E2E) {
     // vault 写穿链路 E2E：DB 写 → hook → sink → sidecar 文件断言
     const entry = path.join(__dirname, 'vault-entry.js');
+    if (fs.existsSync(entry)) {
+      require(entry);
+      return;
+    }
+  }
+  if (e2eEnabled && process.env.PR_VAULT_BOOT_E2E) {
+    // vault 启动引导 E2E：删库重启 → vault 自动重建（两阶段 + relaunch）
+    const entry = path.join(__dirname, 'vault-bootstrap-entry.js');
     if (fs.existsSync(entry)) {
       require(entry);
       return;
@@ -1544,6 +1553,11 @@ app.whenReady().then(async () => {
     return;
   }
   createWindow();
+  // vault 启动引导：DB 文件不存在（新设备/库被删）且 vault 已配置有数据 → 自动重建索引
+  try {
+    const boot = vaultInit.bootstrapIfNeeded();
+    if (boot) console.log(`[vault-bootstrap] 已从 vault 重建索引: papers=${boot.papers} highlights=${boot.highlights} errors=${boot.errors}`);
+  } catch (e) { console.log(`[vault-bootstrap] failed: ${e}`); }
   registerIpc();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
@@ -1597,6 +1611,22 @@ export function registerIpc() {
     return r.canceled || !r.filePaths?.length ? null : r.filePaths[0];
   });
   wrap('vault:status', () => vaultInit.vaultStatus());
+  wrap('vault:migrate', async () => {
+    const dir = vaultInit.getVaultDir();
+    if (!dir) throw new Error('先选择 vault 文件夹');
+    const repoPath = db.getSetting('repo_path') ?? undefined;
+    return vaultMig.vaultMigrate(dir, { userDataDir: app.getPath('userData'), repoPath });
+  });
+  wrap('vault:rebuild', () => {
+    const dir = vaultInit.getVaultDir();
+    if (!dir) throw new Error('先选择 vault 文件夹');
+    return vaultMig.vaultRebuild(dir);
+  });
+  wrap('vault:reconcile', () => {
+    const dir = vaultInit.getVaultDir();
+    if (!dir) throw new Error('先选择 vault 文件夹');
+    return vaultMig.vaultReconcile(dir);
+  });
 
   // ---------- papers ----------
   wrap('papers:list', () => db.listPapers());

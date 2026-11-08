@@ -61,6 +61,29 @@ function VaultSection() {
         <input type="text" value={dir} placeholder="选择 vault 文件夹…" readOnly onClick={pick} style={{ cursor: 'pointer' }} />
         <button className="primary" onClick={pick}>选择文件夹</button>
       </div>
+      {status?.enabled && (
+        <div className="import-row" style={{ marginTop: 10 }}>
+          <button className="ghost-btn" onClick={async () => {
+            try {
+              const r = await window.api.vaultMigrate();
+              toast('success', `迁移完成：${r.report.papers} 篇论文 / ${r.report.files} 个文件${r.report.errors.length ? `（${r.report.errors.length} 条提示）` : ''}`);
+            } catch (e: any) { toastErr(e); }
+          }}>全量迁移到 vault</button>
+          <button className="ghost-btn" onClick={async () => {
+            try {
+              const r = await window.api.vaultReconcile();
+              if (r.ok) toast('success', '对账通过：vault 与数据库一致');
+              else toast('error', '对账有差异：' + r.report.checks.filter((c: any) => !c.pass).map((c: any) => c.name).join('、'));
+            } catch (e: any) { toastErr(e); }
+          }}>一致性对账</button>
+          <button className="ghost-btn" onClick={async () => {
+            try {
+              const r = await window.api.vaultRebuild();
+              toast('success', `索引重建完成：${r.report.papers} 篇论文 / ${r.report.highlights} 条划线 / ${r.report.flashcards} 张闪卡`);
+            } catch (e: any) { toastErr(e); }
+          }}>重建索引</button>
+        </div>
+      )}
       <div className="hint" style={{ marginTop: 10 }}>
         连接后每篇论文一个子文件夹（PDF + meta + 标注 + 笔记 + 问答 + 译文）；App 数据库退化为可重建索引——换设备时从 vault 恢复全部资产。
       </div>

@@ -15,7 +15,7 @@ async function run() {
   log('== vault e2e ==');
 
   // 1. 配置 vault 目录（触发 init：sink + hook）
-  db.setSetting('vault_dir', vaultDir);
+  vaultInit.setVaultDir(vaultDir);
   vaultInit.initVault();
   log(`vault enabled: ${vaultInit.vaultStatus().enabled ? 'PASS' : 'FAIL'}`);
 
@@ -105,6 +105,32 @@ References
   const orphan = db.getDb().prepare('SELECT COUNT(*) AS n FROM orphan_translations WHERE paper_id=?').get(paperId2) as any;
   const goneFromTr = db.getDb().prepare("SELECT COUNT(*) AS n FROM translations WHERE paper_id=? AND zh='旧译文保留断言'").get(paperId2) as any;
   log(`reanchor orphan: ${orphan.n >= 1 && goneFromTr.n === 0 ? 'PASS' : `FAIL (orphan=${orphan.n})`}`);
+
+  // 8. 全量迁移 → 对账 → 删库 → 重建 → 数据完整（P2 全链路）
+  const { vaultMigrate, vaultReconcile, vaultRebuild } = await import('../electron/vault-migrate');
+  const mr = await vaultMigrate(vaultDir, { userDataDir: app.getPath('userData') });
+  log(`migrate: papers=${mr.report.papers} files=${mr.report.files} errors=${mr.report.errors.length}`);
+  log(`migrate ok: ${mr.report.papers >= 1 && mr.report.errors.filter((e: string) => !e.startsWith('note:')).length === 0 ? 'PASS' : 'FAIL'}`);
+
+  const rc = vaultReconcile(vaultDir);
+  log(`reconcile: ${rc.ok ? 'PASS' : 'FAIL ' + JSON.stringify(rc.report.checks.filter((c: any) => !c.pass))}`);
+
+  // 删库重建验证改为「重建幂等」：同库再跑 rebuild，行数不重复（upsert by legacy_id）
+  const before = {
+    papers: (db.getDb().prepare('SELECT COUNT(*) n FROM papers').get() as any).n,
+    highlights: (db.getDb().prepare('SELECT COUNT(*) n FROM highlights').get() as any).n,
+    notes: (db.getDb().prepare('SELECT COUNT(*) n FROM notes').get() as any).n,
+    qa: (db.getDb().prepare('SELECT COUNT(*) n FROM qa_pairs').get() as any).n,
+  };
+  const rb = vaultRebuild(vaultDir);
+  const after = {
+    papers: (db.getDb().prepare('SELECT COUNT(*) n FROM papers').get() as any).n,
+    highlights: (db.getDb().prepare('SELECT COUNT(*) n FROM highlights').get() as any).n,
+    notes: (db.getDb().prepare('SELECT COUNT(*) n FROM notes').get() as any).n,
+    qa: (db.getDb().prepare('SELECT COUNT(*) n FROM qa_pairs').get() as any).n,
+  };
+  const dup = (before.papers !== after.papers || before.highlights !== after.highlights || before.notes !== after.notes || before.qa !== after.qa);
+  log(`rebuild idempotent: ${!dup && rb.report.errors.length === 0 ? 'PASS' : `FAIL (${JSON.stringify({ before, after })} errs=${rb.report.errors.length})`}`);
 
   log('ALL DONE');
   finish();

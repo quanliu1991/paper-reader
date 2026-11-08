@@ -672,6 +672,113 @@ export function getReadProgress(paperId: number): number {
   return row ? Number(row.value) || 0 : 0;
 }
 
+// ---------- vault 重建：显式 legacy_id 插入系列（跨设备整型 id 不变的关键）----------
+// 只在 vaultRebuild 重建空库时调用；hook 发事件以维持 sidecar 一致（幂等重写同内容）。
+export function insertPaperWithId(p: {
+  id: number; arxivId: string | null; title: string; authors: string; sourceUrl: string;
+  importType: string; createdAt: string; status: string; tags: string;
+}): void {
+  const d = getDb();
+  d.prepare(
+    `INSERT INTO papers (id, arxiv_id, title, authors, source_url, import_type, created_at, status, tags)
+     VALUES (?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET title=excluded.title, authors=excluded.authors, status=excluded.status, tags=excluded.tags`
+  ).run(p.id, p.arxivId, p.title, p.authors, p.sourceUrl, p.importType, p.createdAt, p.status, p.tags);
+}
+
+export function addHighlightWithId(id: number, h: { paperId: number; pid: number; textEn: string; note: string; color: string; createdAt: string }): void {
+  getDb().prepare(
+    'INSERT INTO highlights (id, paper_id, pid, text_en, note, color, created_at) VALUES (?,?,?,?,?,?,?)'
+  ).run(id, h.paperId, h.pid, h.textEn, h.note, h.color, h.createdAt);
+}
+
+export function addPdfHighlightWithId(id: number, h: { paperId: number; side: string; page: number; rects: string; text: string; pid: number | null; note: string; color: string; createdAt: string }): void {
+  getDb().prepare(
+    'INSERT INTO pdf_highlights (id, paper_id, side, page, rects, text, pid, note, color, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+  ).run(id, h.paperId, h.side, h.page, h.rects, h.text, h.pid, h.note, h.color, h.createdAt);
+}
+
+export function addNoteWithId(id: number, n: { paperId: number; pid: number | null; text: string; createdAt: string; updatedAt: string }): void {
+  getDb().prepare(
+    'INSERT INTO notes (id, paper_id, pid, text, created_at, updated_at) VALUES (?,?,?,?,?,?)'
+  ).run(id, n.paperId, n.pid, n.text, n.createdAt, n.updatedAt);
+}
+
+export function addQaWithId(id: number, q: { paperId: number; pid: number | null; question: string; answer: string; provider: string; model: string; createdAt: string }): void {
+  getDb().prepare(
+    'INSERT INTO qa_pairs (id, paper_id, pid, question, answer, provider, model, created_at) VALUES (?,?,?,?,?,?,?,?)'
+  ).run(id, q.paperId, q.pid, q.question, q.answer, q.provider, q.model, q.createdAt);
+}
+
+export function addFlashcardWithId(id: number, f: { paperId: number; pid: number; front: string; back: string; intervalDays: number; ease: number; reps: number; lapses: number; due: string; createdAt: string }): void {
+  getDb().prepare(
+    'INSERT INTO flashcards (id, paper_id, pid, front, back, interval_days, ease, reps, lapses, due, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+  ).run(id, f.paperId, f.pid, f.front, f.back, f.intervalDays, f.ease, f.reps, f.lapses, f.due, f.createdAt);
+}
+
+export function upsertTopicWithId(id: number, t: { name: string; query: string; status: string; nodeCount: number; edgeCount: number; note: string; createdAt: string; updatedAt: string }): void {
+  const d = getDb();
+  d.prepare(
+    `INSERT INTO topics (id, name, query, status, node_count, edge_count, note, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET name=excluded.name, query=excluded.query, status=excluded.status,
+       node_count=excluded.node_count, edge_count=excluded.edge_count, note=excluded.note, updated_at=excluded.updated_at`
+  ).run(id, t.name, t.query, t.status, t.nodeCount, t.edgeCount, t.note, t.createdAt, t.updatedAt);
+}
+
+export function saveTopicGraphRows(topicId: number, papers: any[], edges: any[]): void {
+  const d = getDb();
+  const tx = d.transaction(() => {
+    d.prepare('DELETE FROM topic_papers WHERE topic_id=?').run(topicId);
+    d.prepare('DELETE FROM topic_edges WHERE topic_id=?').run(topicId);
+    const upPaper = d.prepare(
+      `INSERT OR REPLACE INTO topic_papers (topic_id, arxiv_id, title, year, citation_count, layer, in_degree, out_degree, read_order, imported)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    );
+    for (const p of papers) {
+      upPaper.run(topicId, p.arxiv_id, p.title, p.year ?? null, p.citation_count ?? 0, p.layer ?? 'node', p.in_degree ?? 0, p.out_degree ?? 0, p.read_order ?? null, p.imported ? 1 : 0);
+    }
+    const upEdge = d.prepare('INSERT OR REPLACE INTO topic_edges (topic_id, src, dst) VALUES (?,?,?)');
+    for (const e of edges) upEdge.run(topicId, e.src, e.dst);
+  });
+  tx();
+}
+
+export function insertPaperSummaryWithId(paperId: number, s: { summary: string; sectionSummaries: string; provider: string; model: string }): void {
+  getDb().prepare(
+    `INSERT INTO paper_summaries (paper_id, summary, section_summaries, provider, model, updated_at)
+     VALUES (?,?,?,?,?, datetime('now','localtime'))
+     ON CONFLICT(paper_id) DO UPDATE SET summary=excluded.summary, section_summaries=excluded.section_summaries, provider=excluded.provider, model=excluded.model`
+  ).run(paperId, s.summary, s.sectionSummaries, s.provider, s.model);
+}
+
+export function setReaderProfileRows(bg: string, signals: Record<string, number>): void {
+  const d = getDb();
+  if (bg) {
+    d.prepare(
+      `INSERT INTO reader_profile (key, value, updated_at) VALUES ('bg', ?, datetime('now','localtime'))
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`
+    ).run(bg);
+  }
+  for (const [k, v] of Object.entries(signals ?? {})) {
+    d.prepare(
+      `INSERT INTO reader_profile (key, value, updated_at) VALUES (?, ?, datetime('now','localtime'))
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`
+    ).run(`signal:${k}`, String(v));
+  }
+}
+
+export function restoreReadPct(paperId: number, pct: number): void {
+  if (pct > 0) setSetting(`read:${paperId}`, String(pct));
+}
+
+export function upsertDigestWithTime(kind: 'paper' | 'topic', refId: number, body: string, updatedAt: string): void {
+  getDb().prepare(
+    `INSERT INTO digests (kind, ref_id, body, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(kind, ref_id) DO UPDATE SET body=excluded.body, updated_at=excluded.updated_at`
+  ).run(kind, refId, body, updatedAt);
+}
+
 // ---------- 主题依赖库 ----------
 export interface TopicPaperRow {
   topic_id: number; arxiv_id: string; title: string; year: number | null;
