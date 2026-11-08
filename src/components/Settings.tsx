@@ -44,7 +44,14 @@ function VaultSection() {
   }
   useEffect(() => {
     load();
-    const off = (window.api as any).onSyncState?.((s: any) => setSyncState(s));
+    const off = (window.api as any).onSyncState?.((s: any) => {
+      setSyncState((prev: any) => {
+        if (s?.firstPushSucceeded && !prev?.firstPushSucceeded && s.firstPushSucceeded !== prev?.toastShown) {
+          toast('success', '首次推送成功——同步链路已验证，可关闭「干跑模式」正式推送');
+        }
+        return s;
+      });
+    });
     return () => { off?.(); };
   }, []);
 
@@ -89,7 +96,8 @@ function VaultSection() {
           <button className="ghost-btn" onClick={async () => {
             try {
               const r = await window.api.vaultMigrate();
-              toast('success', `迁移完成：${r.report.papers} 篇论文 / ${r.report.files} 个文件${r.report.errors.length ? `（${r.report.errors.length} 条提示）` : ''}`);
+              if (r.report.lfsHint) toast('error', `PDF 总量 ${(r.report.pdfBytes / 1024 / 1024 / 1024).toFixed(1)}GB 超过 5GB——建议启用 Git LFS（见 README）`);
+              else toast('success', `迁移完成：${r.report.papers} 篇论文 / ${r.report.files} 个文件${r.report.errors.length ? `（${r.report.errors.length} 条提示）` : ''}`);
             } catch (e: any) { toastErr(e); }
           }}>全量迁移到 vault</button>
           <button className="ghost-btn" onClick={async () => {

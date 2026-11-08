@@ -34,6 +34,7 @@ export interface SyncStatus {
   lastResult?: SyncResult;
   lastSyncAt?: string;
   nextPollAt?: number;
+  firstPushSucceeded?: boolean; // 首次 push 成功（UI 提示可关 dry-run）
 }
 
 export function createSyncScheduler(opts: {
@@ -49,6 +50,7 @@ export function createSyncScheduler(opts: {
   let lastResult: SyncResult | undefined;
   let lastSyncAt: string | undefined;
   let dirty = false;
+  let firstPushSucceeded = false;
   let quietTimer: NodeJS.Timeout | null = null;
   let pollTimer: NodeJS.Timeout | null = null;
   let syncing = false;
@@ -60,7 +62,7 @@ export function createSyncScheduler(opts: {
 
   function setState(s: SyncState) {
     state = s;
-    opts.onStateChange?.({ state, lastResult, lastSyncAt });
+    opts.onStateChange?.({ state, lastResult, lastSyncAt, firstPushSucceeded });
   }
 
   function markDirty(): void {
@@ -88,6 +90,7 @@ export function createSyncScheduler(opts: {
       } else {
         dirty = false;
         setState('idle');
+        if (r.pushed) firstPushSucceeded = true;
         // pull 拉到远端变更 → 增量导入 DB（B 级 blocks 缺失由重导入路径自愈）
         if (r.pulled && headBefore) {
           try {
@@ -100,6 +103,10 @@ export function createSyncScheduler(opts: {
     } finally {
       syncing = false;
     }
+  }
+
+  function status(): SyncStatus {
+    return { state, lastResult, lastSyncAt, firstPushSucceeded };
   }
 
   function start(): void {
@@ -125,10 +132,6 @@ export function createSyncScheduler(opts: {
       stop();
       await syncNow('deposit: quit flush');
     }
-  }
-
-  function status(): SyncStatus {
-    return { state, lastResult, lastSyncAt };
   }
 
   return { markDirty, syncNow, start, stop, flushPending, status };

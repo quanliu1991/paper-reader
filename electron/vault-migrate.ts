@@ -107,6 +107,18 @@ export async function vaultMigrate(vaultDir: string, opts: { userDataDir: string
   if (opts.repoPath && fs.existsSync(opts.repoPath)) {
     try { mergeProtoVault(opts.repoPath, vaultDir, report); } catch (e: any) { report.errors.push(`proto-vault: ${e.message}`); }
   }
+  // LFS 顾问：PDF 总量超 5GB 建议走 LFS（只提示，不阻塞）
+  let pdfBytes = 0;
+  if (fs.existsSync(paths.papersDir)) {
+    for (const key of fs.readdirSync(paths.papersDir)) {
+      for (const f of ['paper.pdf', 'paper-dual.pdf', 'paper-mono.pdf']) {
+        const p = path.join(paths.papersDir, key, f);
+        try { if (fs.existsSync(p)) pdfBytes += fs.statSync(p).size; } catch { /* ignore */ }
+      }
+    }
+  }
+  (report as any).pdfBytes = pdfBytes;
+  (report as any).lfsHint = pdfBytes > 5 * 1024 * 1024 * 1024;
   report.files = countFiles(vaultDir);
   return { report };
 }
