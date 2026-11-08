@@ -5,6 +5,21 @@ import { app } from 'electron';
 
 let db: Database.Database | null = null;
 
+// ---------- vault 写穿 hook（P1：DB 写事件 → sidecar 队列）----------
+// 事件类型与 vault-sink 的 VaultTask 对齐（kind + 定位 id）；hook 内异常必须吞掉，
+// vault 是增强通道，绝不阻塞 DB 主路径。
+export type WriteEventKind =
+  | 'meta' | 'annotations' | 'notes' | 'qa' | 'translations'
+  | 'digest' | 'flashcards' | 'topics' | 'profile' | 'paperDelete';
+export interface WriteEvent { kind: WriteEventKind; paperId?: number; topicId?: number }
+let writeHook: ((e: WriteEvent) => void) | null = null;
+export function setWriteHook(fn: ((e: WriteEvent) => void) | null): void {
+  writeHook = fn;
+}
+function emit(e: WriteEvent): void {
+  try { writeHook?.(e); } catch { /* vault 通道故障不影响主路径 */ }
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
   const userData = app.getPath('userData');
@@ -243,6 +258,7 @@ export function insertPaper(p: { arxivId: string; title: string; authors: string
   ).run(p.arxivId, p.title, p.authors, p.sourceUrl, p.importType);
   // upsert 时 lastInsertRowid 不可靠（可能返回自增序列的新值），显式查回真实 id
   const row = d.prepare('SELECT id FROM papers WHERE arxiv_id=?').get(p.arxivId) as any;
+  emit({ kind: 'meta', paperId: row.id });
   return row.id;
 }
 
@@ -270,6 +286,7 @@ export function deletePaper(id: number) {
   const d = getDb();
   d.prepare(`DELETE FROM digests WHERE kind='paper' AND ref_id=?`).run(id);
   d.prepare('DELETE FROM papers WHERE id=?').run(id);
+  emit({ kind: 'paperDelete', paperId: id });
 }
 
 // ---------- 论文组织：状态 + 标签（v0.3）----------
@@ -281,26 +298,31 @@ export function setPaperStatus(id: number, status: string) {
     throw new Error(`未知论文状态：${status}`);
   }
   getDb().prepare('UPDATE papers SET status=? WHERE id=?').run(status, id);
+  emit({ kind: 'meta', paperId: id });
 }
 
 // tags 落库为 JSON 数组字符串；入参去空白去重，上限 20 防误粘贴
 export function setPaperTags(id: number, tags: string[]) {
   const clean = [...new Set(tags.map(t => t.trim()).filter(Boolean))].slice(0, 20);
   getDb().prepare('UPDATE papers SET tags=? WHERE id=?').run(JSON.stringify(clean), id);
+  emit({ kind: 'meta', paperId: id });
 }
 
 // ---------- 本地论文库（v0.4）----------
 export function setPaperFilePath(id: number, filePath: string | null) {
   getDb().prepare('UPDATE papers SET file_path=? WHERE id=?').run(filePath, id);
+  emit({ kind: 'meta', paperId: id });
 }
 
 // ---------- pdf2zh 双语 PDF（v0.6 验证分支）----------
 export function setPaperDualPdfPath(id: number, dualPath: string | null) {
   getDb().prepare('UPDATE papers SET dual_pdf_path=? WHERE id=?').run(dualPath, id);
+  emit({ kind: 'meta', paperId: id });
 }
 
 export function setPaperMonoPdfPath(id: number, monoPath: string | null) {
   getDb().prepare('UPDATE papers SET mono_pdf_path=? WHERE id=?').run(monoPath, id);
+  emit({ kind: 'meta', paperId: id });
 }
 
 // ---------- PDF 坐标高亮（原版对照阅读，feat/pdf2zh-reading）----------
@@ -318,6 +340,7 @@ export function addPdfHighlight(h: {
   const info = getDb().prepare(
     'INSERT INTO pdf_highlights (paper_id, side, page, rects, text, pid, note, color) VALUES (?,?,?,?,?,?,?,?)'
   ).run(h.paperId, h.side, h.page, JSON.stringify(h.rects), h.text, h.pid ?? null, h.note ?? '', h.color ?? 'yellow');
+  emit({ kind: 'annotations', paperId: h.paperId });
   return Number(info.lastInsertRowid);
 }
 
@@ -326,7 +349,9 @@ export function listPdfHighlights(paperId: number): PdfHighlightRow[] {
 }
 
 export function removePdfHighlight(id: number) {
+  const row = getDb().prepare('SELECT paper_id FROM pdf_highlights WHERE id=?').get(id) as any;
   getDb().prepare('DELETE FROM pdf_highlights WHERE id=?').run(id);
+  if (row) emit({ kind: 'annotations', paperId: row.paper_id });
 }
 
 // 选中文本 → 段落 pid 反查（兼容闪卡/精炼笔记挂靠；找不到返回 null 不阻塞）
@@ -366,6 +391,8 @@ export function insertBlocks(paperId: number, blocks: Array<{ seq: number; type:
     for (const b of rows) stmt.run(paperId, b.seq, b.type, b.level, b.en, b.figPath ?? null, b.figKind ?? null, b.figHtmlTable ? 1 : 0, b.figTableRows ? JSON.stringify(b.figTableRows) : null);
   });
   tx(blocks);
+  emit({ kind: 'meta', paperId });
+  emit({ kind: 'translations', paperId });
 }
 
 export function getBlocks(paperId: number) {
@@ -383,6 +410,7 @@ export function saveTranslation(paperId: number, pid: number, zh: string, provid
      VALUES (?,?,?,?,?, datetime('now','localtime'))
      ON CONFLICT(paper_id, pid) DO UPDATE SET zh=excluded.zh, provider=excluded.provider, model=excluded.model, updated_at=excluded.updated_at`
   ).run(paperId, pid, zh, provider, model);
+  emit({ kind: 'translations', paperId });
 }
 
 export function getTranslations(paperId: number) {
@@ -394,6 +422,7 @@ export function addHighlight(h: { paperId: number; pid: number; textEn: string; 
   const info = getDb().prepare(
     'INSERT INTO highlights (paper_id, pid, text_en, note, color) VALUES (?,?,?,?,?)'
   ).run(h.paperId, h.pid, h.textEn, h.note ?? '', h.color ?? 'yellow');
+  emit({ kind: 'annotations', paperId: h.paperId });
   return Number(info.lastInsertRowid);
 }
 
@@ -402,7 +431,9 @@ export function listHighlights(paperId: number) {
 }
 
 export function removeHighlight(id: number) {
+  const row = getDb().prepare('SELECT paper_id FROM highlights WHERE id=?').get(id) as any;
   getDb().prepare('DELETE FROM highlights WHERE id=?').run(id);
+  if (row) emit({ kind: 'annotations', paperId: row.paper_id });
 }
 
 // 跨论文高亮流（沉淀页用：join 论文标题，最新在前）
@@ -419,17 +450,22 @@ export function addNote(n: { paperId: number; pid?: number; text: string }) {
   const info = getDb().prepare(
     'INSERT INTO notes (paper_id, pid, text) VALUES (?,?,?)'
   ).run(n.paperId, n.pid ?? null, n.text);
+  emit({ kind: 'notes', paperId: n.paperId });
   return Number(info.lastInsertRowid);
 }
 
 export function updateNote(id: number, text: string) {
+  const row = getDb().prepare('SELECT paper_id FROM notes WHERE id=?').get(id) as any;
   getDb().prepare(
     `UPDATE notes SET text=?, updated_at=datetime('now','localtime') WHERE id=?`
   ).run(text, id);
+  if (row) emit({ kind: 'notes', paperId: row.paper_id });
 }
 
 export function deleteNote(id: number) {
+  const row = getDb().prepare('SELECT paper_id FROM notes WHERE id=?').get(id) as any;
   getDb().prepare('DELETE FROM notes WHERE id=?').run(id);
+  if (row) emit({ kind: 'notes', paperId: row.paper_id });
 }
 
 export function listNotes(paperId: number) {
@@ -451,6 +487,8 @@ export function upsertDigest(kind: 'paper' | 'topic', refId: number, body: strin
     `INSERT INTO digests (kind, ref_id, body, updated_at) VALUES (?, ?, ?, datetime('now','localtime'))
      ON CONFLICT(kind, ref_id) DO UPDATE SET body=excluded.body, updated_at=excluded.updated_at`
   ).run(kind, refId, body);
+  if (kind === 'paper') emit({ kind: 'digest', paperId: refId });
+  else emit({ kind: 'topics', topicId: refId });
 }
 
 export function getDigest(kind: 'paper' | 'topic', refId: number) {
@@ -499,6 +537,7 @@ export function addQa(q: { paperId: number; highlightId?: number; pid?: number; 
   const info = getDb().prepare(
     'INSERT INTO qa_pairs (paper_id, highlight_id, pid, question, answer, provider, model) VALUES (?,?,?,?,?,?,?)'
   ).run(q.paperId, q.highlightId ?? null, q.pid ?? null, q.question, q.answer, q.provider ?? '', q.model ?? '');
+  emit({ kind: 'qa', paperId: q.paperId });
   return Number(info.lastInsertRowid);
 }
 
@@ -514,6 +553,9 @@ export function getSetting(key: string): string | null {
 
 export function setSetting(key: string, value: string) {
   getDb().prepare('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value);
+  // 只有阅读进度进 vault（meta.read_pct）；repo_path/library_dir 等设备配置不同步
+  const m = key.match(/^read:(\d+)$/);
+  if (m) emit({ kind: 'meta', paperId: Number(m[1]) });
 }
 
 // ---------- paper summaries (v0.2) ----------
@@ -524,6 +566,7 @@ export function saveSummary(paperId: number, summary: string, sectionSummaries: 
      ON CONFLICT(paper_id) DO UPDATE SET summary=excluded.summary, section_summaries=excluded.section_summaries,
        provider=excluded.provider, model=excluded.model, updated_at=excluded.updated_at`
   ).run(paperId, summary, sectionSummaries, provider, model);
+  emit({ kind: 'meta', paperId });
 }
 
 export function getSummary(paperId: number) {
@@ -535,11 +578,13 @@ export function addFlashcard(f: { paperId: number; pid: number; front: string; b
   const info = getDb().prepare(
     'INSERT INTO flashcards (paper_id, pid, front, back) VALUES (?,?,?,?)'
   ).run(f.paperId, f.pid, f.front, f.back);
+  emit({ kind: 'flashcards' });
   return Number(info.lastInsertRowid);
 }
 
 export function updateFlashcardBack(id: number, back: string) {
   getDb().prepare('UPDATE flashcards SET back=? WHERE id=?').run(back, id);
+  emit({ kind: 'flashcards' });
 }
 
 export function listDueFlashcards() {
@@ -547,6 +592,15 @@ export function listDueFlashcards() {
     `SELECT f.*, p.title AS paper_title FROM flashcards f
      LEFT JOIN papers p ON p.id = f.paper_id
      WHERE f.due <= datetime('now','localtime') ORDER BY f.due LIMIT 50`
+  ).all();
+}
+
+// vault 迁移/双写用：全量闪卡（含未到期）
+export function listAllFlashcards() {
+  return getDb().prepare(
+    `SELECT f.*, p.title AS paper_title, p.arxiv_id, p.created_at AS paper_created_at FROM flashcards f
+     LEFT JOIN papers p ON p.id = f.paper_id
+     ORDER BY f.id`
   ).all();
 }
 
@@ -568,6 +622,7 @@ export function gradeFlashcard(id: number, q: number) {
   const due = new Date(Date.now() + interval_days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
   d.prepare('UPDATE flashcards SET interval_days=?, ease=?, reps=?, lapses=?, due=? WHERE id=?')
     .run(interval_days, ease, reps, lapses, due, id);
+  emit({ kind: 'flashcards' });
 }
 
 // ---------- 阅读进度 (v0.2) ----------
@@ -593,6 +648,7 @@ export function createTopic(name: string, query: string): number {
   const id = row.id;
   d.prepare('DELETE FROM topic_papers WHERE topic_id=?').run(id);
   d.prepare('DELETE FROM topic_edges WHERE topic_id=?').run(id);
+  emit({ kind: 'topics', topicId: id });
   return id;
 }
 
@@ -614,6 +670,7 @@ export function deleteTopic(id: number) {
   d.prepare('DELETE FROM topic_edges WHERE topic_id=?').run(id);
   d.prepare(`DELETE FROM digests WHERE kind='topic' AND ref_id=?`).run(id);
   d.prepare('DELETE FROM topics WHERE id=?').run(id);
+  emit({ kind: 'topics', topicId: id });
 }
 
 export function saveTopicGraph(
@@ -639,10 +696,12 @@ export function saveTopicGraph(
     ).run(papers.length, edges.length, topicId);
   });
   tx();
+  emit({ kind: 'topics', topicId });
 }
 
 export function setTopicError(topicId: number, msg: string) {
   getDb().prepare(`UPDATE topics SET status='error', note=?, updated_at=datetime('now','localtime') WHERE id=?`).run(msg.slice(0, 500), topicId);
+  emit({ kind: 'topics', topicId });
 }
 
 export function listTopicPapers(topicId: number) {
@@ -658,6 +717,7 @@ export function listTopicEdges(topicId: number) {
 
 export function markTopicPaperImported(topicId: number, arxivId: string) {
   getDb().prepare('UPDATE topic_papers SET imported=1 WHERE topic_id=? AND arxiv_id=?').run(topicId, arxivId);
+  emit({ kind: 'topics', topicId });
 }
 
 // ---------- 读者画像 ----------
@@ -682,6 +742,7 @@ export function setReaderBg(bg: string) {
     `INSERT INTO reader_profile (key, value, updated_at) VALUES ('bg', ?, datetime('now','localtime'))
      ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`
   ).run(bg.slice(0, 2000));
+  emit({ kind: 'profile' });
 }
 
 export function bumpSignal(kind: SignalKind, n = 1) {
@@ -689,4 +750,5 @@ export function bumpSignal(kind: SignalKind, n = 1) {
     `INSERT INTO reader_profile (key, value, updated_at) VALUES (?, '1', datetime('now','localtime'))
      ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER) + ? AS TEXT), updated_at=excluded.updated_at`
   ).run(`signal:${kind}`, n);
+  emit({ kind: 'profile' });
 }
