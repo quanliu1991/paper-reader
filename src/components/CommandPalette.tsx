@@ -41,13 +41,13 @@ export default function CommandPalette() {
     // 快速动作
     out.push(
       { id: 'act-import', label: '导入 arXiv 论文', hint: '动作', keywords: 'import arxiv 导入', run: () => { useStore.getState().setView('list'); setTimeout(() => document.querySelector<HTMLInputElement>('.import-row input')?.focus(), 100); } },
-      { id: 'act-layout-dual', label: '切换到双栏对照', hint: '布局', keywords: 'layout dual 对照 双栏', run: () => useStore.getState().setLayout('dual') },
-      { id: 'act-layout-bilingual', label: '切换到双语书模式', hint: '布局', keywords: 'layout bilingual 双语 书 交错', run: () => useStore.getState().setLayout('bilingual') },
+      { id: 'act-layout-smart', label: '切换到智能对照', hint: '布局', keywords: 'layout smart 对照 双语 智能', run: () => useStore.getState().setLayout('smart') },
       { id: 'act-layout-en', label: '切换到仅原文', hint: '布局', keywords: 'layout en 原文', run: () => useStore.getState().setLayout('en') },
       { id: 'act-layout-zh', label: '切换到仅译文', hint: '布局', keywords: 'layout zh 译文', run: () => useStore.getState().setLayout('zh') },
       { id: 'act-ask', label: '打开问答侧栏', hint: '动作', keywords: 'ask qa 问答 提问', run: () => useStore.getState().setAskPanel(true) },
       { id: 'act-settings', label: '打开设置', hint: '动作', keywords: 'settings 设置 provider', run: () => useStore.getState().setView('settings') },
-      { id: 'act-review', label: '闪卡复习', hint: '动作', keywords: 'flashcard review 复习 闪卡', run: () => useStore.getState().setView('review') },
+      { id: 'act-review', label: '闪卡复习', hint: '动作', keywords: 'flashcard review 复习 闪卡', run: () => { localStorage.setItem('pr:knowledge:tab', 'review'); useStore.getState().setView('knowledge'); } },
+      { id: 'act-notes', label: '知识沉淀', hint: '动作', keywords: 'notes 沉淀 高亮 笔记', run: () => { localStorage.setItem('pr:knowledge:tab', 'notes'); useStore.getState().setView('knowledge'); } },
     );
     // 论文
     for (const p of papers) {

@@ -6,7 +6,10 @@ import DigestCard, { DigestDoc, toDigestDoc } from './DigestCard';
 import AnswerText from './AnswerText';
 
 const HL_COLOR_LABEL: Record<string, string> = { yellow: '黄', green: '绿', blue: '蓝', pink: '粉' };
-const HL_BAR: Record<string, string> = { yellow: '#e6c84a', green: '#7dcea0', blue: '#85b7eb', pink: '#f0a3bd' };
+const HL_BAR: Record<string, string> = { // 走主题变量（B1 暗色适配）
+  yellow: 'var(--hl-c-yellow)', green: 'var(--hl-c-green)',
+  blue: 'var(--hl-c-blue)', pink: 'var(--hl-c-pink)',
+};
 
 type Scope = 'all' | 'highlights' | 'notes';
 
@@ -115,7 +118,7 @@ function jumpTo(paperId: number, pid: number | null) {
   useStore.getState().openPaper(paperId);
 }
 
-export default function NotesView() {
+export default function NotesView({ embedded = false }: { embedded?: boolean }) {
   const [scope, setScope] = useState<Scope>(initialScope);
   const [hls, setHls] = useState<HighlightRow[]>([]);
   const [notes, setNotes] = useState<NoteRow[]>([]);
@@ -275,6 +278,7 @@ export default function NotesView() {
 
   return (
     <div className="notes-page">
+      {!embedded && (
       <div className="list-head">
         <h1>沉淀</h1>
         <span className="count">{groups.length} 篇 · 高亮 {totalH} · 笔记 {totalN} · 提问 {totalQ}</span>
@@ -284,6 +288,7 @@ export default function NotesView() {
           </button>
         )}
       </div>
+      )}
 
       <div className="notes-toolbar">
         <div className="mode-switch">

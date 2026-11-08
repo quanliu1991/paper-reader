@@ -13,10 +13,52 @@ const PRESETS: Array<{ name: string; protocol: 'openai' | 'anthropic'; baseUrl: 
 export default function Settings() {
   return (
     <div className="settings-page">
+      <AppearanceSection />
       <ProfileSection />
       <ProviderSection />
       <LibrarySection />
       <RepoSection />
+    </div>
+  );
+}
+
+// v3 B1：外观——主题切换（暗色默认）+ 原版对照自动生成开关（A3 设置项）
+function AppearanceSection() {
+  const [theme, setTheme] = useState<'dark' | 'light'>(
+    () => (localStorage.getItem('pr:theme') === 'light' ? 'light' : 'dark')
+  );
+  const [autoP2z, setAutoP2z] = useState<boolean>(
+    () => localStorage.getItem('pr:p2z:auto') !== '0'
+  );
+
+  function applyTheme(t: 'dark' | 'light') {
+    setTheme(t);
+    localStorage.setItem('pr:theme', t);
+    document.documentElement.dataset.theme = t;
+  }
+
+  function applyAuto(v: boolean) {
+    setAutoP2z(v);
+    localStorage.setItem('pr:p2z:auto', v ? '1' : '0');
+  }
+
+  return (
+    <div className="settings-section">
+      <h3>外观</h3>
+      <div className="more-row" role="group" aria-label="主题">
+        <span>主题</span>
+        <div className="mode-switch">
+          <button className={theme === 'dark' ? 'on' : ''} onClick={() => applyTheme('dark')}>暗色</button>
+          <button className={theme === 'light' ? 'on' : ''} onClick={() => applyTheme('light')}>亮色</button>
+        </div>
+      </div>
+      <div className="more-row" role="group" aria-label="自动生成原版对照">
+        <span>深度阅读时自动生成原版对照</span>
+        <button onClick={() => applyAuto(!autoP2z)}>{autoP2z ? '已开启' : '已关闭'}</button>
+      </div>
+      <div className="hint" style={{ marginTop: 8 }}>
+        自动生成条件：已安装 pdf2zh CLI + 论文正文 ≤30 页 + 深度阅读（超过 3 分钟或读过 30%）。生成在后台进行，不影响文本阅读。
+      </div>
     </div>
   );
 }

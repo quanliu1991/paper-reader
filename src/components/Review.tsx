@@ -8,7 +8,7 @@ interface Flashcard {
   paper_title?: string;
 }
 
-export default function Review() {
+export default function Review({ embedded = false }: { embedded?: boolean }) {
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [cur, setCur] = useState(0);
   const [showBack, setShowBack] = useState(false);

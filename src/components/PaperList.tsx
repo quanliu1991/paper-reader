@@ -176,7 +176,19 @@ export default function PaperList() {
   useEffect(() => { loadPapers(); }, [loadPapers]);
 
   async function importArxiv() {
-    if (!input.trim() || busy) return;
+    const v = input.trim();
+    if (!v || busy) return;
+    // v3 A5 智能识别：本地路径（/ 或 X:\ 开头且 .pdf 结尾）→ 本地导入；否则按 arXiv 处理
+    if (/^([a-zA-Z]:[\\/]|\/|~\/).*\.pdf$/i.test(v)) {
+      setBusy(true);
+      try {
+        const rs = await window.api.libImportFiles([v]);
+        const ok = rs.filter((r: any) => r.ok).length;
+        if (ok) { toast('success', '本地 PDF 已导入'); setInput(''); await loadPapers(); }
+        else toastErr(new Error(rs[0]?.error || '导入失败'));
+      } catch (e: any) { toastErr(e); } finally { setBusy(false); }
+      return;
+    }
     setBusy(true);
     try {
       const r = await window.api.importArxiv(input.trim());
@@ -255,7 +267,7 @@ export default function PaperList() {
         <IconPlus s={16} />
         <input
           type="text"
-          placeholder="输入 arXiv ID 或链接，回车导入（如 2609.34683）"
+          placeholder="粘贴 arXiv ID / 链接 / 本地 PDF 路径导入，也可直接拖入文件"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && importArxiv()}

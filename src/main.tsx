@@ -14,6 +14,9 @@ import { preloadZhFonts } from './font-preload';
 // 应用启动即预载中文字体（译文首屏渲染前就绪，避免闪系统字体）
 preloadZhFonts();
 
+// v3 B1 主题：暗色默认，亮色经 localStorage 切换（<html data-theme="light">）
+document.documentElement.dataset.theme = localStorage.getItem('pr:theme') === 'light' ? 'light' : 'dark';
+
 // E2E 驱动钩子：暴露 store（仅测试用，生产无副作用）
 (window as any).__store = useStore;
 

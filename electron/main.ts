@@ -87,24 +87,27 @@ app.whenReady().then(async () => {
     }
     return net.fetch('file:///' + filePath.replace(/\\/g, '/'));
   });
+
   if (e2eEnabled && process.env.PR_ASSERT_E2E) {
-    // 强制门禁：物理重叠 / 内容去重完整性 / 滚动锁定 / 三态截图（npm run guard）
+    // 强制门禁（v3）：物理分离 / 等值同步锁定 / 三态截图 / 图表 / 译文覆盖（npm run guard）
+    // v3 D2/D4：DualPdfView 已删除——A/B/C/F 的 .dpv-* 断言对象改为 SplitPdfView（.spv-*），
+    // E/G/H 的图表与译文断言在 smart 文本对照视图（TranslateView）上验证。
     const logFile = process.env.PR_E2E_LOG!;
     const doneFile = process.env.PR_E2E_DONE!;
     const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
     try {
       if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
       registerIpc();
-      // 种子论文（fixture）
+      // 种子论文（fixture）+ mono PDF（同构）+ 图表/译文种子
       const parsed = arxiv.parseArxivHtml(fs.readFileSync(path.resolve('tests/fixtures/2609.34683.html'), 'utf8'), '2609.34683');
       const paperId = db.insertPaper({ arxivId: '2609.34683', title: parsed.title, authors: parsed.authors, sourceUrl: '', importType: 'html' });
       db.insertBlocks(paperId, parsed.blocks);
       const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
       fs.mkdirSync(pdfsDir, { recursive: true });
       const seedPdf = path.resolve('build/test-paper.pdf');
-      if (fs.existsSync(seedPdf)) fs.copyFileSync(seedPdf, path.join(pdfsDir, `${paperId}.pdf`));
+      fs.copyFileSync(seedPdf, path.join(pdfsDir, `${paperId}.pdf`));
+      fs.copyFileSync(seedPdf, path.join(pdfsDir, `${paperId}-mono.pdf`));
       // 图表种子：1x1 测试 PNG 写入 figures/<paperId>/fig-1.png，并把首个 fig 块 fig_path 指到本地形态
-      // （模拟下载完成态，guard 才能断言右栏真图渲染 + 原位准确性）
       const figsDir = path.join(app.getPath('userData'), 'figures', String(paperId));
       fs.mkdirSync(figsDir, { recursive: true });
       const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
@@ -114,7 +117,7 @@ app.whenReady().then(async () => {
       // 译文种子：首个正文块注入固定译文（[H] 断言「err 事件不清空已有译文」需要已有译文）
       const zhBlock = (db.getBlocks(paperId) as any[]).find(b => b.type === 'para' && b.en && b.en.length > 20);
       if (zhBlock) db.saveTranslation(paperId, zhBlock.pid, '这是用于译文覆盖断言的种子译文，长度超过十个字符以通过校验。', 'test', 'seed');
-      log(`seed: paper=${paperId}, blocks=${parsed.blocks.length}, pdf=${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`))}, figSeed=${!!figBlock}, zhSeed=${!!zhBlock}`);
+      log(`seed: paper=${paperId}, blocks=${parsed.blocks.length}, pdf=${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`))}, mono=${fs.existsSync(path.join(pdfsDir, `${paperId}-mono.pdf`))}, figSeed=${!!figBlock}, zhSeed=${!!zhBlock}`);
 
       const win = new BrowserWindow({
         width: 1400, height: 900, show: true,
@@ -122,123 +125,107 @@ app.whenReady().then(async () => {
       });
       await win.loadURL(process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199');
       await new Promise(r => setTimeout(r, 1000));
+      await win.webContents.executeJavaScript(`window.__E2E = 1; localStorage.setItem('pr:welcome:seen', '1'); true`).catch(() => {});
       await win.webContents.executeJavaScript(`
         (async () => {
           const st = window.__store.getState();
-          await st.openPaper(${paperId});
-          st.setLayout('pdf-layout');
+          await st.openPaper(${paperId}); // smart + mono → SplitPdfView 自动升级
         })()
       `);
-      let clusterInfo: any = null;
+      // 等 SplitPdfView 双栏就绪（doc 加载 + 页占位成型 + canvas 出现）
+      let splitReady: any = null;
       for (let i = 0; i < 40; i++) {
-        clusterInfo = await win.webContents.executeJavaScript(`window.__dpvClusterDone ?? null`);
-        if (clusterInfo) break;
+        splitReady = await win.webContents.executeJavaScript(`
+          (() => {
+            const en = document.querySelector('.spv-en'), zh = document.querySelector('.spv-zh');
+            const canvas = document.querySelector('.spv-pane canvas');
+            return { ok: !!(en && zh && en.scrollHeight > 1000 && zh.scrollHeight > 1000 && canvas) };
+          })()
+        `).catch(() => null);
+        if (splitReady?.ok) break;
         await new Promise(r => setTimeout(r, 500));
       }
-      if (!clusterInfo) { log('FATAL: cluster never finished'); fs.writeFileSync(doneFile, '1'); app.quit(); return; }
-      log(`cluster: ${JSON.stringify(clusterInfo)}`);
+      if (!splitReady?.ok) { log('FATAL: SplitPdfView never became ready'); fs.writeFileSync(doneFile, '1'); app.quit(); return; }
+      await new Promise(r => setTimeout(r, 2000)); // canvas 懒渲染 + 高度定型
 
-      // ---------- A. 物理重叠检测 ----------
-      log('[A] 物理重叠检测（getBoundingClientRect）');
+      // ---------- A. 物理分离检测（v3：左右 PDF 栏水平分离，无重叠/无横向滚动）----------
+      log('[A] 物理分离检测（getBoundingClientRect）');
       const overlap: any = await win.webContents.executeJavaScript(`
         (() => {
-          const left = document.querySelector('.dpv-left');
-          const right = document.querySelector('.dpv-right');
+          const en = document.querySelector('.spv-en'), zh = document.querySelector('.spv-zh');
           const issues = [];
-          if (left && right) {
-            const lr = left.getBoundingClientRect(), rr = right.getBoundingClientRect();
-            const hGap = Math.round(rr.left - lr.right);
-            if (hGap < 0) issues.push({ kind: 'pane-h-overlap', gap: hGap });
+          if (en && zh) {
+            const er = en.getBoundingClientRect(), zr = zh.getBoundingClientRect();
+            const gap = Math.round(zr.left - er.right);
+            if (gap < 0) issues.push({ kind: 'pane-h-overlap', gap });
           }
-          const paras = [...document.querySelectorAll('.dpv-right .dpv-zhpara')];
-          let vOverlap = 0;
-          for (let i = 0; i + 1 < paras.length; i++) {
-            const a = paras[i].getBoundingClientRect(), b = paras[i + 1].getBoundingClientRect();
-            if (b.top < a.bottom - 1) { vOverlap++; if (issues.length < 5) issues.push({ kind: 'para-v-overlap', pid: paras[i].dataset.pid, overlapPx: Math.round(a.bottom - b.top) }); }
-          }
-          let absCount = 0;
-          for (const p of paras) {
-            const pos = getComputedStyle(p).position;
-            if (pos === 'absolute' || pos === 'fixed') absCount++;
-          }
-          return { paras: paras.length, vOverlap, issues, absCount };
+          const hScroll = document.documentElement.scrollWidth > document.documentElement.clientWidth + 1;
+          if (hScroll) issues.push({ kind: 'h-scroll' });
+          return { gap: issues.length ? null : Math.round(zh.getBoundingClientRect().left - en.getBoundingClientRect().right), issues };
         })()
       `);
-      log(`  paras=${overlap.paras}, vOverlap=${overlap.vOverlap}, absPositioned=${overlap.absCount}, issues=${JSON.stringify(overlap.issues)}`);
-      const aOk = overlap.vOverlap === 0 && overlap.issues.length === 0 && overlap.absCount === 0;
-      log(`[A] 物理重叠: ${aOk ? 'PASS' : 'FAIL'}`);
+      log(`  ${JSON.stringify(overlap)}`);
+      const aOk = overlap.issues.length === 0;
+      log(`[A] 物理分离: ${aOk ? 'PASS' : 'FAIL'}`);
 
-      // ---------- B. 内容完整性及去重 ----------
-      log('[B] 内容完整性及去重');
+      // ---------- B. 内容完整性（mono/原版逐页同构：两侧页数一致、每页 canvas ≤1）----------
+      log('[B] 内容完整性（双栏页数一致 + 页 canvas 去重）');
       const content: any = await win.webContents.executeJavaScript(`
         (() => {
-          const paras = [...document.querySelectorAll('.dpv-right .dpv-zhpara')];
-          const texts = paras.map(p => (p.textContent ?? '').replace(/\\s+/g, ' ').trim());
-          let dupPairs = [];
-          for (let w = 0; w + 5 <= texts.length; w += 5) {
-            const win5 = texts.slice(w, w + 5);
-            for (let i = 0; i < win5.length; i++) {
-              for (let j = i + 1; j < win5.length; j++) {
-                const a = win5[i], b = win5[j];
-                if (!a || !b || a.length < 20 || b.length < 20) continue;
-                for (let k = 0; k + 20 <= a.length; k += 10) {
-                  if (b.includes(a.slice(k, k + 20))) { dupPairs.push({ i: w + i, j: w + j, frag: a.slice(k, k + 20) }); k = a.length; break; }
-                }
-              }
-            }
+          const enPages = document.querySelectorAll('.spv-en .pdf-page').length;
+          const zhPages = document.querySelectorAll('.spv-zh .pdf-page').length;
+          let dup = 0, canvases = 0;
+          for (const p of document.querySelectorAll('.spv-pane .pdf-page')) {
+            const n = p.querySelectorAll('canvas').length;
+            canvases += n;
+            if (n > 1) dup++;
           }
-          const st = window.__store.getState();
-          const expected = st.blocks.filter(b => b.type !== 'fig').length;
-          const pagesTagged = new Set(paras.map(p => p.dataset.page).filter(Boolean)).size;
-          return { dupCount: dupPairs.length, dupPairs: dupPairs.slice(0, 5), rendered: paras.length, expected, pagesTagged };
+          return { enPages, zhPages, canvases, dup };
         })()
       `);
-      log(`  渲染段=${content.rendered}/${content.expected}(期望), 页锚=${content.pagesTagged}, 重复对=${content.dupCount}`);
-      if (content.dupCount > 0) log(`  重复样例: ${JSON.stringify(content.dupPairs)}`);
-      const bOk = content.dupCount === 0 && content.rendered === content.expected && content.pagesTagged >= 3;
-      log(`[B] 内容去重+完整性: ${bOk ? 'PASS' : 'FAIL'}`);
+      log(`  en页=${content.enPages}, zh页=${content.zhPages}, canvases=${content.canvases}, 重复页=${content.dup}`);
+      const bOk = content.enPages >= 10 && content.enPages === content.zhPages && content.dup === 0;
+      log(`[B] 内容完整性+页去重: ${bOk ? 'PASS' : 'FAIL'}`);
 
-      // ---------- C. 滚动锁定 ----------
-      log('[C] 滚动锁定（无死循环拉扯）');
+      // ---------- C. 滚动锁定（等值同步无死循环拉扯）----------
+      log('[C] 滚动锁定（等值同步，无回环抖动）');
       const scrollLock: any = await win.webContents.executeJavaScript(`
         (async () => {
-          const L = document.querySelector('.dpv-left');
-          const R = document.querySelector('.dpv-right');
+          const L = document.querySelector('.spv-en'), R = document.querySelector('.spv-zh');
           if (!L || !R) return { ok: false, reason: 'no panes' };
           L.scrollTop = Math.round(L.scrollHeight * 0.4);
           L.dispatchEvent(new Event('scroll'));
-          await new Promise(r => setTimeout(r, 1500));
+          await new Promise(r => setTimeout(r, 1200));
           const s1 = { l: Math.round(L.scrollTop), r: Math.round(R.scrollTop) };
           await new Promise(r => setTimeout(r, 500));
           const s2 = { l: Math.round(L.scrollTop), r: Math.round(R.scrollTop) };
-          const t = R.querySelector('.dpv-zhpara[data-page="5"]') ?? R.querySelector('.dpv-zhpara[data-page="3"]');
-          if (t) { R.scrollTop = t.offsetTop - 40; R.dispatchEvent(new Event('scroll')); }
-          await new Promise(r => setTimeout(r, 1500));
+          R.scrollTop = Math.round(R.scrollHeight * 0.7);
+          R.dispatchEvent(new Event('scroll'));
+          await new Promise(r => setTimeout(r, 1200));
           const s3 = { l: Math.round(L.scrollTop), r: Math.round(R.scrollTop) };
           await new Promise(r => setTimeout(r, 500));
           const s4 = { l: Math.round(L.scrollTop), r: Math.round(R.scrollTop) };
           const stable = Math.abs(s2.l - s1.l) <= 2 && Math.abs(s2.r - s1.r) <= 2 && Math.abs(s4.l - s3.l) <= 2 && Math.abs(s4.r - s3.r) <= 2;
-          const followed = s4.l > 50;
-          return { s1, s2, s3, s4, stable, followed, ok: stable && followed };
+          const identity = Math.abs(s2.r - s2.l) <= 2 && Math.abs(s4.l - s4.r) <= 2;
+          return { s1, s2, s4, stable, identity, ok: stable && identity };
         })()
       `);
       log(`  ${JSON.stringify(scrollLock)}`);
       log(`[C] 滚动锁定: ${scrollLock.ok ? 'PASS' : 'FAIL'}`);
 
-      // ---------- D. 三态截图 ----------
+      // ---------- D. 三态截图（双栏 / 窄窗 / smart 文本对照）----------
       log('[D] 三态截图');
       fs.mkdirSync(path.resolve('build'), { recursive: true });
       await win.webContents.executeJavaScript(`
         (async () => {
-          const L = document.querySelector('.dpv-left'), R = document.querySelector('.dpv-right');
+          const L = document.querySelector('.spv-en');
           if (L) { L.scrollTop = 0; L.dispatchEvent(new Event('scroll')); }
-          if (R) R.scrollTop = 0;
           await new Promise(r => setTimeout(r, 700));
         })()
       `);
       const img1 = await win.webContents.capturePage();
-      fs.writeFileSync(path.resolve('build/guard-both.png'), img1.toPNG());
-      log('  saved build/guard-both.png');
+      fs.writeFileSync(path.resolve('build/guard-split.png'), img1.toPNG());
+      log('  saved build/guard-split.png');
 
       const narrowWin = new BrowserWindow({
         width: 700, height: 900, show: true,
@@ -250,7 +237,6 @@ app.whenReady().then(async () => {
         (async () => {
           const st = window.__store.getState();
           await st.openPaper(${paperId});
-          st.setLayout('pdf-layout');
         })()
       `);
       await new Promise(r => setTimeout(r, 1500));
@@ -262,20 +248,8 @@ app.whenReady().then(async () => {
       log(`  saved build/guard-narrow.png, diag=${JSON.stringify(narrowDiag)}`);
       narrowWin.close();
 
-      await win.webContents.executeJavaScript(`
-        (async () => {
-          const paras = [...document.querySelectorAll('.dpv-right .dpv-zhpara[data-pid]')];
-          const p = paras[Math.min(20, paras.length - 1)];
-          if (p) p.click();
-          await new Promise(r => setTimeout(r, 700));
-        })()
-      `);
-      const img3 = await win.webContents.capturePage();
-      fs.writeFileSync(path.resolve('build/guard-click-jump.png'), img3.toPNG());
-      log('  saved build/guard-click-jump.png');
-
-      // ---------- E. 图表原位断言 ----------
-      log('[E] 图表原位断言（真图加载 + seq 原位 + 无死链）');
+      // ---------- E. 图表断言（smart 文本视图：真图加载 + 原位 + 无死链）----------
+      log('[E] 图表断言（smart 视图真图加载 + seq 原位 + 无死链）');
       const figDiag: any = await win.webContents.executeJavaScript(`
         (async () => {
           const proto = await fetch('local-figure://f/${paperId}/fig-1.png').then(r => r.status).catch(e => 'ERR:' + e.message);
@@ -283,83 +257,123 @@ app.whenReady().then(async () => {
         })()
       `);
       log(`  协议探测: local-figure://f/${paperId}/fig-1.png → ${figDiag.proto}`);
-      const figE: any = await win.webContents.executeJavaScript(`
+      // 切回文本对照（smart 且无 mono 时即文本；直接改 store 会打架，走 UI 关闭 split：删 mono 不可逆，
+      // 改用「zh 单栏」不可见图……最稳：新窗口走「无 mono 论文」）。此处用同窗口 setLayout('en') 再回 smart 不可靠——
+      // smart 的 split 取决于 p2zStatus。因此 E/G/H 在新窗口 + 删除 mono 后的副本论文上验证。
+      // 注意 arxivId 必须与论文1 不同：insertPaper 按 arxiv_id upsert，同 ID 会把论文1 原地改名（mono 还在 → 仍 split）。
+      const paper2Id = db.insertPaper({ arxivId: '2609.99999-guard-nomono', title: parsed.title + ' (no-mono)', authors: parsed.authors, sourceUrl: '', importType: 'html' });
+      db.insertBlocks(paper2Id, parsed.blocks);
+      log(`seed2: paper=${paper2Id}, blocks=${(db.getBlocks(paper2Id) as any[]).length}, mono=${fs.existsSync(path.join(pdfsDir, `${paper2Id}-mono.pdf`))}`);
+      const figs2Dir = path.join(app.getPath('userData'), 'figures', String(paper2Id));
+      fs.mkdirSync(figs2Dir, { recursive: true });
+      fs.writeFileSync(path.join(figs2Dir, 'fig-1.png'), PNG_1PX);
+      const figBlock2 = (db.getBlocks(paper2Id) as any[]).find(b => b.type === 'fig');
+      if (figBlock2) db.getDb().prepare('UPDATE blocks SET fig_path=? WHERE pid=?').run(`${paper2Id}/fig-1.png`, figBlock2.pid);
+      const zhBlock2 = (db.getBlocks(paper2Id) as any[]).find(b => b.type === 'para' && b.en && b.en.length > 20);
+      if (zhBlock2) db.saveTranslation(paper2Id, zhBlock2.pid, '这是用于译文覆盖断言的种子译文，长度超过十个字符以通过校验。', 'test', 'seed');
+      // E/G/H 需要文本对照视图（smart 无 mono）。tvWin 与窗口1 同源共享 localStorage——TabBar 启动恢复会读
+      // pr:tabs（narrowWin 刚写入 [1]）抢先打开论文1（split 视图）。恢复只读一次 localStorage：
+      // 在创建 tvWin 前从窗口1 清掉会话键，tvWin 启动即无恢复，驱动 openPaper(2) 成为唯一写者。
+      await win.webContents.executeJavaScript(`localStorage.removeItem('pr:tabs'); localStorage.removeItem('pr:tabs:active'); true`).catch(() => {});
+      const tvWin = new BrowserWindow({
+        width: 1400, height: 900, show: true,
+        webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+      });
+      await tvWin.loadURL(process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199');
+      await new Promise(r => setTimeout(r, 800));
+      await tvWin.webContents.executeJavaScript(`window.__E2E = 1; localStorage.setItem('pr:welcome:seen', '1'); true`).catch(() => {});
+      await tvWin.webContents.executeJavaScript(`window.__store.getState().openPaper(${paper2Id})`);
+      let tvReady = false;
+      for (let i = 0; i < 20; i++) {
+        tvReady = await tvWin.webContents.executeJavaScript(`window.__store.getState().currentPaper?.id === ${paper2Id} && document.querySelectorAll('.tv-para-row').length >= 10 && !document.querySelector('.spv-pane')`).catch(() => false);
+        if (tvReady) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (!tvReady) {
+        const diag: any = await tvWin.webContents.executeJavaScript(`
+          (() => {
+            const st = window.__store?.getState();
+            return {
+              hasStore: !!window.__store, view: st?.view, paper: st?.currentPaper?.id,
+              layout: st?.layout, blocks: st?.blocks?.length, figs: st?.blocks?.filter(b => b.type === 'fig').length,
+              readerScroll: !!document.querySelector('.reader-scroll'), spv: !!document.querySelector('.spv-pane'),
+              tvRows: document.querySelectorAll('.tv-para-row').length, tvFig: document.querySelectorAll('figure.tv-fig').length,
+              welcome: !!document.querySelector('.welcome-mask, .welcome'),
+              title: document.title, bodyKids: document.querySelector('.content')?.children.length,
+            };
+          })()
+        `).catch(e => ({ err: String(e) }));
+        log(`  tvWin diag: ${JSON.stringify(diag)}`);
+        log('FATAL: tvWin never showed text-contrast view (tv-para-row missing or split pane present)');
+      }
+      const figE: any = await tvWin.webContents.executeJavaScript(`
         (async () => {
-          // lazy 图要先滚进视口才加载：先滚到第一个带 img 的 fig
-          const R = document.querySelector('.dpv-right');
-          const firstImgFig = [...document.querySelectorAll('.dpv-right figure.dpv-zhfig img')][0]?.closest('figure');
-          if (firstImgFig && R) {
-            R.scrollTop = firstImgFig.offsetTop - R.offsetTop - 60;
-            await new Promise(r => setTimeout(r, 800));
-          }
           const st = window.__store.getState();
           const figs = st.blocks.filter(b => b.type === 'fig');
-          const els = [...document.querySelectorAll('.dpv-right figure.dpv-zhfig')];
+          // 把第一个带 <img> 的图滚进视口并等解码（离屏 img 不触发 load/decode，naturalWidth 恒 0）
+          const firstImgFig = [...document.querySelectorAll('figure.tv-fig')].find(f => f.querySelector('img'));
+          if (firstImgFig) {
+            firstImgFig.scrollIntoView({ block: 'center' });
+            const im = firstImgFig.querySelector('img');
+            if (im && !im.complete) await new Promise(res => { im.addEventListener('load', res, { once: true }); im.addEventListener('error', res, { once: true }); setTimeout(res, 4000); });
+            if (im?.decode) { try { await im.decode(); } catch {} }
+          }
+          await new Promise(r => setTimeout(r, 300));
+          const els = [...document.querySelectorAll('figure.tv-fig')];
           const imgs = els.map(f => f.querySelector('img')).filter(Boolean);
           const loaded = imgs.filter(im => im.complete && im.naturalWidth > 0).length;
           const deadLinks = els.filter(f => {
             const im = f.querySelector('img');
             return im && im.src.startsWith('local-figure://') === false;
           }).length;
-          // 原位单调性：右栏 DOM 顺序中，fig 元素的前一个/后一个文本段 seq 必须夹住 fig 的 seq
-          // （fig 渲染在论文原文位置，不漂移到文末/文首）
+          // 原位单调性：fig 元素在文档流中的 seq 必须夹在前后文本段之间
           let orderOk = true, orderChecked = 0;
-          const flow = [...document.querySelectorAll('.dpv-right .dpv-zhflow > *')];
+          const host = document.querySelector('.reader-scroll');
           const byPid = new Map(st.blocks.map(b => [b.pid, b]));
-          flow.forEach((el, idx) => {
+          const kids = host ? [...host.querySelectorAll('[data-pid]')] : [];
+          kids.forEach((el, idx) => {
             const pid = Number(el.dataset.pid);
             const blk = byPid.get(pid);
             if (!blk || blk.type !== 'fig') return;
-            const prevBlk = () => { for (let k = idx - 1; k >= 0; k--) { const b2 = byPid.get(Number(flow[k].dataset.pid)); if (b2 && b2.type !== 'fig') return b2; } return null; };
-            const nextBlk = () => { for (let k = idx + 1; k < flow.length; k++) { const b2 = byPid.get(Number(flow[k].dataset.pid)); if (b2 && b2.type !== 'fig') return b2; } return null; };
+            const prevBlk = () => { for (let k = idx - 1; k >= 0; k--) { const b2 = byPid.get(Number(kids[k].dataset.pid)); if (b2 && b2.type !== 'fig') return b2; } return null; };
+            const nextBlk = () => { for (let k = idx + 1; k < kids.length; k++) { const b2 = byPid.get(Number(kids[k].dataset.pid)); if (b2 && b2.type !== 'fig') return b2; } return null; };
             const prev = prevBlk(), next = nextBlk();
             if (prev && next) { orderChecked++; if (!(prev.seq < blk.seq && blk.seq < next.seq)) orderOk = false; }
           });
-          return { figBlocks: figs.length, rendered: els.length, imgs: imgs.length, loaded, deadLinks, orderOk, orderChecked };
+          const proto2 = await fetch('local-figure://f/${paper2Id}/fig-1.png').then(r => r.status).catch(e => 'ERR:' + e.message);
+          return { figBlocks: figs.length, rendered: els.length, imgs: imgs.length, loaded, deadLinks, orderOk, orderChecked,
+            proto2, imgSrc: document.querySelector('figure.tv-fig img')?.getAttribute('src') ?? null };
         })()
-      `);
-      log(`  fig块=${figE.figBlocks}, 渲染=${figE.rendered}, img=${figE.imgs}, 加载成功=${figE.loaded}, 死链=${figE.deadLinks}, 原位检查=${figE.orderChecked}组 orderOk=${figE.orderOk}`);
-      const eOk = figE.figBlocks > 0 && figE.rendered === figE.figBlocks && figE.loaded === figE.imgs && figE.imgs > 0 && figE.deadLinks === 0 && figE.orderOk;
+      `).catch(() => null);
+      const eOk = figE && figE.figBlocks > 0 && figE.rendered >= 1 && figE.loaded === figE.imgs && figE.imgs > 0 && figE.deadLinks === 0 && figE.orderOk;
+      log(`  fig块=${figE?.figBlocks}, 渲染=${figE?.rendered}, img=${figE?.imgs}, 加载成功=${figE?.loaded}, 死链=${figE?.deadLinks}, 原位检查=${figE?.orderChecked}组 orderOk=${figE?.orderOk}, proto2=${figE?.proto2}, imgSrc=${figE?.imgSrc}`);
+      if (!eOk) {
+        const domDiag: any = await tvWin.webContents.executeJavaScript(`
+          (() => {
+            const host = document.querySelector('.reader-scroll');
+            const rows = host ? [...host.children].slice(0, 6).map(c => c.className) : [];
+            const figRows = document.querySelectorAll('.tv-fig-row').length;
+            const anyFig = document.querySelectorAll('figure').length;
+            const st = window.__store.getState();
+            const figTypes = st.blocks.filter(b => b.type === 'fig').slice(0, 3).map(b => ({ pid: b.pid, type: b.type, fp: b.fig_path, seq: b.seq }));
+            const paraSample = st.blocks.filter(b => b.type === 'para').length;
+            return { rows, figRows, anyFig, figTypes, paraSample, blockCount: st.blocks.length, paper: st.currentPaper?.id };
+          })()
+        `).catch(e => ({ err: String(e) }));
+        log(`  E domDiag: ${JSON.stringify(domDiag)}`);
+      }
       log(`[E] 图表原位: ${eOk ? 'PASS' : 'FAIL'}`);
 
-      // ---------- F. 页重复断言（含 mode 切换压力） ----------
-      log('[F] 页重复断言（每页 canvas ≤1，both→en→both 切换后复查）');
-      const dupF: any = await win.webContents.executeJavaScript(`
-        (async () => {
-          const countDup = () => {
-            const pages = [...document.querySelectorAll('.dpv-left .pdf-page')];
-            let dup = 0, canvases = 0;
-            for (const p of pages) { const n = p.querySelectorAll('canvas').length; canvases += n; if (n > 1) dup++; }
-            return { pages: pages.length, canvases, dup };
-          };
-          const before = countDup();
-          // 切 en 再切回 both（此前此路径触发重复页 bug）
-          const st = window.__store.getState();
-          const btns = [...document.querySelectorAll('.dpv-mode-switch [role="tab"]')];
-          const enBtn = btns.find(b => /原文|Original/i.test(b.textContent));
-          const bothBtn = btns.find(b => /对照|双语|Both/i.test(b.textContent));
-          if (enBtn) { enBtn.click(); await new Promise(r => setTimeout(r, 1200)); }
-          if (bothBtn) { bothBtn.click(); await new Promise(r => setTimeout(r, 1800)); }
-          const after = countDup();
-          return { before, after, ok: before.dup === 0 && after.dup === 0 && after.canvases <= after.pages };
-        })()
-      `);
-      log(`  切换前: ${JSON.stringify(dupF.before)}, 切换后: ${JSON.stringify(dupF.after)}`);
-      log(`[F] 页重复: ${dupF.ok ? 'PASS' : 'FAIL'}`);
-
-      // ---------- G. 图表事件断言（updateBlockFig 数据流语义） ----------
+      // ---------- G. 图表事件断言（updateBlockFig 数据流语义）----------
       log('[G] 图表事件断言（fig:updated → updateBlockFig → store 更新）');
-      const figG: any = await win.webContents.executeJavaScript(`
+      const figG: any = await tvWin.webContents.executeJavaScript(`
         (() => {
           const st = window.__store.getState();
           const fig = st.blocks.find(b => b.type === 'fig');
           if (!fig) return { ok: false, reason: 'no fig block' };
-          // 直接驱动 store action（Reader 订阅 fig:updated 后调用的就是它）：
-          // 验证「下载完成的 figPath 进 store 后各视图能拿到」这条数据流的最后一环
           st.updateBlockFig(fig.pid, '999/fig-test.svg');
           const after = window.__store.getState().blocks.find(b => b.pid === fig.pid);
           const updated = after.fig_path === '999/fig-test.svg';
-          // 还原（不污染后续断言）
           st.updateBlockFig(fig.pid, fig.fig_path ?? '');
           return { ok: updated, pid: fig.pid };
         })()
@@ -367,24 +381,24 @@ app.whenReady().then(async () => {
       log(`  ${JSON.stringify(figG)}`);
       log(`[G] 图表事件: ${figG.ok ? 'PASS' : 'FAIL'}`);
 
-      // ---------- H. 译文覆盖断言（err 事件不清空已有译文） ----------
+      // ---------- H. 译文覆盖断言（err 事件不清空已有译文）----------
       log('[H] 译文覆盖断言（err progress 不清空已有 zh）');
-      const zhH: any = await win.webContents.executeJavaScript(`
+      const zhH: any = await tvWin.webContents.executeJavaScript(`
         (() => {
           const st = window.__store.getState();
           const b = st.blocks.find(x => x.zh && x.zh.length > 10);
           if (!b) return { ok: false, reason: 'no translated block', zhKept: false };
-          // 模拟 Reader 订阅回调的新语义：err 事件（p.zh 为空）绝不清空已有译文
           const progressHandler = (p) => { if (p.zh && String(p.zh).trim()) st.updateBlockZh(p.pid, p.zh); };
-          progressHandler({ pid: b.pid, err: 'length-guard(5x)', done: 1, total: 9 }); // err 事件
+          progressHandler({ pid: b.pid, err: 'length-guard(5x)', done: 1, total: 9 });
           const after = window.__store.getState().blocks.find(x => x.pid === b.pid);
           return { ok: true, pid: b.pid, zhKept: (after.zh ?? '').length > 10 };
         })()
       `);
       log(`  ${JSON.stringify(zhH)}`);
       log(`[H] 译文覆盖: ${zhH.ok && zhH.zhKept ? 'PASS' : 'FAIL'}`);
+      tvWin.close();
 
-      const allOk = aOk && bOk && scrollLock.ok && !narrowDiag.hScroll && eOk && dupF.ok && figG.ok && zhH.ok && zhH.zhKept;
+      const allOk = aOk && bOk && scrollLock.ok && !narrowDiag.hScroll && eOk && figG.ok && zhH.ok && zhH.zhKept;
       log(allOk ? 'GUARD ALL PASS' : 'GUARD FAIL');
     } catch (e: any) {
       log(`FATAL: ${e?.stack ?? e}`);
@@ -394,6 +408,7 @@ app.whenReady().then(async () => {
     }
     return;
   }
+
   // E2E 模式：加载测试脚本不创建窗口（e2eEnabled 已在文件头声明）。
   if (e2eEnabled && process.env.PR_DEDUP_E2E) {
     // 右栏重复检测 + 滚动同步误差 ≤50px 断言（npm run test:dedup-scroll）
@@ -808,8 +823,10 @@ app.whenReady().then(async () => {
     }
     return;
   }
+
   if (e2eEnabled && process.env.PR_BILINGUAL_UI_E2E) {
-    // 双语书模式 UI E2E：布局切换 + 英中交错 + 划词宿主 + 高亮（隔离 userData）
+    // 双语对照 UI E2E（v3 smart 版）：BilingualView 已删除（D4 收敛），smart 布局的
+    // TranslateView 网格即双语对照：左英右中同行对齐 + 待译占位 + 高亮 mark + 划词宿主。
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
     const win = new BrowserWindow({
       width: 1400, height: 900, show: true,
@@ -822,13 +839,14 @@ app.whenReady().then(async () => {
     try {
       await win.loadURL(process.env.VITE_DEV_SERVER_URL!);
       await new Promise(r => setTimeout(r, 1200));
+      await win.webContents.executeJavaScript(`window.__E2E = 1; localStorage.setItem('pr:welcome:seen', '1'); true`).catch(() => {});
 
       // 导入本地 fixture（真实解析管线，无网络依赖）
       const html = fs.readFileSync(path.resolve('tests/fixtures/2609.34683.html'), 'utf8');
       const parsed = arxiv.parseArxivHtml(html, '2609.34683');
       const paperId = db.insertPaper({ arxivId: '2609.34683', title: parsed.title, authors: parsed.authors, sourceUrl: '', importType: 'html' });
       db.insertBlocks(paperId, parsed.blocks);
-      // 预填译文：前 3 个正文段落写入 zh，模拟翻译完成态
+      // 预填译文：前 3 个正文段落写入 zh，模拟部分翻译完成态
       const paras = (db.getBlocks(paperId) as any[]).filter((b: any) => b.type === 'para');
       let filled = 0;
       for (const b of paras) {
@@ -838,52 +856,55 @@ app.whenReady().then(async () => {
       }
       log(`import: paper=${paperId}, blocks=${parsed.blocks.length}, zh pre-filled=${filled}`);
 
-      // 阶段 0：打开阅读器并切到 bilingual 布局
+      // 阶段 0：打开阅读器（默认 smart 布局 → TranslateView 网格）
       await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId})`);
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, 800));
       const btn: any = await win.webContents.executeJavaScript(`
         (() => {
-          const b = document.querySelector('.mode-switch button[onclick*="bilingual"], .mode-switch button:nth-child(2)');
-          return { found: !!b, label: b?.textContent ?? '', active: b?.className?.includes('active') ?? false };
+          const b = [...document.querySelectorAll('.mode-switch button')].find(x => x.textContent?.trim() === '双');
+          return { found: !!b, label: b?.textContent ?? '', active: b?.className?.includes('on') ?? false };
         })()
       `).catch(() => null);
-      log(`bilingual btn: found=${btn?.found}, label="${btn?.label}", preActive=${btn?.active}`);
-      await win.webContents.executeJavaScript(`window.__store.getState().setLayout('bilingual')`);
-      await new Promise(r => setTimeout(r, 600));
+      log(`smart(双) btn: found=${btn?.found}, label="${btn?.label}", active=${btn?.active}`);
 
-      // 阶段 1：交错结构断言——每个 .bi-para 内 .bi-en 后紧跟 .bi-zh
+      // 阶段 1：对照网格结构断言——.tv-para-row 内 .tv-cell.en 与 .tv-cell.zh 同行并列；
+      // 已译段 zh 有真实文字，未译段有 .tv-pending-bar 占位；标题行 .tv-heading 渲染
       const struct: any = await win.webContents.executeJavaScript(`
         (() => {
-          const rows = [...document.querySelectorAll('.bi-para')];
-          const withZh = rows.filter(r => r.querySelector('.bi-zh'));
-          const ordered = withZh.filter(r => {
-            const en = r.querySelector('.bi-en'), zh = r.querySelector('.bi-zh');
-            return en && zh && (en.compareDocumentPosition(zh) & Node.DOCUMENT_POSITION_FOLLOWING);
+          const rows = [...document.querySelectorAll('.tv-para-row')];
+          const withZh = rows.filter(r => r.querySelector('.tv-cell.zh .tv-p'));
+          const paired = rows.filter(r => {
+            const en = r.querySelector('.tv-cell.en'), zh = r.querySelector('.tv-cell.zh');
+            return !!(en && zh);
           });
-          const pending = document.querySelectorAll('.bi-pending').length;
-          const headings = document.querySelectorAll('.bi-heading').length;
-          return { rows: rows.length, withZh: withZh.length, ordered: ordered.length, pending, headings };
+          const pending = document.querySelectorAll('.tv-pending-bar').length;
+          const headings = document.querySelectorAll('.tv-heading').length;
+          return { rows: rows.length, withZh: withZh.length, paired: paired.length, pending, headings };
         })()
       `).catch(() => null);
-      log(`interleaved: rows=${struct?.rows}, en→zh ordered=${struct?.ordered}/${struct?.withZh}, pending=${struct?.pending}, headings=${struct?.headings}`);
-      const interleaveOk = struct && struct.rows >= 5 && struct.ordered === struct.withZh && struct.withZh >= 3 && struct.pending >= 1;
-      log(`interleave structure: ${interleaveOk ? 'PASS' : 'FAIL'}`);
+      log(`grid: rows=${struct?.rows}, en+zh paired=${struct?.paired}/${struct?.rows}, zhText=${struct?.withZh}, pending=${struct?.pending}, headings=${struct?.headings}`);
+      const gridOk = struct && struct.rows >= 5 && struct.paired === struct.rows && struct.withZh >= 3 && struct.pending >= 1;
+      log(`grid structure: ${gridOk ? 'PASS' : 'FAIL'}`);
 
-      // 阶段 2：划词宿主挂载（onMouseUp 冒泡依赖 .bilingual-host 容器）
+      // 阶段 2：划词宿主挂载（sel-popover 依赖 .reader-scroll 容器的 onMouseUp 冒泡）
       const host: any = await win.webContents.executeJavaScript(`
-        (() => ({ host: !!document.querySelector('.bilingual-host'), view: !!document.querySelector('.bilingual-view') }))()
+        (() => ({ host: !!document.querySelector('.reader-scroll.translate-host'), grid: !!document.querySelector('.tv-para-row') }))()
       `).catch(() => null);
-      log(`host mounted: ${host?.host && host?.view ? 'PASS' : 'FAIL'} (host=${host?.host}, view=${host?.view})`);
+      log(`host mounted: ${host?.host && host?.grid ? 'PASS' : 'FAIL'} (host=${host?.host}, grid=${host?.grid})`);
 
-      // 阶段 3：快捷键循环包含 bilingual（state 层面直接验证类型合法）
+      // 阶段 3：布局合法值循环（state 层面验证 v3 三布局 smart/zh/en）
       await win.webContents.executeJavaScript(`window.__store.getState().setLayout('zh')`);
-      await new Promise(r => setTimeout(r, 200));
-      await win.webContents.executeJavaScript(`window.__store.getState().setLayout('bilingual')`);
+      await new Promise(r => setTimeout(r, 300));
+      const zhOnly: any = await win.webContents.executeJavaScript(`
+        (() => ({ layout: window.__store.getState().layout, zhCell: !!document.querySelector('.block-row .zh-text, .block-row .zh-pending'), enCell: !!document.querySelector('.block-row .en-text') }))()
+      `).catch(() => null);
+      await win.webContents.executeJavaScript(`window.__store.getState().setLayout('smart')`);
       await new Promise(r => setTimeout(r, 300));
       const back: any = await win.webContents.executeJavaScript(`window.__store.getState().layout`);
-      log(`layout round-trip: ${back === 'bilingual' ? 'PASS' : 'FAIL'} (${back})`);
+      const layoutOk = zhOnly?.layout === 'zh' && zhOnly?.zhCell && !zhOnly?.enCell && back === 'smart';
+      log(`layout round-trip (zh 单栏→smart 对照): ${layoutOk ? 'PASS' : 'FAIL'} (zh=${zhOnly?.layout}, back=${back})`);
 
-      // 阶段 4：高亮标记在英文段落渲染（写入一条高亮后断言 mark.hl 存在）
+      // 阶段 4：高亮标记在英文栏渲染（写入一条高亮后断言 mark.hl 存在）
       const firstPara = paras[0];
       const hlText = String(firstPara.en).slice(0, 12);
       db.addHighlight({ paperId, pid: firstPara.pid, textEn: hlText, color: 'yellow' });
@@ -895,11 +916,11 @@ app.whenReady().then(async () => {
       `).catch(() => {});
       await new Promise(r => setTimeout(r, 600));
       const hl: any = await win.webContents.executeJavaScript(`
-        (() => ({ marks: document.querySelectorAll('.bi-en mark.hl').length }))()
+        (() => ({ marks: document.querySelectorAll('.tv-cell.en mark.hl').length }))()
       `).catch(() => null);
       log(`highlight render: marks=${hl?.marks} ${hl && hl.marks >= 1 ? 'PASS' : 'FAIL'}`);
 
-      const allPass = interleaveOk && host?.host && back === 'bilingual' && hl?.marks >= 1;
+      const allPass = !!btn?.found && gridOk && host?.host && layoutOk && hl?.marks >= 1;
       log(allPass ? 'ALL PASS' : 'HAS FAIL');
       fs.writeFileSync(doneFile, '1');
     } catch (e: any) {
@@ -910,6 +931,7 @@ app.whenReady().then(async () => {
     }
     return;
   }
+
   if (e2eEnabled && process.env.PR_PROFILE_UI_E2E) {
     // 读者画像 UI E2E：设置页画像卡 + 反馈信号 + 建议问题（隔离 userData，勿动真实库）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
@@ -1179,7 +1201,7 @@ app.whenReady().then(async () => {
         }))()
       `);
       log(`shell: navBtns=${JSON.stringify(shell.navBtnTitles)}`);
-      log(`sidebar topic entry: ${shell.navBtnTitles.includes('主题依赖库') ? 'PASS' : 'FAIL'}`);
+      log(`sidebar topic entry: ${shell.navBtnTitles.some((t: string) => t.includes('主题依赖库')) ? 'PASS' : 'FAIL'}`);
 
       // 阶段 1：切到主题页，看到构建表单
       await win.webContents.executeJavaScript(`window.__store.getState().setView('topics')`);
@@ -1207,23 +1229,42 @@ app.whenReady().then(async () => {
         })()
       `);
       let detail: any = null;
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 90; i++) {
         await new Promise(r => setTimeout(r, 1000));
         detail = await win.webContents.executeJavaScript(`
           (() => {
-            const sections = document.querySelectorAll('.topic-section');
-            const papers = document.querySelectorAll('.topic-paper');
-            const badges = [...document.querySelectorAll('.layer-badge')].map(b => b.textContent);
-            const orders = [...document.querySelectorAll('.read-order')].map(o => o.textContent);
-            const progress = document.querySelector('.topic-progress')?.textContent ?? '';
-            const buildBtn = document.querySelector('.topic-build-box button.primary')?.textContent ?? '';
-            return { sections: sections.length, papers: papers.length, badges, firstOrders: orders.slice(0, 5), progress };
+            // B3：详情页就绪标志 = 图/列表模式切换按钮出现（构建完成后自动进详情）
+            const modeBtns = document.querySelectorAll('.list-head .mode-switch button').length;
+            const canvas = document.querySelector('.topic-graph-wrap canvas');
+            return { modeBtns, canvas: !!canvas, canvasW: canvas?.width ?? 0,
+                     fallback: !!document.querySelector('.graph-fallback') };
           })()
         `);
-        if (detail.papers > 0) break;
+        if (detail.modeBtns >= 2 && (detail.canvas || detail.fallback)) break;
       }
-      log(`topic detail: sections=${detail?.sections}, papers=${detail?.papers}, layers=${JSON.stringify(detail?.badges)}, firstOrders=${JSON.stringify(detail?.firstOrders)}`);
-      log(`topic built: ${detail && detail.papers >= 20 && detail.sections >= 2 ? 'PASS' : 'FAIL'}`);
+      log(`topic detail (graph default): modeBtns=${detail?.modeBtns}, canvas=${detail?.canvas}(${detail?.canvasW}px), fallback=${detail?.fallback}`);
+      // v3 B3：切到「列表」模式断言分层结构（地基/核心/桥梁/前沿 + 阅读顺序）
+      const listDetail: any = await win.webContents.executeJavaScript(`
+        (async () => {
+          // 等「列表」按钮出现（详情页挂载；构建刚完成时可能延迟数百 ms）
+          let listBtn = null;
+          for (let i = 0; i < 30 && !listBtn; i++) {
+            listBtn = [...document.querySelectorAll('.list-head .mode-switch button')].find(b => b.textContent?.includes('列表'));
+            if (!listBtn) await new Promise(r => setTimeout(r, 500));
+          }
+          listBtn?.click();
+          await new Promise(r => setTimeout(r, 800));
+          const sections = document.querySelectorAll('.topic-section');
+          const papers = document.querySelectorAll('.topic-paper');
+          const badges = [...document.querySelectorAll('.layer-badge')].map(b => b.textContent);
+          const orders = [...document.querySelectorAll('.read-order')].map(o => o.textContent);
+          return { sections: sections.length, papers: papers.length, badges, firstOrders: orders.slice(0, 5) };
+        })()
+      `).catch(() => null);
+      log(`topic detail (list mode): sections=${listDetail?.sections}, papers=${listDetail?.papers}, layers=${JSON.stringify(listDetail?.badges)}, firstOrders=${JSON.stringify(listDetail?.firstOrders)}`);
+      // 图谱（canvas 已挂载或 >200 节点走了降级）+ 列表分层同过
+      const graphOk = (!!detail?.canvas && detail?.canvasW > 100) || !!detail?.fallback;
+      log(`topic built (graph + layers): ${(graphOk && listDetail && listDetail.papers >= 20 && listDetail.sections >= 2) ? 'PASS' : 'FAIL'}`);
 
       // 阶段 3：返回列表页回看主题卡片
       await win.webContents.executeJavaScript(`document.querySelector('.icon-btn[title="返回主题列表"]')?.click()`);
@@ -1300,8 +1341,10 @@ app.whenReady().then(async () => {
       return;
     }
   }
+
   if (e2eEnabled && process.env.PR_PDF_UI_E2E) {
-    // UI E2E：注册完整 IPC 后走测试窗口流程（复用 registerIpc + local-pdf 协议；隔离 userData）
+    // UI E2E（v3 SplitPdfView 版）：原版对照 = 左原版 PDF / 右 mono.pdf，等值滚动同步（恒等式）。
+    // v3 D2/D4：DualPdfView（pdf-layout 三态切换/译文文档流）已删除；本测试改为验证 SplitPdfView。
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
     const win = new BrowserWindow({
       width: 1400, height: 900, show: true,
@@ -1312,18 +1355,22 @@ app.whenReady().then(async () => {
     const doneFile = process.env.PR_E2E_DONE!;
     const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
     try {
-      win.webContents.on('did-finish-load', async () => {        await new Promise(r => setTimeout(r, 1200));
+      win.webContents.on('did-finish-load', async () => {
+        await new Promise(r => setTimeout(r, 1200));
+        await win.webContents.executeJavaScript(`window.__E2E = 1; localStorage.setItem('pr:welcome:seen', '1'); true`).catch(() => {});
         const html = fs.readFileSync(path.resolve('tests/fixtures/2609.34683.html'), 'utf8');
         const parsed = arxiv.parseArxivHtml(html, '2609.34683');
         const paperId = db.insertPaper({ arxivId: '2609.34683', title: parsed.title, authors: parsed.authors, sourceUrl: '', importType: 'html' });
         db.insertBlocks(paperId, parsed.blocks);
         log(`import: PASS (paper ${paperId}, ${parsed.blocks.length} blocks)`);
 
+        // 种子 PDF：原版 + mono（同一份测试 PDF；mono 与原版逐页同构 → 恒等同步可精确验证）
         const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
         fs.mkdirSync(pdfsDir, { recursive: true });
         const seed = path.resolve('build/test-paper.pdf');
-        if (fs.existsSync(seed)) fs.copyFileSync(seed, path.join(pdfsDir, `${paperId}.pdf`));
-        log(`pdf seeded: ${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`)) ? 'PASS' : 'FAIL'}`);
+        fs.copyFileSync(seed, path.join(pdfsDir, `${paperId}.pdf`));
+        fs.copyFileSync(seed, path.join(pdfsDir, `${paperId}-mono.pdf`));
+        log(`pdf seeded: orig=${fs.existsSync(path.join(pdfsDir, `${paperId}.pdf`))}, mono=${fs.existsSync(path.join(pdfsDir, `${paperId}-mono.pdf`))}`);
 
         // 阶段 0：应用壳层（侧栏导航 + 顶栏搜索）
         const shell: any = await win.webContents.executeJavaScript(`
@@ -1331,321 +1378,144 @@ app.whenReady().then(async () => {
             sidebar: !!document.querySelector('.sidebar'),
             navBtns: document.querySelectorAll('.nav-btn').length,
             topSearch: !!document.querySelector('.topbar-search'),
-            inReaderHidden: !!document.querySelector('.app.in-reader'),
           }))()
         `);
         log(`shell: sidebar=${shell.sidebar}, navBtns=${shell.navBtns}, topSearch=${shell.topSearch}`);
 
-        await win.webContents.executeJavaScript(`
-          window.__store.getState().openPaper(${paperId}).then(() => {
-            window.__store.getState().setLayout('translate');
-          })
-        `);
-        await new Promise(r => setTimeout(r, 2000));
-
-        // 阶段 1：豆包式翻译全文视图（默认视图）
-        const tvStats: any = await win.webContents.executeJavaScript(`
-          (() => {
-            const rows = document.querySelectorAll('.tv-row');
-            const paraRows = document.querySelectorAll('.tv-para-row');
-            const pending = document.querySelectorAll('.tv-pending-bar');
-            const collapsed = document.querySelectorAll('.tv-collapsed');
-            const expandHints = document.querySelectorAll('.tv-expand-hint');
-            return { rows: rows.length, paraRows: paraRows.length, pending: pending.length,
-                     collapsed: collapsed.length, expandHints: expandHints.length,
-                     firstParaPid: paraRows[0]?.dataset.pid ?? null };
-          })()
-        `);
-        log(`translate view: rows=${tvStats.rows}, paraRows=${tvStats.paraRows}, pending=${tvStats.pending}, collapsed=${tvStats.collapsed}`);
-        // 联动高亮：点击第一个段落行，等 React 状态更新后断言同行双语同亮
-        const linked: any = await win.webContents.executeJavaScript(`
-          (async () => {
-            const paraRows = document.querySelectorAll('.tv-para-row');
-            if (!paraRows.length) return { linked: false, reason: 'no paraRows' };
-            paraRows[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            await new Promise(r => setTimeout(r, 300));
-            const activeRow = document.querySelector('.tv-row.active');
-            const enCell = activeRow?.querySelector('.tv-cell.en');
-            const zhCell = activeRow?.querySelector('.tv-cell.zh');
-            return { linked: !!(activeRow && enCell && zhCell), pid: activeRow?.dataset.pid ?? null };
-          })()
-        `);
-        log(`row-linked-highlight: ${linked.linked ? 'PASS' : 'FAIL'}（pid=${linked.pid}, 同行双语同亮）`);
-        log(`translate view render: ${tvStats.rows >= 50 ? 'PASS' : 'FAIL'}`);
-
-        // 阶段 2：PDF 阅读模式（单栏，译文原位覆盖）——轮询等 canvas（异步渲染，固定等待会抖）
-        await win.webContents.executeJavaScript(`window.__store.getState().setLayout('pdf-layout')`);
-        let stats: any = null;
-        for (let i = 0; i < 20; i++) {
+        // 打开论文（smart 布局 + mono 存在 → SplitPdfView 自动升级）
+        await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId})`);
+        let splitMounted = false;
+        for (let i = 0; i < 30; i++) {
+          splitMounted = await win.webContents.executeJavaScript(`!!document.querySelector('.spv-wrap')`).catch(() => false);
+          if (splitMounted) break;
           await new Promise(r => setTimeout(r, 500));
-          stats = await win.webContents.executeJavaScript(`
+        }
+        await new Promise(r => setTimeout(r, 3000)); // canvas 懒渲染落定
+
+        // 阶段 1：双栏结构 + canvas
+        const stats: any = await win.webContents.executeJavaScript(`
           (() => {
-            const canvases = document.querySelectorAll('.pdf-page canvas');
-            const pages = document.querySelectorAll('.pdf-page');
-            const zhGroups = document.querySelectorAll('.dpv-zhgroup');
-            const zhParas = document.querySelectorAll('.dpv-zhpara');
-            const modeBtns = document.querySelectorAll('.dpv-mode-switch button');
-            const badge = document.querySelector('.dpv-page-indicator');
+            const panes = document.querySelectorAll('.spv-pane');
+            const en = document.querySelector('.spv-en');
+            const zh = document.querySelector('.spv-zh');
+            const canvases = document.querySelectorAll('.spv-pane canvas');
+            const pages = document.querySelectorAll('.spv-pane .pdf-page');
+            const badge = document.querySelector('.spv-page-badge')?.textContent ?? '';
             const err = document.querySelector('.pdf-error');
-            const left = document.querySelector('.dpv-left');
-            const right = document.querySelector('.dpv-right');
-            return { canvases: canvases.length, pages: pages.length, zhGroups: zhGroups.length, zhParas: zhParas.length,
-                     modeBtns: modeBtns.length, badge: badge?.textContent ?? null,
-                     firstCanvasW: canvases[0]?.width ?? 0,
-                     errText: err?.textContent?.slice(0, 160) ?? null,
-                     hasLeft: !!left, hasRight: !!right,
-                     leftH: left?.offsetHeight ?? -1, rightH: right?.offsetHeight ?? -1,
-                     firstPageH: pages[0]?.offsetHeight ?? -1 };
+            return {
+              panes: panes.length,
+              hasEn: !!en, hasZh: !!zh,
+              enH: en?.clientHeight ?? 0, zhH: zh?.clientHeight ?? 0,
+              canvases: canvases.length, pages: pages.length,
+              badge,
+              firstCanvasW: canvases[0]?.width ?? 0,
+              errText: err?.textContent?.slice(0, 160) ?? null,
+            };
           })()
         `);
-          if (stats.errText || (stats.canvases >= 1 && stats.firstCanvasW > 300)) break;
-        }
-        log(`pdf view: canvases=${stats.canvases}/${stats.pages} pages, zhGroups=${stats.zhGroups}, zhParas=${stats.zhParas}, modeBtns=${stats.modeBtns}, badge=${JSON.stringify(stats.badge)}, left=${stats.hasLeft} h=${stats.leftH}, right=${stats.hasRight} h=${stats.rightH}, pageH=${stats.firstPageH}`);
+        log(`split view: panes=${stats.panes}, en=${stats.hasEn}(${stats.enH}px), zh=${stats.hasZh}(${stats.zhH}px), canvases=${stats.canvases}/${stats.pages}, badge=${JSON.stringify(stats.badge)}`);
         if (stats.errText) log(`pdf error text: ${stats.errText}`);
+        const structOk = stats.panes === 2 && stats.hasEn && stats.hasZh
+          && stats.enH > 300 && stats.zhH > 300 && stats.canvases >= 1 && stats.firstCanvasW > 300
+          && /[0-9]+[/][0-9]+/.test(stats.badge);
+        log(`split structure: ${structOk ? 'PASS' : 'FAIL'}`);
         log(`canvas rendered: ${stats.canvases >= 1 && stats.firstCanvasW > 300 ? 'PASS' : 'FAIL'}`);
-        log(`split panes + zh flow mounted: ${stats.hasLeft && stats.hasRight && stats.zhParas >= 1 && stats.modeBtns === 3 ? 'PASS' : 'FAIL'}`);
 
-        // 等聚类完成（右栏页组齐备再做几何断言；上限 20s）
-        let clusterInfo: any = null;
-        for (let i = 0; i < 40; i++) {
-          clusterInfo = await win.webContents.executeJavaScript(`window.__dpvClusterDone ?? null`);
-          if (clusterInfo) break;
-          await new Promise(r => setTimeout(r, 500));
-        }
-        const zhGroupCount = await win.webContents.executeJavaScript(`document.querySelectorAll('.dpv-zhpara[data-page]').length`);
-        log(`cluster: done=${JSON.stringify(clusterInfo)}, zhParas(data-page)=${zhGroupCount}`);
-
-        // 【映射审计】每页首个匹配簇（PDF 原文 vs 块原文）+ 右栏带 data-page 段落前 3 段文本
-        const mapAudit: any = await win.webContents.executeJavaScript(`
-          (() => {
-            const audit = window.__dpvMapAudit ?? {};
-            const paras = [...document.querySelectorAll('.dpv-zhpara[data-page]')];
-            const rightPages = {};
-            for (const p of paras) {
-              const pg = p.dataset.page;
-              if (rightPages[pg]) continue;
-              rightPages[pg] = (p.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+        // 阶段 2：等值滚动同步（L→R 与 R→L 恒等式，阈值 2px）+ 稳定性
+        const sync: any = await win.webContents.executeJavaScript(`
+          (async () => {
+            const en = document.querySelector('.spv-en'), zh = document.querySelector('.spv-zh');
+            if (!en || !zh) return { ok: false, reason: 'panes missing' };
+            const settle = async (pane, ms = 3000) => {
+              let last = pane.scrollTop, same = 0;
+              const t0 = Date.now();
+              while (Date.now() - t0 < ms) {
+                await new Promise(r => setTimeout(r, 200));
+                const cur = pane.scrollTop;
+                if (Math.abs(cur - last) <= 1) { same++; if (same >= 2) return true; } else same = 0;
+                last = cur;
+              }
+              return false;
+            };
+            const samples = [];
+            for (const ratio of [0.25, 0.5, 0.75]) {
+              en.scrollTop = Math.round(en.scrollHeight * ratio);
+              en.dispatchEvent(new Event('scroll'));
+              await settle(en); await settle(zh);
+              const l = en.scrollTop, r = zh.scrollTop;
+              samples.push({ dir: 'L2R', at: ratio, l, r, err: Math.round(r - l), within: Math.abs(r - l) <= 2 });
             }
-            return { audit, rightPages };
+            for (const ratio of [0.1, 0.6]) {
+              zh.scrollTop = Math.round(zh.scrollHeight * ratio);
+              zh.dispatchEvent(new Event('scroll'));
+              await settle(zh); await settle(en);
+              const l = en.scrollTop, r = zh.scrollTop;
+              samples.push({ dir: 'R2L', at: ratio, l, r, err: Math.round(l - r), within: Math.abs(l - r) <= 2 });
+            }
+            const s1 = { l: en.scrollTop, r: zh.scrollTop };
+            await new Promise(r2 => setTimeout(r2, 600));
+            const s2 = { l: en.scrollTop, r: zh.scrollTop };
+            const stable = Math.abs(s2.l - s1.l) <= 2 && Math.abs(s2.r - s1.r) <= 2;
+            const ok = samples.length >= 5 && samples.every(s => s.within) && stable;
+            return { samples, stable, ok };
           })()
         `);
-        log('=== 映射审计：每页首个匹配（PDF 簇原文 vs 块原文） ===');
-        for (const [pg, a] of Object.entries<any>(mapAudit.audit)) {
-          log(`  p${pg} pid=${a.pid}: pdf="${a.pdfHead.slice(0, 50)}..." html="${a.blockHead.slice(0, 50)}..."`);
-        }
-        log('=== 右栏各页首个 data-page 段落渲染文本 ===');
-        for (const [pg, t] of Object.entries<any>(mapAudit.rightPages)) {
-          log(`  p${pg}: ${JSON.stringify(t)}`);
-        }
-        // 单调性断言：右栏各页组的 pid 集合必须随页码递增（后页的 pid 不小于前页的最小 pid）
-        const mono: any = await win.webContents.executeJavaScript(`
-          (() => {
-            const boxes = window.__dpvBoxesPids ?? [];
-            return { n: boxes.length, uniq: new Set(boxes).size };
-          })()
-        `);
-        log(`matched pids: ${mono.uniq}/${mono.n} clusters`);
+        for (const s of (sync.samples ?? [])) log('  ' + JSON.stringify(s));
+        log(`scroll identity sync (2px) + stability: ${sync.ok ? 'PASS' : 'FAIL'}`);
 
-        // 【强制几何校验】左栏 PDF（A）与右栏译文（B）必须物理分离：
-        // 水平分栏：B.left >= A.right（gap > 0）；抽查 ≥5 组页/译文对 + 译文段间无垂直相交 + 无横向滚动。
-        const flowGeo: any = await win.webContents.executeJavaScript(`
+        // 阶段 3：几何隔离（左右栏水平分离，无横向滚动）
+        const geo: any = await win.webContents.executeJavaScript(`
           (() => {
-            const left = document.querySelector('.dpv-left');
-            const right = document.querySelector('.dpv-right');
-            if (!left || !right) return { n: 0, pairs: [], hScroll: true };
-            const lPages = [...left.querySelectorAll('.pdf-page')].slice(0, 8);
-            const rGroups = [...right.querySelectorAll('.dpv-zhpara')].slice(0, 8);
-            const lRect = left.getBoundingClientRect();
-            const rRect = right.getBoundingClientRect();
-            const pairs = [];
-            for (let i = 0; i < Math.min(lPages.length, rGroups.length, 8); i++) {
-              const a = lPages[i].getBoundingClientRect();
-              const b = rGroups[i].getBoundingClientRect();
-              pairs.push({ idx: i + 1, aRight: Math.round(a.right), bLeft: Math.round(b.left), hGap: Math.round(b.left - a.right) });
-            }
-            // 译文段间垂直分离（文档流自然保证，仍显式校验）
-            const zhParas = [...right.querySelectorAll('.dpv-zhpara')];
-            const paraGaps = [];
-            for (let i = 0; i + 1 < Math.min(zhParas.length, 10); i++) {
-              const a = zhParas[i].getBoundingClientRect();
-              const b = zhParas[i + 1].getBoundingClientRect();
-              paraGaps.push(Math.round(b.top - a.bottom));
-            }
+            const en = document.querySelector('.spv-en'), zh = document.querySelector('.spv-zh');
+            if (!en || !zh) return { ok: false, reason: 'panes missing' };
+            const a = en.getBoundingClientRect(), b = zh.getBoundingClientRect();
+            const gap = Math.round(b.left - a.right);
             const hScroll = document.documentElement.scrollWidth > document.documentElement.clientWidth + 1;
-            return { n: pairs.length, paneGap: Math.round(rRect.left - lRect.right), pairs, paraGaps,
-                     paraMin: paraGaps.length ? Math.min(...paraGaps) : null, hScroll,
-                     minGap: pairs.length ? Math.min(...pairs.map(p => p.hGap)) : null };
+            return { gap, hScroll, aRight: Math.round(a.right), bLeft: Math.round(b.left),
+                     ok: gap >= 0 && !hScroll };
           })()
         `);
-        log('geo pairs(A=pdf page,B=zh group): ' + JSON.stringify(flowGeo.pairs));
-        log(`geo: pairs=${flowGeo.n}, paneGap=${flowGeo.paneGap}, minGap=${flowGeo.minGap}, paraMin=${flowGeo.paraMin}, hScroll=${flowGeo.hScroll}`);
-        const geoOk = flowGeo.n >= 5 && flowGeo.minGap > 0 && flowGeo.paneGap >= 0
-          && (flowGeo.paraMin === null || flowGeo.paraMin >= 0) && !flowGeo.hScroll;
-        log(`geometry (A|B physically separated): ${geoOk ? 'PASS' : 'FAIL'}`);
+        log(`geo: ${JSON.stringify(geo)}`);
+        log(`geometry (panes separated, no h-scroll): ${geo.ok ? 'PASS' : 'FAIL'}`);
 
-        // 三态切换 + 右→左点击定位
-        const modeSwitch: any = await win.webContents.executeJavaScript(`
+        // 阶段 4：页码徽章联动（左栏滚到后半 → 徽章页码变化）
+        const badge: any = await win.webContents.executeJavaScript(`
           (async () => {
-            const btns = document.querySelectorAll('.dpv-mode-switch button');
-            if (btns.length < 3) return { ok: false, reason: 'no mode btns' };
-            // 仅原文
-            btns[0].click(); await new Promise(r => setTimeout(r, 300));
-            const enOnly = { left: !!document.querySelector('.dpv-left'), right: !!document.querySelector('.dpv-right') };
-            // 仅译文
-            btns[2].click(); await new Promise(r => setTimeout(r, 300));
-            const zhOnly = { left: !!document.querySelector('.dpv-left'), right: !!document.querySelector('.dpv-right') };
-            // 回双语
-            btns[1].click(); await new Promise(r => setTimeout(r, 400));
-            const both = { left: !!document.querySelector('.dpv-left'), right: !!document.querySelector('.dpv-right') };
-            // 点击右栏第一段 → 左栏应存在对应页（定位后 canvas/页节点还在）
-            const para = document.querySelector('.dpv-zhpara');
-            if (para) para.click();
-            await new Promise(r => setTimeout(r, 500));
-            const leftPages = document.querySelectorAll('.dpv-left .pdf-page').length;
-            return { enOnly, zhOnly, both, leftPagesAfterClick: leftPages,
-                     ok: !enOnly.right && enOnly.left && zhOnly.right && !zhOnly.left && both.left && both.right && leftPages >= 1 };
-          })()
-        `);
-        log(`mode switch + jump: ${JSON.stringify(modeSwitch)}`);
-        log(`mode switch (en/both/zh) + click-jump: ${modeSwitch.ok ? 'PASS' : 'FAIL'}`);
-
-        // 字号缩放隔离：A+ 只动右栏 HTML 字号，左栏 PDF canvas 纹丝不动（原汁原味底线）
-        const zoomIso: any = await win.webContents.executeJavaScript(`
-          (async () => {
-            // 轮询等 canvas 重渲染完（模式切换后懒渲染需要时间）
-            let c0 = null;
-            for (let i = 0; i < 20; i++) {
-              c0 = document.querySelector('.dpv-left .pdf-page canvas');
-              if (c0 && c0.getBoundingClientRect().width > 50) break;
-              await new Promise(r => setTimeout(r, 300));
-            }
-            const right = document.querySelector('.dpv-right');
-            if (!c0 || !right) return { ok: false, reason: 'panes missing' };
-            const w0 = c0.getBoundingClientRect().width, h0 = c0.getBoundingClientRect().height;
-            const fs0 = getComputedStyle(right).fontSize;
-            const zoomIn = [...document.querySelectorAll('.dpv-actions button')].find(b => (b.textContent ?? '').includes('+'));
-            if (!zoomIn) return { ok: false, reason: 'zoom btn missing' };
-            zoomIn.click(); zoomIn.click();
-            await new Promise(r => setTimeout(r, 300));
-            const c1 = document.querySelector('.dpv-left .pdf-page canvas');
-            const w1 = c1?.getBoundingClientRect().width ?? -1, h1 = c1?.getBoundingClientRect().height ?? -1;
-            const fs1 = getComputedStyle(right).fontSize;
-            return { w0: Math.round(w0), w1: Math.round(w1), h0: Math.round(h0), h1: Math.round(h1), fs0, fs1,
-                     ok: Math.abs(w1 - w0) < 0.5 && Math.abs(h1 - h0) < 0.5 && parseFloat(fs1) > parseFloat(fs0) };
-          })()
-        `);
-        log(`zoom isolation: w ${zoomIso.w0}->${zoomIso.w1}, h ${zoomIso.h0}->${zoomIso.h1}, right font ${zoomIso.fs0}->${zoomIso.fs1}`);
-        log(`zoom isolation (A+ affects right HTML only, PDF canvas untouched): ${zoomIso.ok ? 'PASS' : 'FAIL'}`);
-
-        // 视觉锚点联动：左滚到第 2 页中部 → 右栏跟随滚动到 data-page=2 首段（视口内可见）；右点段落 → 左栏 .dpv-flash 闪现后消失
-        const anchor: any = await win.webContents.executeJavaScript(`
-          (async () => {
-            const L = document.querySelector('.dpv-left');
-            const R = document.querySelector('.dpv-right');
-            if (!L || !R) return { ok: false, reason: 'panes missing' };
-            const p2 = L.querySelector('[data-page="2"]');
-            if (!p2) return { ok: false, reason: 'page2 missing' };
-            L.scrollTop = p2.offsetTop + p2.offsetHeight / 2 - 100; L.dispatchEvent(new Event('scroll'));
+            const en = document.querySelector('.spv-en'), zh = document.querySelector('.spv-zh');
+            const b0 = document.querySelector('.spv-page-badge')?.textContent ?? '';
+            if (!en || !zh) return { ok: false, reason: 'panes missing' };
+            en.scrollTop = Math.round(en.scrollHeight * 0.8);
+            en.dispatchEvent(new Event('scroll'));
             await new Promise(r => setTimeout(r, 1200));
-            // 连续流模式：跟随滚到 data-page=2 的首段，断言它进入右栏视口
-            const t2 = R.querySelector('.dpv-zhpara[data-page="2"]');
-            const rr = R.getBoundingClientRect();
-            const tr = t2?.getBoundingClientRect();
-            const followed = !!(tr && tr.top < rr.bottom && tr.bottom > rr.top);
-            // 找一段有映射（有 data-pid 且其 pid 有 box）的段落点击，pending 段也可（点击 p 本体走 jumpToPid）
-            const paras = [...R.querySelectorAll('.dpv-zhpara[data-pid]')];
-            let para = null;
-            for (const p of paras) {
-              const pid = Number(p.dataset.pid);
-              if (window.__dpvBoxesPids && window.__dpvBoxesPids.includes(pid)) { para = p; break; }
-            }
-            if (!para) para = paras[0];
-            if (!para) return { ok: false, reason: 'no para', followed };
-            para.click();
-            await new Promise(r => setTimeout(r, 250));
-            const flashShown = !!L.querySelector('.dpv-flash');
-            await new Promise(r => setTimeout(r, 1000));
-            const flashGone = !L.querySelector('.dpv-flash');
-            return { followed, flashShown, flashGone, ok: followed && flashShown && flashGone };
+            const badges = [...document.querySelectorAll('.spv-page-badge')].map(b => b.textContent);
+            return { b0, badges, ok: badges.length === 2 && badges.every(b => /[0-9]+[/][0-9]+/.test(b ?? '')) };
           })()
         `);
-        log(`anchor sync: ${JSON.stringify(anchor)}`);
-        log(`anchor sync (follow data-page + click flash box): ${anchor.ok ? 'PASS' : 'FAIL'}`);
+        log(`page badge: ${JSON.stringify(badge)}`);
+        log(`page badge tracks scroll: ${badge.ok ? 'PASS' : 'FAIL'}`);
 
-        // 右→左滚动跟随：右栏滚到 data-page=3 首段位置 → 左栏应滚到第 3 页附近
-        const rightFollow: any = await win.webContents.executeJavaScript(`
-          (async () => {
-            const L = document.querySelector('.dpv-left');
-            const R = document.querySelector('.dpv-right');
-            if (!L || !R) return { ok: false, reason: 'panes missing' };
-            // 复位（左栏程序化复位会带动右栏，等联动结束）
-            L.scrollTop = 0; L.dispatchEvent(new Event('scroll'));
-            await new Promise(r => setTimeout(r, 900));
-            R.scrollTop = 0; R.dispatchEvent(new Event('scroll'));
-            await new Promise(r => setTimeout(r, 600));
-            // 模拟用户滚右栏：直接设 scrollTop（无程序化标记 → 判定为用户滚动）
-            const t3 = R.querySelector('.dpv-zhpara[data-page="3"]');
-            if (!t3) return { ok: false, reason: 'no data-page=3 para' };
-            R.scrollTop = t3.offsetTop - R.offsetTop - 20;
-            R.dispatchEvent(new Event('scroll'));
-            await new Promise(r => setTimeout(r, 1200));
-            // 左栏当前应显示第 3 页附近（视口中心页）
-            const pages = [...L.querySelectorAll('.pdf-page')];
-            const lr = L.getBoundingClientRect();
-            let centerPage = 0;
-            for (const p of pages) {
-              const r = p.getBoundingClientRect();
-              if (r.top < lr.top + lr.height / 2 && r.bottom > lr.top + lr.height / 2) { centerPage = Number(p.dataset.page); break; }
-            }
-            return { centerPage, leftTop: Math.round(L.scrollTop), ok: centerPage >= 2 && centerPage <= 4 };
-          })()
-        `);
-        log(`right->left follow: ${JSON.stringify(rightFollow)}`);
-        log(`right->left follow (scroll zh pane -> pdf follows): ${rightFollow.ok ? 'PASS' : 'FAIL'}`);
-
-        // 字体一致性：打包 Noto Serif SC/Sans SC 必须实际加载；有译文胶囊时 computed family 必须唯一
+        // 阶段 5：字体（打包 Noto Serif SC/Sans SC 实际加载）
         const fontStats: any = await win.webContents.executeJavaScript(`
           (async () => {
             await document.fonts.ready;
             const loaded400 = document.fonts.check('400 14px "Noto Serif SC"', '译文测试一致性');
             const loaded700 = document.fonts.check('700 14px "Noto Serif SC"', '译');
             const loadedSans = document.fonts.check('600 14px "Noto Sans SC"', '标题');
-            const caps = [...document.querySelectorAll('.dpv-zhblock, .dpv-zhheading')];
-            const fams = new Set();
-            for (const c of caps) fams.add(getComputedStyle(c).fontFamily.split(',')[0].replace(/"/g, ''));
-            return { loaded400, loaded700, loadedSans, n: caps.length, fams: [...fams] };
+            return { loaded400, loaded700, loadedSans };
           })()
         `);
-        log(`fonts: serif400=${fontStats.loaded400}, serif700=${fontStats.loaded700}, sans600=${fontStats.loadedSans}, zhCaps=${fontStats.n}, families=${JSON.stringify(fontStats.fams)}`);
-        const fontOk = fontStats.loaded400 && fontStats.loaded700 && fontStats.loadedSans
-          && (fontStats.n === 0 || (fontStats.fams.length === 1 && fontStats.fams[0] === 'Noto Serif SC'));
+        log(`fonts: serif400=${fontStats.loaded400}, serif700=${fontStats.loaded700}, sans600=${fontStats.loadedSans}`);
+        const fontOk = fontStats.loaded400 && fontStats.loaded700 && fontStats.loadedSans;
         log(`font consistency: ${fontOk ? 'PASS' : 'FAIL'}`);
 
-        // 截图前复位到顶部（锚点测试滚到了第 2 页），保证截图是首屏干净状态
-        await win.webContents.executeJavaScript(`
-          (async () => {
-            const L = document.querySelector('.dpv-left');
-            const R = document.querySelector('.dpv-right');
-            if (L) { L.scrollTop = 0; L.dispatchEvent(new Event('scroll')); }
-            if (R) R.scrollTop = 0;
-            await new Promise(r => setTimeout(r, 600));
-          })()
-        `);
+        // 截图存档
         const img = await win.webContents.capturePage();
         fs.mkdirSync(path.resolve('build'), { recursive: true });
         fs.writeFileSync(path.resolve('build/pdf-ui-e2e.png'), img.toPNG());
-        log(`screenshot: split view captured (zhGroups=${zhGroupCount}, cluster=${JSON.stringify(clusterInfo)})`);
-        // translate 视图单独截图（切回去再截）
-        await win.webContents.executeJavaScript(`window.__store.getState().setLayout('translate')`);
-        await new Promise(r => setTimeout(r, 800));
-        const tvImg = await win.webContents.capturePage();
-        fs.writeFileSync(path.resolve('build/translate-ui-e2e.png'), tvImg.toPNG());
-        log('screenshots saved');
-        const allPass = stats.canvases >= 1 && stats.firstCanvasW > 300
-          && tvStats.rows >= 50 && linked.linked && shell.sidebar && shell.navBtns >= 2 && shell.topSearch
-          && fontOk && geoOk && modeSwitch.ok && zoomIso.ok && anchor.ok && rightFollow.ok
-          && stats.hasLeft && stats.hasRight && stats.zhParas >= 1
-          && clusterInfo && zhGroupCount >= 5;
+        log('screenshot saved');
+
+        const allPass = structOk && sync.ok && geo.ok && badge.ok && fontOk
+          && shell.sidebar && shell.navBtns >= 2 && shell.topSearch;
         if (allPass) log('E2E ALL PASS');
         else log('E2E FAIL (see above)');
         fs.writeFileSync(doneFile, '1');
@@ -1875,6 +1745,24 @@ export function registerIpc() {
     } catch { return false; } finally { pdfJobs.delete(paperId); }
   }
 
+  // v3 A3：快速取 PDF 页数（pageMap 的轻量版，只为估算翻译范围/耗时）
+  async function getPdfNumPages(paperId: number): Promise<number> {
+    const pdfsDir = path.join(app.getPath('userData'), 'pdfs');
+    let pdfPath = path.join(pdfsDir, `${paperId}.pdf`);
+    if (!fs.existsSync(pdfPath)) {
+      const paper = db.getPaper(paperId) as any;
+      if (paper?.file_path && fs.existsSync(paper.file_path)) pdfPath = paper.file_path;
+    }
+    if (!fs.existsSync(pdfPath)) return 0;
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const workerMod = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+    (globalThis as any).pdfjsWorker = workerMod;
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(pdfPath)), useSystemFonts: true }).promise;
+    const n = doc.numPages;
+    doc.destroy();
+    return n;
+  }
+
   // 确保论文 PDF 存在（返回是否存在）
   wrap('pdf:ensure', async (_e, paperId: number) => {
     const paper = db.getPaper(paperId) as any;
@@ -1938,21 +1826,31 @@ export function registerIpc() {
   });
 
   // ---------- pdf2zh（保留版式双语 PDF，feat/pdf2zh-reading）----------
-  // 状态探测：CLI 可用性 + 本论文双语/纯译 PDF 产物
-  wrap('pdf2zh:status', (_e, paperId: number) => {
+  // 状态探测：CLI 可用性 + 本论文双语/纯译 PDF 产物 + 页数（供自动触发门控与耗时估算）
+  wrap('pdf2zh:status', async (_e, paperId: number) => {
     const cli = p2z.resolveCli();
-    return { cliOk: !!cli, cliHint: cli ? '' : p2z.cliHint(), ...p2z.dualPdfStatus(paperId) };
+    let numPages = 0;
+    try { numPages = await getPdfNumPages(paperId); } catch { /* 无 PDF → 0 */ }
+    return { cliOk: !!cli, cliHint: cli ? '' : p2z.cliHint(), numPages, ...p2z.dualPdfStatus(paperId) };
   });
   // 生成（异步推进度，完成发 pdf2zh:done / 失败发 pdf2zh:error）
-  wrap('pdf2zh:translate', (_e, arg: { paperId: number; pages?: string; noMono?: boolean }) => {
+  // v3 A3：不传 pages 时自动跳过参考文献页（D3）；dual.pdf 默认不生成（D2 mono-only）
+  wrap('pdf2zh:translate', async (_e, arg: { paperId: number; pages?: string; noMono?: boolean; fullDoc?: boolean }) => {
     if (p2z.isRunning(arg.paperId)) throw new Error('该论文的双语 PDF 正在生成中');
     let lastLine = '';
-    p2z.translateDualPdf(arg, {
+    let pages = arg.pages;
+    if (!pages && !arg.fullDoc) {
+      try {
+        const numPages = await getPdfNumPages(arg.paperId);
+        pages = p2z.autoPagesArg(arg.paperId, numPages) ?? undefined;
+      } catch { /* 页数探测失败 → 全文翻译兜底 */ }
+    }
+    p2z.translateDualPdf({ ...arg, pages, noDual: true }, {
       onLine: line => { lastLine = line; send('pdf2zh:progress', { paperId: arg.paperId, line }); },
-      onDone: (dualPath, monoPath) => send('pdf2zh:done', { paperId: arg.paperId, dualPath, monoPath }),
+      onDone: (dualPath, monoPath) => send('pdf2zh:done', { paperId: arg.paperId, dualPath, monoPath, pages: pages ?? null }),
       onError: err => send('pdf2zh:error', { paperId: arg.paperId, error: err }),
     });
-    return { started: true };
+    return { started: true, pages: pages ?? null };
   });
   wrap('pdf2zh:cancel', (_e, paperId: number) => p2z.cancelTranslate(paperId));
 

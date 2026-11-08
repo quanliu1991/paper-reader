@@ -170,7 +170,7 @@ Keyboard first design gives 64x speedup.`;
       `);
       await new Promise(r => setTimeout(r, 200));
       await win.webContents.executeJavaScript(`
-        (() => { const b = [...document.querySelectorAll('button')].find(x => /发送|提问|问/.test(x.textContent)); b?.click(); })()
+        (() => { const b = document.querySelector('.ask-panel .input-row button.primary'); b?.click(); })()
       `);
       // 等 fake 流完成
       await new Promise(r => setTimeout(r, 2000));

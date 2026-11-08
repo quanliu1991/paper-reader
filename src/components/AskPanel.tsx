@@ -20,6 +20,9 @@ export default function AskPanel() {
   const qaList = useStore(s => s.qaList);
   const pendingSelection = useStore(s => s.pendingSelection);
   const setAskPanel = useStore(s => s.setAskPanel);
+  // v3 B4：问答 | 反向链接 双 tab
+  const [tab, setTab] = useState<'ask' | 'backlinks'>('ask');
+  const [backlinks, setBacklinks] = useState<Array<{ id: number; kind: 'note' | 'highlight' | 'qa'; text: string; paperTitle: string; paperId: number | null }>>([]);
 
   const [input, setInput] = useState('');
   const [msgs, setMsgs] = useState<LiveMsg[]>([]);
@@ -52,6 +55,40 @@ export default function AskPanel() {
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
   }, [msgs]);
+
+  // B4 反向链接：全库笔记/高亮/问答里提到当前论文（[[双链]] 或标题命中）的条目
+  useEffect(() => {
+    if (tab !== 'backlinks' || !paper?.id) return;
+    (async () => {
+      const title = paper.title.trim();
+      const needle = title.length > 40 ? title.slice(0, 40) : title;
+      const out: typeof backlinks = [];
+      try {
+        const [notes, hls, qas] = await Promise.all([
+          window.api.listAllNotes(), window.api.listAllHighlights(), window.api.listAllQa(),
+        ]);
+        for (const n of notes as any[]) {
+          if (n.paper_id === paper.id) continue;
+          if (n.text.includes(`[[${needle}`) || n.text.includes(needle)) {
+            out.push({ id: n.id, kind: 'note', text: n.text, paperTitle: n.paper_title ?? '', paperId: n.paper_id });
+          }
+        }
+        for (const h of hls as any[]) {
+          if (h.paper_id === paper.id) continue;
+          if ((h.note ?? '').includes(`[[${needle}`) || (h.note ?? '').includes(needle)) {
+            out.push({ id: h.id, kind: 'highlight', text: h.note ?? h.text_en, paperTitle: h.paper_title ?? '', paperId: h.paper_id });
+          }
+        }
+        for (const q of qas as any[]) {
+          if (q.paper_id === paper.id) continue;
+          const hit = q.question.includes(`[[${needle}`) || q.question.includes(needle)
+            || (q.answer ?? '').includes(`[[${needle}`) || (q.answer ?? '').includes(needle);
+          if (hit) out.push({ id: q.id, kind: 'qa', text: q.question, paperTitle: q.paper_title ?? '', paperId: q.paper_id });
+        }
+        setBacklinks(out);
+      } catch { /* 拉取失败留空 */ }
+    })();
+  }, [tab, paper?.id, paper?.title]);
 
   async function ask(questionText?: string, isFollowup = false) {
     const question = (questionText ?? input).trim();
@@ -166,12 +203,39 @@ export default function AskPanel() {
   return (
     <div className="ask-panel">
       <div className="head">
-        <span>问答</span>
+        <div className="ask-tabs" role="tablist">
+          <button role="tab" aria-selected={tab === 'ask'} className={tab === 'ask' ? 'on' : ''} onClick={() => setTab('ask')}>问答</button>
+          <button role="tab" aria-selected={tab === 'backlinks'} className={tab === 'backlinks' ? 'on' : ''} onClick={() => setTab('backlinks')}>
+            反链 {backlinks.length ? `(${backlinks.length})` : ''}
+          </button>
+        </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={exportSummary} title="导出阅读摘要（高亮+问答）到知识库笔记">导出</button>
+          {tab === 'ask' && <button onClick={exportSummary} title="导出阅读摘要（高亮+问答）到知识库笔记">导出</button>}
           <button onClick={() => setAskPanel(false)}>收起</button>
         </div>
       </div>
+      {tab === 'backlinks' ? (
+        <div className="thread backlinks-list">
+          {backlinks.length === 0 && (
+            <div className="hint">
+              还没有其他论文的笔记/高亮/问答提到这一篇。<br />
+              在任何笔记里输入 <code>[[{paper.title.slice(0, 24)}…]]</code> 即可建立链接。
+            </div>
+          )}
+          {backlinks.map(b => (
+            <div key={`${b.kind}-${b.id}`} className="bl-item">
+              <span className={`bl-kind bl-${b.kind}`}>{b.kind === 'note' ? '笔记' : b.kind === 'highlight' ? '高亮' : '问答'}</span>
+              <div className="bl-body">
+                <div className="bl-text">{b.text.slice(0, 160)}{b.text.length > 160 ? '…' : ''}</div>
+                {b.paperId != null && (
+                  <button className="bl-from" onClick={() => useStore.getState().openPaper(b.paperId!)}>来自：{b.paperTitle.slice(0, 40)}</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
       {pendingSelection && (
         <div className="sel-quote">{pendingSelection.text.slice(0, 400)}</div>
       )}
@@ -234,6 +298,8 @@ export default function AskPanel() {
         />
         <button className="primary" onClick={() => ask()} disabled={busy || !input.trim()}>发送</button>
       </div>
+        </>
+      )}
     </div>
   );
 }

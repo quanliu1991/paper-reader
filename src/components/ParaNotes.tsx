@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore, NoteRow } from '../store';
+import { renderWithWikilinks } from '../wikilink';
 
 // 段落下方的小笔记条（阅读器内就近展示，可编辑/删除）
 // 无笔记时返回 null——对无笔记段落零 DOM 开销，不影响滚动锚点与行高
@@ -41,7 +42,7 @@ export default function ParaNotes({ notes, paperId }: { notes: NoteRow[]; paperI
       ) : (
         <div key={n.id} className="pn-item" onClick={e => e.stopPropagation()}>
           <span className="pn-mark">📝</span>
-          <span className="pn-text">{n.text}</span>
+          <span className="pn-text">{renderWithWikilinks(n.text)}</span>
           <span className="pn-btns">
             <button className="pn-btn" onClick={() => setEditing({ id: n.id, text: n.text })} title="编辑">编辑</button>
             <button className="pn-btn" onClick={() => remove(n.id)} title="删除">删</button>

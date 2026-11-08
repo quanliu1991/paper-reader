@@ -40,8 +40,29 @@ const running = new Map<number, ChildProcessWithoutNullStreams>();
 export interface TranslateArgs {
   paperId: number;
   pages?: string;          // 部分翻译（如 "1-3"），空 = 全文
-  noDual?: boolean;        // 只生成 mono（验证阶段基本不用）
+  noDual?: boolean;        // v3: 默认 true（原版对照只需 mono.pdf，dual.pdf 已随 Pdf2zhView 删除）
   noMono?: boolean;        // 只生成 dual
+}
+
+// v3 A3：计算默认翻译页范围——跳过 References 之后的页。
+// 用 blocks 表找 References/Bibliography 标题块，按块序占比估算其起始页。
+// 返回 null = 全文翻译（找不到 References 或占比异常）。
+export function autoPagesArg(paperId: number, numPages: number): string | null {
+  if (!numPages || numPages < 4) return null;
+  const paper = db.getPaper(paperId) as any;
+  if (!paper) return null;
+  const blocks = db.getBlocks(paperId) as any[];
+  if (!blocks.length) return null;
+  const refsIdx = blocks.findIndex(b =>
+    b.type === 'heading' && /^(references?|bibliography|literature cited|参考文献)\s*$/i.test((b.en || '').trim()));
+  if (refsIdx === -1) return null;
+  const ratio = refsIdx / blocks.length;
+  // References 若出现在前 60% 则视为误判（如目录里的 References 行），全文翻译
+  if (ratio < 0.6) return null;
+  const refsPage = Math.max(1, Math.ceil(ratio * numPages));
+  // 至少保留正文全部页；References 起始页本身也不译（标题页起跳过）
+  if (refsPage >= numPages) return null;
+  return `1-${refsPage - 1}`;
 }
 
 export function isRunning(paperId: number): boolean {
@@ -108,8 +129,9 @@ export function translateDualPdf(
     '-lo', 'zh',
     '-o', tmpOut,
   ];
+  // v3 D2：mono-only——原版对照只用 mono.pdf，dual.pdf 生成纯属浪费（时间/磁盘近半）
+  if (args.noDual !== false) cliArgs.push('--no-dual');
   if (args.pages) cliArgs.push('-p', args.pages);
-  if (args.noDual) cliArgs.push('--no-dual');
   if (args.noMono) cliArgs.push('--no-mono');
 
   hooks.onLine(`$ ${CLI_NAME} ${cliArgs.join(' ')}`);

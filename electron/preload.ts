@@ -66,7 +66,7 @@ const api = {
   pdfPageMap: (paperId: number) => call('pdf:pageMap', paperId),
   // pdf2zh（保留版式双语 PDF）
   pdf2zhStatus: (paperId: number) => call('pdf2zh:status', paperId),
-  pdf2zhTranslate: (arg: { paperId: number; pages?: string; noMono?: boolean }) => call('pdf2zh:translate', arg),
+  pdf2zhTranslate: (arg: { paperId: number; pages?: string; noMono?: boolean; fullDoc?: boolean }) => call('pdf2zh:translate', arg),
   pdf2zhCancel: (paperId: number) => call('pdf2zh:cancel', paperId),
   onPdf2zhProgress: (cb: (p: any) => void): (() => void) => {
     const l = (_e: any, p: any) => cb(p);

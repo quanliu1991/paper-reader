@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { toast, toastErr } from './Toast';
 import { IconPlus, IconTrash, IconBack } from './icons';
 import DigestCard, { DigestDoc, toDigestDoc } from './DigestCard';
+import TopicGraph from './TopicGraph';
 
 interface TopicRow {
   id: number; name: string; query: string; status: string;
@@ -34,10 +35,11 @@ export default function TopicView() {
   const [building, setBuilding] = useState(false);
   const [buildMsg, setBuildMsg] = useState('');
   const [openId, setOpenId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<{ papers: TopicPaper[]; topic: TopicRow } | null>(null);
+  const [detail, setDetail] = useState<{ papers: TopicPaper[]; topic: TopicRow; edges?: Array<{ src: string; dst: string }> } | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
   const [digest, setDigest] = useState<DigestDoc | null>(null);
   const [digestBusy, setDigestBusy] = useState(false);
+  const [mode, setMode] = useState<'graph' | 'list'>('graph'); // B3：图谱为默认视图
   const openPaper = useStore(s => s.openPaper);
   const setView = useStore(s => s.setView);
   const msgRef = useRef('');
@@ -71,6 +73,8 @@ export default function TopicView() {
     setDigest(null);
     const d = await window.api.getTopic(id);
     setDetail(d);
+    // B3：节点过多自动降级列表
+    if ((d.papers?.length ?? 0) > 200) setMode('list');
     try {
       if (typeof window.api.getDigest === 'function') {
         setDigest(toDigestDoc(await window.api.getDigest('topic', id)));
@@ -157,6 +161,10 @@ export default function TopicView() {
           <button className="icon-btn" onClick={() => { useStore.setState({ openTopicId: null }); setOpenId(null); setDetail(null); setDigest(null); }} title="返回主题列表"><IconBack /></button>
           <h1>{detail.topic?.name}</h1>
           <span className="count">{papers.length} 篇 · {detail.topic?.query}</span>
+          <div className="mode-switch" role="group" aria-label="视图模式">
+            <button className={mode === 'graph' ? 'on' : ''} onClick={() => setMode('graph')} title="力导向图谱：节点=论文，边=引用">图谱</button>
+            <button className={mode === 'list' ? 'on' : ''} onClick={() => setMode('list')} title="分层列表：地基→核心→桥梁→前沿">列表</button>
+          </div>
           <button className="ghost-btn" onClick={rebuild} disabled={building}>{building ? (buildMsg || '重新构建中…') : '重新构建'}</button>
         </div>
         {building && buildMsg && <div className="topic-progress">{buildMsg}</div>}
@@ -173,7 +181,25 @@ export default function TopicView() {
           onGenerate={genTopic}
           onOpen={openCite}
         />
-        {LAYER_ORDER.map(layer => {
+        {mode === 'graph' && (
+          <TopicGraph
+            nodes={papers.map(p => ({
+              id: p.arxiv_id, title: p.title, layer: p.layer, year: p.year,
+              citation_count: p.citation_count, in_degree: p.in_degree,
+              imported: !!(p.imported || p.library_paper_id),
+            }))}
+            edges={detail.edges ?? []}
+            onOpen={async n => {
+              const p = papers.find(x => x.arxiv_id === n.id);
+              if (p) await readNow(p);
+            }}
+            onImport={async n => {
+              const p = papers.find(x => x.arxiv_id === n.id);
+              if (p) await importPaper(p);
+            }}
+          />
+        )}
+        {mode === 'list' && LAYER_ORDER.map(layer => {
           const list = byLayer(layer);
           if (!list.length) return null;
           const meta = LAYER_META[layer];
@@ -216,7 +242,7 @@ export default function TopicView() {
     );
   }
 
-  // 列表视图
+  // 列表视图（主题列表）
   return (
     <div className="topic-page">
       <div className="list-head">

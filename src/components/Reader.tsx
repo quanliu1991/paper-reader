@@ -7,22 +7,22 @@ import AskPanel from './AskPanel';
 import CommandPalette from './CommandPalette';
 import TranslatedPanel from './TranslatedPanel';
 import TranslateView from './TranslateView';
-import BilingualView from './BilingualView';
-import DualPdfView from './DualPdfView';
-import Pdf2zhView from './Pdf2zhView';
 import SplitPdfView from './SplitPdfView';
 import ParaNotes from './ParaNotes';
 import type { NoteRow } from '../store';
+import { wikilinkSuggest } from '../wikilink';
 import { IconBack, IconExport, IconImmersive, IconMore } from './icons';
 import { toast, toastErr } from './Toast';
 import { highlightHtml } from '../highlights';
 import { modKeyLabel } from '../platform';
+// v3 布局收敛：DualPdfView / Pdf2zhView / BilingualView 已删除（原 pdf-layout / pdf2zh / bilingual 模式）
+// zh/en 单栏由 BlockRowView 直接渲染；smart = TranslateView 秒开 → mono.pdf 就绪升级 SplitPdfView
 
-const HL_COLORS = [ // ux-lint-allow: 高亮功能色板（业务数据非主题色）
-  { id: 'yellow', label: '黄', bg: '#fff3b0' },
-  { id: 'green', label: '绿', bg: '#c8e6c9' },
-  { id: 'blue', label: '蓝', bg: '#bbdefb' },
-  { id: 'pink', label: '粉', bg: '#f8bbd0' },
+const HL_COLORS = [ // ux-lint-allow: 高亮功能色板（走 CSS 变量，随主题切换）
+  { id: 'yellow', label: '黄', bg: 'var(--hl-c-yellow)' },
+  { id: 'green', label: '绿', bg: 'var(--hl-c-green)' },
+  { id: 'blue', label: '蓝', bg: 'var(--hl-c-blue)' },
+  { id: 'pink', label: '粉', bg: 'var(--hl-c-pink)' },
 ];
 
 export default function Reader() {
@@ -54,16 +54,11 @@ export default function Reader() {
   const scrollRatioRef = useRef(0);
   const suppressSaveRef = useRef(false);
 
-  // ---------- PDF 原版模式状态 ----------
-  const [pdfReady, setPdfReady] = useState(false);
-  const [pageMap, setPageMap] = useState<Record<number, number> | null>(null);
-  // ---------- pdf2zh 双语版式状态（feat/pdf2zh-reading 验证）----------
-  const [p2zStatus, setP2zStatus] = useState<{ cliOk: boolean; cliHint: string; exists: boolean; monoExists: boolean; generating: boolean } | null>(null);
-  const [p2zLog, setP2zLog] = useState<string[]>([]);
-  const p2zLogRef = useRef<HTMLDivElement>(null);
-  const p2zBusyRef = useRef(false);
+  // ---------- smart 模式：mono.pdf 就绪状态（v3 分阶，无 CLI 日志面板） ----------
+  const [p2zStatus, setP2zStatus] = useState<{ cliOk: boolean; cliHint: string; exists: boolean; monoExists: boolean; generating: boolean; numPages?: number } | null>(null);
+  const [p2zPct, setP2zPct] = useState<number | null>(null); // 生成进度百分比（解析子进程输出）
   const [p2zReloadKey, setP2zReloadKey] = useState(0);
-  // 用户显式切换过布局则不再自动跳转（尊重选择）
+  // 用户显式切换过布局则不再自动升级（尊重选择）
   const userPickedLayoutRef = useRef(false);
   useEffect(() => {
     if (typeof window.api.pdf2zhStatus !== 'function') return; // 旧 preload 兜底
@@ -72,52 +67,65 @@ export default function Reader() {
       try {
         const st = await window.api.pdf2zhStatus(paper.id);
         setP2zStatus(st);
-        // 默认模式：已有 mono.pdf（原版对照素材齐）→ 自动进入原版对照；
-        // 仅当用户本次会话未显式切换布局时（首开论文场景）。
-        if (st.monoExists && !userPickedLayoutRef.current) {
-          const cur = useStore.getState().layout;
-          if (cur !== 'pdf-split') useStore.getState().setLayout('pdf-split');
-        } else if (!st.monoExists && !userPickedLayoutRef.current && useStore.getState().layout === 'pdf-split') {
-          // 无 mono.pdf：一次性回退旧对照视图（translate），不循环；
-          // 工具栏常驻生成入口，完成后自动切回原版对照（onPdf2zhDone）。
-          useStore.getState().setLayout('translate');
-        }
+        // 页数缓存：自动触发门控（≤30 页）与 CTA 耗时估计（约 35s/页）
+        if (st?.numPages) localStorage.setItem(`paper:${paper.id}:pages`, String(st.numPages));
       } catch { /* 状态探测失败不阻塞阅读 */ }
     })();
+    // 进度：仅解析子进程输出中的百分比（如 "45%"），驱动状态条，不展示日志
     off1 = window.api.onPdf2zhProgress?.((p: any) => {
       if (p.paperId !== paper.id) return;
-      setP2zLog(l => [...l.slice(-40), p.line]);
-      requestAnimationFrame(() => { p2zLogRef.current?.scrollTo(0, p2zLogRef.current.scrollHeight); });
+      const m = String(p.line ?? '').match(/(\d{1,3})\s*%/);
+      if (m) setP2zPct(Math.min(100, Number(m[1])));
     });
+    // 完成：smart 模式且用户未手动切换 → 无缝升级原版对照（pid 锚点保位置）
     off2 = window.api.onPdf2zhDone?.((p: any) => {
       if (p.paperId !== paper.id) return;
-      p2zBusyRef.current = false;
       setP2zStatus(s => s ? { ...s, exists: true, monoExists: true, generating: false } : s);
-      setP2zLog(l => [...l.slice(-40), '✅ 双语 PDF 已生成']);
-      toast('success', '翻译完成，正在打开原版对照…');
+      setP2zPct(100);
+      toast('success', '原版对照已就绪');
       setP2zReloadKey(k => k + 1);
-      useStore.getState().setLayout('pdf-split');
     });
     off3 = window.api.onPdf2zhError?.((p: any) => {
       if (p.paperId !== paper.id) return;
-      p2zBusyRef.current = false;
       setP2zStatus(s => s ? { ...s, generating: false } : s);
-      setP2zLog(l => [...l.slice(-40), `❌ ${p.error}`]);
-      toastErr(new Error(String(p.error).split('\n')[0]));
+      setP2zPct(null);
+      toastErr(new Error('原版对照生成失败，可稍后从工具栏重试；文本对照不受影响'));
     });
     return () => { off1?.(); off2?.(); off3?.(); };
   }, [paper.id]);
+
+  // ---------- A3 分阶触发：深度阅读信号（>3分钟 或 滚过30%）+ 三条件门控 → 自动生成 mono ----------
+  // 门控：CLI 已装 + 正文 ≤30 页 + 设置未关（默认开）。否则仅工具栏 CTA。
+  const deepReadFiredRef = useRef(false);
+  useEffect(() => {
+    if (deepReadFiredRef.current) return;
+    const t = setTimeout(() => fireIfEligible(), 3 * 60 * 1000); // 3 分钟深度阅读
+    return () => clearTimeout(t);
+  }, [paper.id]);
+  function fireIfEligible() {
+    if (deepReadFiredRef.current) return;
+    const st = useStore.getState();
+    if (st.layout !== 'smart') return;
+    if (localStorage.getItem('pr:p2z:auto') === '0') return; // 用户关闭自动生成
+    const p2z = p2zStatus;
+    if (!p2z?.cliOk || p2z.monoExists || p2z.generating) return;
+    // 页数门控：论文卡 block 数粗略对应页数不可靠 → 用「读过的论文无 PDF 页数」简化：
+    // 自动触发只对已确认 ≤30 页的论文放行；页数未知时不自动（CTA 兜底，避免 50 页长文静默烧 20 分钟）
+    const pagesHint = Number(localStorage.getItem(`paper:${paper.id}:pages`) || 0);
+    if (!pagesHint || pagesHint > 30) return;
+    deepReadFiredRef.current = true;
+    startPdf2zh();
+  }
+
   const startPdf2zh = useCallback(async () => {
-    if (p2zBusyRef.current) return;
-    p2zBusyRef.current = true;
+    if (p2zStatus?.generating) return;
     setP2zStatus(s => s ? { ...s, generating: true } : s);
-    setP2zLog(['启动 pdf2zh…（首次运行需下载排版模型，约 100MB，请耐心）']);
+    setP2zPct(null);
     try {
       await window.api.pdf2zhTranslate({ paperId: paper.id });
     } catch (e: any) {
-      p2zBusyRef.current = false;
       setP2zStatus(s => s ? { ...s, generating: false } : s);
-      setP2zLog(l => [...l, `❌ ${e?.message ?? e}`]);
+      setP2zPct(null);
       toastErr(e);
     }
   }, [paper.id]);
@@ -128,30 +136,21 @@ export default function Reader() {
   const [digestBusy, setDigestBusy] = useState(false);
   // 工具栏「更多」菜单
   const [moreOpen, setMoreOpen] = useState(false);
-  const isPdfLayout = layout === 'pdf-layout';
+  // smart 模式下 mono.pdf 已就绪 → 渲染原版对照；否则文本对照网格秒开
+  const showSplit = layout === 'smart' && !!p2zStatus?.monoExists;
 
-  // 打开论文时探测 PDF + 构建 pageMap
+  // smart 模式：确保原版 PDF 可用（SplitPdfView 需要），后台自动下载不打扰
   useEffect(() => {
-    if (!isPdfLayout) return;
+    if (!showSplit) return;
     let off: (() => void) | undefined;
     (async () => {
       const r = await window.api.ensurePdf(paper.id);
-      if (r.exists) {
-        setPdfReady(true);
-        const pm = await window.api.pdfPageMap(paper.id);
-        if (pm.exists && pm.map && Object.keys(pm.map).length) setPageMap(pm.map);
-      } else {
-        // 等后台下载
-        off = window.api.onPdfReady(async (p: any) => {
-          if (p.paperId !== paper.id) return;
-          setPdfReady(true);
-          const pm = await window.api.pdfPageMap(paper.id);
-          if (pm.exists && pm.map && Object.keys(pm.map).length) setPageMap(pm.map);
-        });
+      if (!r.exists) {
+        off = window.api.onPdfReady((p: any) => { if (p.paperId === paper.id) { /* SplitPdfView 自行探测 */ } });
       }
     })();
     return () => { off?.(); };
-  }, [paper.id, isPdfLayout]);
+  }, [paper.id, showSplit]);
 
   // 翻译进度推送
   useEffect(() => {
@@ -166,6 +165,37 @@ export default function Reader() {
     });
     return off;
   }, [updateBlockZh]);
+
+  // ---------- A2 打开即译：已配 Provider 且有未译段落 → 自动启动翻译（一次/每论文） ----------
+  // 与「翻译全文」共用同一 IPC；translating 状态由进度推送驱动。失败静默（无 Provider 时用户点划词/翻译才引导）。
+  const autoTrTriedRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (showSplit) return; // 已在原版对照（有 mono.pdf 必有译文），无需自动翻译
+    if (autoTrTriedRef.current.has(paper.id)) return;
+    const st = useStore.getState();
+    const untranslated = st.blocks.filter(b => b.type === 'para' && !b.zh);
+    if (!untranslated.length || st.translating) return;
+    autoTrTriedRef.current.add(paper.id);
+    (async () => {
+      st.setTranslating(true, { done: 0, total: untranslated.length });
+      try {
+        await window.api.translateAll({
+          paperId: paper.id,
+          blocks: untranslated.map(b => ({ pid: b.pid, en: b.en })),
+          scope: 'untranslated',
+        });
+      } catch (e: any) {
+        // 无 Provider：一次引导去设置；其他错误静默（TranslateView「待翻译」占位兜底）
+        if (String(e?.message ?? '').includes('Provider')) {
+          useStore.getState().toast({
+            type: 'info', msg: '尚未配置 AI 服务，暂无法自动翻译',
+            action: { label: '去设置', run: () => useStore.getState().setView('settings') },
+          });
+        }
+      }
+      finally { useStore.getState().setTranslating(false, null); }
+    })();
+  }, [paper.id, showSplit, blocks.length]);
 
   // 图表下载完成推送：主进程 downloadFiguresFor 每存一张图 send('fig:updated')。
   // 此前无人订阅 → 内存 blocks.fig_path 永不更新 → 各视图一直显示占位框（除非重开论文）。
@@ -183,7 +213,7 @@ export default function Reader() {
   // 高度差异巨大时必然跳到错误位置。
   const anchorPidRef = useRef<number | null>(null);
   useEffect(() => {
-    const el = scrollRef.current ?? document.querySelector('.dpv-scroll') as HTMLElement | null;
+    const el = scrollRef.current ?? document.querySelector('.spv-pane') as HTMLElement | null;
     if (!el) return;
     // 打开恢复：优先 pid 锚点，回退旧 scrollTop
     const savedPid = Number(localStorage.getItem(`paper:${paper.id}:pid`) || 0);
@@ -218,6 +248,8 @@ export default function Reader() {
         if (pct > prev) {
           localStorage.setItem(`paper:${paper.id}:pct`, String(pct));
           window.api.setReadPct(paper.id, pct).catch(() => { /* 进度失败不打扰阅读 */ });
+          // A3 深度阅读信号：滚过 30% 且满足门控 → 自动生成原版对照（每论文一次）
+          if (pct >= 30) fireIfEligible();
         }
       }, 500);
     };
@@ -225,25 +257,28 @@ export default function Reader() {
     return () => { el.removeEventListener('scroll', onScroll); clearTimeout(timer); };
   }, [paper.id]);
 
-  // 布局切换时按 pid 锚点恢复阅读位置（PDF 模式容器异步挂载 → 轮询等待最多 3s）
+  // 布局切换时按 pid 锚点恢复阅读位置（PDF 容器异步挂载 → 轮询等待最多 3s）
+  // v3：showSplit（SplitPdfView）时跳过——splitTop 由 SplitPdfView 自恢复（等值 scrollTop），
+  // 此处若按文本比例再滚一次会覆盖 splitTop（写入路径 handleUserScroll）→ 恢复互相打架。
   useEffect(() => {
-    if (suppressSaveRef.current) return;
+    if (suppressSaveRef.current || showSplit) return;
     let tries = 0;
     let timer: ReturnType<typeof setTimeout>;
     const tryRestore = () => {
-      const el = scrollRef.current ?? document.querySelector('.dpv-scroll') as HTMLElement | null;
+      const el = scrollRef.current ?? document.querySelector('.spv-pane') as HTMLElement | null;
       if (!el) { if (++tries < 20) timer = setTimeout(tryRestore, 150); return; }
       const pid = anchorPidRef.current ?? Number(localStorage.getItem(`paper:${paper.id}:pid`) || 0);
       if (pid) {
         const target = el.querySelector(`[data-pid="${pid}"], [data-rowpid="${pid}"]`) as HTMLElement | null;
         if (target) { el.scrollTop = target.offsetTop - el.clientHeight / 3; return; }
       }
+      // SplitPdfView 无 data-pid：按滚动比例恢复（mono 与原版逐页同构，比例近似成立）
       const max = el.scrollHeight - el.clientHeight;
       el.scrollTop = scrollRatioRef.current * max;
     };
     timer = setTimeout(tryRestore, 50);
     return () => clearTimeout(timer);
-  }, [layout, paper.id]);
+  }, [layout, showSplit, paper.id]);
 
   // 快捷键（含 PDF 模式循环）。mod = Ctrl（Win/Linux）或 Cmd（mac，metaKey）
   useEffect(() => {
@@ -251,7 +286,7 @@ export default function Reader() {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
         e.preventDefault();
-        const cycle = ['pdf-split', 'translate', 'bilingual', 'pdf-layout', 'pdf2zh', 'zh'] as const;
+        const cycle = ['smart', 'zh', 'en'] as const;
         const cur = useStore.getState().layout;
         const idx = cycle.indexOf(cur as any);
         useStore.getState().setLayout(cycle[(idx + 1) % cycle.length] as any);
@@ -451,28 +486,45 @@ export default function Reader() {
         <div className="reader-toolbar">
           <button
             className="icon-btn"
-            onClick={() => useStore.getState().setView(readerBack ?? 'list')}
-            title={readerBack === 'topics' ? '返回主题' : readerBack === 'notes' ? '返回沉淀' : '返回论文库'}
+            onClick={() => {
+              const st = useStore.getState();
+              if (readerBack) st.setView(readerBack);
+              else if (st.tabs.length > 1) st.closeTab(paper.id);
+              else st.setView('list');
+            }}
+            title={readerBack === 'topics' ? '返回图谱' : readerBack === 'notes' || readerBack === 'knowledge' ? '返回知识' : useStore.getState().tabs.length > 1 ? '关闭此标签' : '返回论文库'}
           ><IconBack /></button>
           <span className="title">{paper.title}</span>
-          {/* 生成状态区：mono.pdf 就绪显示徽章；未就绪常驻生成入口（进度/取消） */}
           {p2zStatus?.generating ? (
-            <span className="p2z-chip" title="正在生成与原版版式一致的中文 PDF">
-              <span className="p2z-spin" /> 生成中文 PDF 中… <button className="link-btn" onClick={() => window.api.pdf2zhCancel?.(paper.id)}>取消</button>
+            <span className="p2z-chip" title="正在后台生成与原版版式一致的中文 PDF，完成后可无缝切换（阅读位置保留）">
+              <span className="p2z-spin" /> 原版对照 {p2zPct != null ? `${p2zPct}%` : '生成中'}…
+              <button className="link-btn" onClick={() => window.api.pdf2zhCancel?.(paper.id)}>取消</button>
             </span>
           ) : p2zStatus?.monoExists ? (
-            <span className="p2z-chip ok" title="左右版式一致，逐像素滚动同步">✓ 原版对照</span>
+            layout === 'smart' ? (
+              <span className="p2z-chip ok" title="左右版式一致，逐像素滚动同步">✓ 原版对照</span>
+            ) : null
           ) : p2zStatus?.cliOk ? (
-            <button className="primary slim" onClick={startPdf2zh} title="生成与原版版式一致的中文 PDF（左英文右中文对照）">生成中文 PDF</button>
+            <button className="primary slim" onClick={startPdf2zh} title="后台生成与原版版式一致的中文 PDF（自动跳过参考文献，完成后可无缝切换）">
+              生成原版对照{p2zStatus.numPages ? `（约 ${Math.max(1, Math.round(p2zStatus.numPages * 35 / 60))} 分钟）` : ''}
+            </button>
+          ) : p2zStatus ? (
+            <span className="p2z-chip" title={p2zStatus.cliHint}>原版对照需安装 pdf2zh（可选，设置页有引导）</span>
           ) : null}
           <div className="toolbar-actions">
-            {layout !== 'pdf-layout' && (
+            {!showSplit && (
               <div className="font-stepper" role="group" aria-label="字号">
                 <button onClick={() => useStore.getState().setFontSize(fontSize - 1)} title="缩小字号">A−</button>
                 <span className="font-val" title="当前字号（点击复位）" onClick={() => useStore.getState().setFontSize(16)}>{fontSize}</span>
                 <button onClick={() => useStore.getState().setFontSize(fontSize + 1)} title="放大字号">A+</button>
               </div>
             )}
+            {/* v3 三段开关：中/双/英 */}
+            <div className="mode-switch" role="group" aria-label="阅读模式">
+              <button className={layout === 'zh' ? 'on' : ''} onClick={() => { userPickedLayoutRef.current = true; useStore.getState().setLayout('zh'); }} title="只看中文译文">中</button>
+              <button className={layout === 'smart' ? 'on' : ''} onClick={() => { userPickedLayoutRef.current = true; useStore.getState().setLayout('smart'); }} title="智能对照：文本对照秒开，原版 PDF 就绪后自动升级">双</button>
+              <button className={layout === 'en' ? 'on' : ''} onClick={() => { userPickedLayoutRef.current = true; useStore.getState().setLayout('en'); }} title="只看英文原文">英</button>
+            </div>
             <div className={`more-menu ${moreOpen ? 'open' : ''}`}>
               <button className="icon-btn" onClick={() => setMoreOpen(v => !v)} title="更多操作" aria-haspopup="menu" aria-expanded={moreOpen}>
                 <IconMore />
@@ -485,20 +537,16 @@ export default function Reader() {
                       <IconImmersive /> 沉浸模式 <span className="kbd">{modKeyLabel}+Shift+F</span>
                     </button>
                     <div className="more-sep" />
-                    <div className="more-label">阅读视图</div>
-                    {([
-                      ['pdf-split', '原版对照', '左原版英文 PDF · 右中文 PDF（版式一致，像素级滚动同步）'],
-                      ['translate', '段落对照', '左右对照：段落逐行双语（无中文 PDF 时自动回退）'],
-                      ['bilingual', '双语书', '一段英文下紧跟一段中文'],
-                      ['pdf-layout', 'PDF 阅读', '原版排版，译文原位覆盖'],
-                      ['pdf2zh', '双语版式', 'pdf2zh 重排（每段原文下紧跟译文，公式图表保留）'],
-                      ['zh', '纯译文', '只看中文译文'],
-                    ] as const).map(([l, name, tip]) => (
-                      <button key={l} role="menuitem" className={layout === l ? 'active' : ''} title={tip}
-                        onClick={() => { userPickedLayoutRef.current = true; setMoreOpen(false); useStore.getState().setLayout(l); }}>
-                        {layout === l ? '✓ ' : ''}{name}
+                    {translating ? (
+                      <button role="menuitem" onClick={() => { setMoreOpen(false); cancelTranslate(); }}>
+                        取消翻译（{progress?.done ?? 0}/{progress?.total ?? 0}）
                       </button>
-                    ))}
+                    ) : (
+                      <button role="menuitem" onClick={() => { setMoreOpen(false); translateAll(); }}>
+                        重新翻译全文
+                      </button>
+                    )}
+                    <div className="more-sep" />
                     <button role="menuitem" onClick={() => { setMoreOpen(false); exportTranslatedPdf(); }} disabled={exporting}>
                       <IconExport /> {exporting ? '导出中…' : '导出翻译版 PDF'}
                     </button>
@@ -516,7 +564,7 @@ export default function Reader() {
                     }}>
                       {digestBusy ? '生成中…' : '生成本篇精炼笔记'}
                     </button>
-                    {layout !== 'pdf-layout' && (
+                    {!showSplit && (
                       <>
                         <div className="more-sep" />
                         <div className="more-row" role="group" aria-label="行距">
@@ -536,67 +584,15 @@ export default function Reader() {
                 </>
               )}
             </div>
-            {translating ? (
-              <button className="danger" onClick={cancelTranslate} title="取消翻译">
-                翻译中 {progress?.done ?? 0}/{progress?.total ?? 0} · 取消
-              </button>
-            ) : (
-              <button className="primary" onClick={translateAll}>
-                翻译全文
-              </button>
-            )}
           </div>
         </div>
       )}
       {/* 内容 + 问答侧栏：横向 flex——AskPanel 占右侧 420px，不再叠压/挤压正文（视觉审计 03-ask-panel 修复） */}
       <div className={`reader-body-row ${askPanelOpen ? 'with-ask' : ''}`}>
-        {layout === 'pdf-split' ? (
-          p2zStatus?.monoExists ? (
-            <SplitPdfView key={`split-${p2zReloadKey}`} paperId={paper.id} />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-              <div className="p2z-genbar">
-                {p2zStatus?.generating
-                  ? <span>生成中…（完成后自动打开对照）</span>
-                  : <button onClick={startPdf2zh} disabled={!p2zStatus?.cliOk} title={p2zStatus?.cliHint || '生成与原版版式一致的中文 PDF'}>
-                      {p2zStatus?.cliOk ? '生成中文 PDF（原版对照）' : 'pdf2zh 未安装'}
-                    </button>}
-                {p2zStatus?.generating && (
-                  <button onClick={() => window.api.pdf2zhCancel?.(paper.id)} style={{ background: 'rgba(239,68,68,0.85)' }}>取消</button>
-                )}
-                <div className="p2z-log" ref={p2zLogRef}>
-                  {p2zLog.length ? p2zLog.map((l, i) => <div key={i}>{l}</div>) : <span style={{ opacity: 0.5 }}>首次生成需下载排版模型（约 100MB）并调用翻译服务，长文约 10-45 分钟</span>}
-                </div>
-              </div>
-              <div className="dpv-wrap"><div className="pdf-loading" style={{ padding: '160px 0', textAlign: 'center', color: '#aaa' }}>尚无中文 PDF——点上方按钮生成后，左英文右中文版式对照阅读</div></div>
-            </div>
-          )
-        ) : layout === 'pdf-layout' ? (
-          pdfReady
-            ? <DualPdfView paperId={paper.id} blocks={blocks} onMouseUp={onMouseUp} />
-            : <div className="reader-scroll"><div className="pdf-loading" style={{ padding: '120px 0', textAlign: 'center' }}>PDF 下载中…（首次导入论文时后台自动下载，稍后重开）</div></div>
-        ) : layout === 'pdf2zh' ? (
-          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-            <div className="p2z-genbar">
-              {p2zStatus?.exists
-                ? <span title="双语 PDF 已生成">✅ 已生成</span>
-                : p2zStatus?.generating
-                  ? <span>生成中…</span>
-                  : <button onClick={startPdf2zh} disabled={!p2zStatus?.cliOk} title={p2zStatus?.cliHint || '用 pdf2zh 生成保留版式的双语 PDF'}>
-                      {p2zStatus?.cliOk ? '生成双语版式 PDF' : 'pdf2zh 未安装'}
-                    </button>}
-              {p2zStatus?.generating && (
-                <button onClick={() => window.api.pdf2zhCancel?.(paper.id)} style={{ background: 'rgba(239,68,68,0.85)' }}>取消</button>
-              )}
-              <div className="p2z-log" ref={p2zLogRef}>
-                {p2zLog.length ? p2zLog.map((l, i) => <div key={i}>{l}</div>) : <span style={{ opacity: 0.5 }}>日志将在此显示（排版模型首次下载约 100MB）</span>}
-              </div>
-            </div>
-            {p2zStatus?.exists
-              ? <Pdf2zhView key={p2zReloadKey} paperId={paper.id} />
-              : <div className="dpv-wrap"><div className="pdf-loading" style={{ padding: '160px 0', textAlign: 'center', color: '#aaa' }}>尚无双语版式 PDF——点上方按钮生成（由 pdf2zh 重排，公式图表保留）</div></div>}
-          </div>
-        ) : layout === 'translate' ? (
+        {/* v3 渲染收敛：smart(mono就绪→SplitPdfView，否则文本对照) / zh / en */}
+        {showSplit ? (
+          <SplitPdfView key={`split-${p2zReloadKey}`} paperId={paper.id} />
+        ) : layout === 'smart' ? (
           <div
             className="reader-scroll translate-host"
             ref={scrollRef}
@@ -608,21 +604,6 @@ export default function Reader() {
               fontSize={fontSize}
               hlByPid={hlByPid}
               translating={translating}
-              paperId={paper.id}
-              notesByPid={notesByPid}
-            />
-          </div>
-        ) : layout === 'bilingual' ? (
-          <div
-            className={`reader-scroll bilingual-host ${columnWidth === 'standard' ? 'narrow' : ''}`}
-            ref={scrollRef}
-            onMouseUp={onMouseUp}
-            style={{ fontSize: `${fontSize}px`, '--reading-lh': lineHeight } as React.CSSProperties}
-          >
-            <BilingualView
-              blocks={blocks}
-              fontSize={fontSize}
-              hlByPid={hlByPid}
               paperId={paper.id}
               notesByPid={notesByPid}
             />
@@ -684,38 +665,102 @@ export default function Reader() {
         </div>
       )}
       {noteComposer && (
-        <div className="note-composer glass" style={{ left: Math.max(70, Math.min(noteComposer.x - 160, window.innerWidth - 380)), top: Math.max(8, noteComposer.y + 36) }}>
-          <div className="ncp-title">📝 写笔记（挂在划选所在段落）</div>
-          <textarea
-            autoFocus
-            value={noteComposer.text}
-            placeholder="用自己的话记一句…（沉淀页可跨论文浏览）"
-            onChange={e => setNoteComposer(v => v! && { ...v, text: e.target.value })}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveNote();
-              if (e.key === 'Escape') setNoteComposer(null);
-            }}
-          />
-          <div className="ncp-actions">
-            <span className="hint">Ctrl/⌘+Enter 保存 · Esc 取消</span>
-            <button className="ghost-btn" onClick={() => setNoteComposer(null)}>取消</button>
-            <button className="primary" onClick={saveNote} disabled={!noteComposer.text.trim()}>保存</button>
-          </div>
-        </div>
+        <NoteComposer
+          value={noteComposer}
+          onChange={setNoteComposer}
+          onClose={() => setNoteComposer(null)}
+          onSave={saveNote}
+        />
       )}
     </div>
   );
 }
 
+// v3 B4：笔记浮层——支持 [[论文标题]] 双链自动补全
+function NoteComposer({ value, onChange, onClose, onSave }: {
+  value: { x: number; y: number; pid: number; text: string };
+  onChange: (v: { x: number; y: number; pid: number; text: string }) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [suggest, setSuggest] = useState<{ query: string; start: number } | null>(null);
+  const [selIdx, setSelIdx] = useState(0);
+  const papers = useStore(s => s.papers);
+  const picks = suggest ? wikilinkSuggestList(suggest.query, papers) : [];
+
+  function applySuggest(title: string) {
+    if (!suggest) return;
+    const ta = taRef.current;
+    if (!ta) return;
+    const caret = ta.selectionStart ?? 0;
+    const after = value.text.slice(caret);
+    const next = `${value.text.slice(0, suggest.start)}${title}]]${after}`;
+    onChange({ ...value, text: next });
+    setSuggest(null);
+    requestAnimationFrame(() => { ta.selectionEnd = suggest.start + title.length + 2; ta.focus(); });
+  }
+
+  return (
+    <div className="note-composer glass" style={{ left: Math.max(70, Math.min(value.x - 160, window.innerWidth - 380)), top: Math.max(8, value.y + 36) }}>
+      <div className="ncp-title">📝 写笔记（挂在划选所在段落）</div>
+      <textarea
+        ref={taRef}
+        autoFocus
+        value={value.text}
+        placeholder="用自己的话记一句…输入 [[ 可链接其他论文"
+        onChange={e => {
+          onChange({ ...value, text: e.target.value });
+          setSuggest(wikilinkSuggest(e.target.value, e.target.selectionStart ?? 0));
+          setSelIdx(0);
+        }}
+        onKeyDown={e => {
+          if (suggest && picks.length) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setSelIdx(i => (i + 1) % picks.length); return; }
+            if (e.key === 'ArrowUp') { e.preventDefault(); setSelIdx(i => (i - 1 + picks.length) % picks.length); return; }
+            if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); applySuggest(picks[selIdx].title); return; }
+            if (e.key === 'Escape') { setSuggest(null); return; }
+          }
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onSave();
+          if (e.key === 'Escape') onClose();
+        }}
+      />
+      {suggest && picks.length > 0 && (
+        <div className="wl-suggest">
+          {picks.map((p, i) => (
+            <button key={p.id} className={i === selIdx ? 'on' : ''} onMouseDown={e => { e.preventDefault(); applySuggest(p.title); }}>
+              <span className="wl-title">{p.title}</span>
+              <span className="wl-arxiv">{p.arxiv_id}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="ncp-actions">
+        <span className="hint">Ctrl/⌘+Enter 保存 · [[ 双链 · Esc 取消</span>
+        <button className="ghost-btn" onClick={onClose}>取消</button>
+        <button className="primary" onClick={onSave} disabled={!value.text.trim()}>保存</button>
+      </div>
+    </div>
+  );
+}
+
+// [[query → 已导入论文建议（标题包含匹配）
+function wikilinkSuggestList(query: string, papers: Array<{ id: number; title: string; arxiv_id: string }>) {
+  const q = query.trim().toLowerCase();
+  const src = q ? papers.filter(p => p.title.toLowerCase().includes(q)) : papers;
+  return src.slice(0, 6);
+}
+
 // ---------- 段落行（memo 化：blocks 千段不卡）----------
+// v3：仅 zh / en 单栏（smart 用 TranslateView，双栏对照逻辑已收敛进去）
 const BlockRowView = memo(function BlockRowView({ b, layout, hlItems }: {
   b: import('../store').BlockRow;
   layout: string;
   hlItems: Array<{ text: string; color: string }>;
 }) {
-  const showEn = layout === 'dual' || layout === 'en';
-  const showZh = layout === 'dual' || layout === 'zh';
-  const single = layout !== 'dual';
+  const showEn = layout === 'en';
+  const showZh = layout === 'zh';
+  const single = true;
 
   const enHtml = highlightHtml(b.en, hlItems);
   const zhHtml = b.zh ? highlightHtml(b.zh, hlItems) : null;

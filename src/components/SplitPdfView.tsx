@@ -16,11 +16,13 @@ export interface PdfHlRect { x: number; y: number; w: number; h: number }
 export interface PdfHlRow { id: number; side: string; page: number; rects: string; text: string; pid: number | null; color: string }
 
 type Side = 'en' | 'zh';
-const HL_COLORS: Record<string, string> = {
-  yellow: 'rgba(255,240,90,0.42)', green: 'rgba(120,220,130,0.42)',
-  blue: 'rgba(100,170,255,0.42)', pink: 'rgba(255,140,190,0.42)',
+const HL_COLORS: Record<string, string> = { // PDF 画布高亮叠加色（半透明，走主题变量）
+  yellow: 'color-mix(in srgb, var(--hl-c-yellow) 55%, transparent)',
+  green: 'color-mix(in srgb, var(--hl-c-green) 55%, transparent)',
+  blue: 'color-mix(in srgb, var(--hl-c-blue) 55%, transparent)',
+  pink: 'color-mix(in srgb, var(--hl-c-pink) 55%, transparent)',
 };
-const MIRROR_COLOR = 'rgba(59,130,246,0.25)';
+const MIRROR_COLOR = 'color-mix(in srgb, var(--link) 25%, transparent)';
 const SEL_SPAN_LIMIT = 80;
 
 // 选区信息（组件内通用）
@@ -344,15 +346,27 @@ export default function SplitPdfView({ paperId }: { paperId: number }) {
   }, [paperId]);
 
   // 双侧就绪后恢复滚动位置（切论文/重开）
+  // 就绪信号没有 React 状态可订阅（syncReg 是模块级 Map，PdfPane 注册时不触发本组件渲染）——
+  // 挂载时 effect 只跑一次，若那时 doc 未载完（size<2）直接 return 会永远错过恢复（v3 实测踩坑）。
+  // 改为轻量轮询：500ms 一次，就绪即恢复并停止（上限 15s）。
   const [restored, setRestored] = useState(false);
   useEffect(() => {
-    if (restored || syncReg.size < 2) return;
-    const saved = Number(localStorage.getItem(`paper:${paperId}:splitTop`) || 0);
-    if (saved > 0) {
-      syncReg.get('en')?.scrollTo(saved);
-      syncReg.get('zh')?.scrollTo(saved);
-    }
-    setRestored(true);
+    if (restored) return;
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      if (syncReg.size < 2) {
+        if (Date.now() - t0 > 15000) clearInterval(timer); // 双侧始终不齐（如某侧 PDF 缺失）→ 放弃
+        return;
+      }
+      clearInterval(timer);
+      const saved = Number(localStorage.getItem(`paper:${paperId}:splitTop`) || 0);
+      if (saved > 0) {
+        syncReg.get('en')?.scrollTo(saved);
+        syncReg.get('zh')?.scrollTo(saved);
+      }
+      setRestored(true);
+    }, 500);
+    return () => clearInterval(timer);
   }, [restored, paperId]);
 
   // 选区 → 弹层 + 镜像（对侧渲染）
@@ -425,7 +439,7 @@ export default function SplitPdfView({ paperId }: { paperId: number }) {
   return (
     <div className="spv-wrap">
       <div className="dpv-toolbar">
-        <span className="dpv-mode-switch" style={{ color: '#ddd' }}>原版对照：左英文 · 右中文</span>
+        <span className="dpv-mode-switch" style={{ color: 'var(--text-3)' }}>原版对照：左英文 · 右中文</span>
         <span className="dpv-page-indicator">{highlights.length ? `共 ${highlights.length} 条划线` : ''}</span>
       </div>
       <div className="spv-split">

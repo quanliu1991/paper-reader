@@ -1,5 +1,5 @@
-// PDF 视图 UI E2E 启动器：vite dev + electron 窗口驱动 + 截图断言
-import { build, } from 'esbuild';
+// PDF 视图 UI E2E 启动器：vite dev + electron（测试逻辑内联于 main.ts PR_PDF_UI_E2E 分支）
+// v3：验证 SplitPdfView（smart+mono → 左原版 PDF / 右 mono.pdf，等值滚动同步）
 import { electronBin } from './lib/launch.mjs';
 import { spawn } from 'child_process';
 import fs from 'fs';
@@ -9,13 +9,6 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
-
-await build({
-  entryPoints: ['tests/pdf-ui-e2e.ts'],
-  bundle: true, platform: 'node', target: 'node20', format: 'cjs',
-  outfile: 'dist-electron/pdf-ui-e2e.js',
-  external: ['electron', 'better-sqlite3', 'pdfjs-dist'], logLevel: 'silent',
-});
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-pdf-ui-'));
 const logFile = path.join(tmpDir, 'ui.log');

@@ -51,6 +51,20 @@ app.whenReady().then(async () => {
     await win.loadURL(process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5199');
     await new Promise(r => setTimeout(r, 1200));
     const wc = win.webContents;
+    // 全程捕获渲染进程异常（黑屏/断言失败排查）
+    wc.on('console-message', (_e, level, msg) => { if (level >= 2 && !/DevTools|Autoplay/.test(msg)) log(`  [console:${level}]`, msg.slice(0, 400)); });
+    wc.on('render-process-gone', (_e, d) => log('  [GONE]', JSON.stringify(d)));
+    wc.on('unresponsive', () => log('  [unresponsive]'));
+    // E2E 标记 + 防御性关闭首启向导（若已弹出）
+    await wc.executeJavaScript(`(async () => {
+      window.__E2E = 1; localStorage.setItem('pr:welcome:seen', '1');
+      for (let i = 0; i < 10; i++) {
+        const skip = [...document.querySelectorAll('.welcome-actions .ghost-btn')].find(b => /暂不配置|稍后/.test(b.textContent ?? ''));
+        if (skip) { skip.click(); return 'closed'; }
+        await new Promise(r => setTimeout(r, 200));
+      }
+      return 'none';
+    })()`).catch(() => {});
 
     // ========== 阶段 0：首次启动（空库） ==========
     log('== 阶段 0：首次启动 ==');
@@ -133,36 +147,43 @@ app.whenReady().then(async () => {
     check('点击卡片进入阅读器', readerUp);
     await new Promise(r => setTimeout(r, 1500));
 
-    // ========== 阶段 3：阅读器三模式 ==========
+    // ========== 阶段 3：阅读器三模式（v3 收敛：smart/zh/en） ==========
     log('== 阶段 3：阅读器三模式 ==');
-    for (const layout of ['translate', 'pdf-layout', 'bilingual'] as const) {
+    for (const layout of ['smart', 'zh', 'en'] as const) {
       await wc.executeJavaScript(`window.__store.getState().setLayout('${layout}')`);
       const ok = await waitFor(wc,
-        layout === 'pdf-layout'
-          ? `document.querySelectorAll('.pdf-page canvas, .dpv-left').length >= 1`
-          : layout === 'translate'
-            ? `document.querySelectorAll('.tv-row, .tv-para-row').length >= 10`
-            : `(document.querySelectorAll('.bi-row, [class*="bilingual"] p, [class*="bi-"]').length >= 10)`,
+        layout === 'smart'
+          ? `document.querySelectorAll('.tv-row, .tv-para-row').length >= 10`
+          : layout === 'zh'
+            ? `document.querySelectorAll('.block-row .zh-text, .block-row .zh-pending').length >= 3`
+            : `document.querySelectorAll('.block-row .en-text, .block-row .blk.en').length >= 3`,
         15000, `layout=${layout}`);
       check(`模式切换：${layout}`, ok);
       await new Promise(r => setTimeout(r, 600));
       const img = await wc.capturePage();
       fs.writeFileSync(shotName(`03-reader-${layout}`), img.toPNG());
     }
-    // 回到 translate 模式继续后续阶段
-    await wc.executeJavaScript(`window.__store.getState().setLayout('translate')`);
+    // 回到 smart 模式继续后续阶段
+    await wc.executeJavaScript(`window.__store.getState().setLayout('smart')`);
     await new Promise(r => setTimeout(r, 800));
 
-    // ========== 阶段 4：翻译全文（fake LLM 流 + 进度 + 逐段浮现） ==========
-    log('== 阶段 4：翻译全文 ==');
+    // ========== 阶段 4：打开即译（A2 自动翻译，fake LLM 流 + 逐段浮现） ==========
+    log('== 阶段 4：打开即译 ==');
     const blocks: any[] = await wc.executeJavaScript(`window.api.getBlocks(${paperId})`);
     const paras = blocks.filter((b: any) => b.type === 'para');
-    const trStart: any = await wc.executeJavaScript(`(() => {
-      const btn = [...document.querySelectorAll('button')].find(b => /翻译全文|翻译/.test(b.textContent ?? ''));
-      if (!btn) return null;
-      btn.click(); return btn.textContent;
+    // v3 A2：打开即自动翻译（fake LLM 即时完成）。「重译全文」收进更多菜单 → 验证菜单可达
+    const trStart: any = await wc.executeJavaScript(`(async () => {
+      const moreBtn = document.querySelector('.more-menu > button, .more-menu .icon-btn');
+      if (!moreBtn) return null;
+      moreBtn.click();
+      await new Promise(r => setTimeout(r, 300));
+      const item = [...document.querySelectorAll('.more-popover button')].find(b => /重新翻译全文|取消翻译/.test(b.textContent ?? ''));
+      const label = item?.textContent ?? null;
+      if (item && /重新翻译/.test(item.textContent ?? '')) { item.click(); return label; }
+      document.querySelector('.more-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return label ?? 'auto-translating';
     })()`);
-    check('「翻译全文」按钮存在并点击', !!trStart, String(trStart));
+    check('「翻译」入口（自动翻译 + 更多菜单重译）', !!trStart, String(trStart));
     // fake LLM 即时完成；轮询译文段落出现
     const zhAppeared = await waitFor(wc,
       `document.querySelectorAll('.tv-cell.zh, [class*="zh"]').length >= 3 && [...document.querySelectorAll('.tv-cell.zh, [class*="zh"]')].some(e => (e.textContent ?? '').trim().length > 20)`,
@@ -301,15 +322,27 @@ app.whenReady().then(async () => {
     const fcCount = dbCount(`SELECT COUNT(*) n FROM flashcards WHERE paper_id=${paperId}`);
     check('闪卡保存', fcCount >= 1, `rows=${fcCount}`);
 
-    // ========== 阶段 8：复习（SM-2） ==========
+    // ========== 阶段 8：复习（SM-2，知识页 tab） ==========
     log('== 阶段 8：复习 ==');
-    await wc.executeJavaScript(`document.querySelector('.nav-btn[title="闪卡复习"]')?.click()`);
-    await new Promise(r => setTimeout(r, 800));
-    const reviewDom: any = await wc.executeJavaScript(`(() => ({
-      front: (document.querySelector('.fc-front')?.textContent ?? '').slice(0, 50),
-      meta: (document.querySelector('.review-meta')?.textContent ?? '').slice(0, 40),
-    }))()`);
-    check('复习页展示到期卡片', reviewDom.front.length > 0, JSON.stringify(reviewDom));
+    await wc.executeJavaScript(`(async () => {
+      document.querySelector('.nav-btn[title="知识：沉淀（高亮/笔记/问答）与闪卡复习"]')?.click();
+      await new Promise(r => setTimeout(r, 300));
+      const tab = [...document.querySelectorAll('.knowledge-page .mode-switch button')].find(b => /复习/.test(b.textContent ?? ''));
+      tab?.click();
+    })()`);
+    const reviewShown = await waitFor(wc,
+      `(document.querySelector('.fc-front')?.textContent ?? '').length > 0`,
+      8000, 'review card');
+    if (!reviewShown) {
+      const dbg: any = await wc.executeJavaScript(`(() => ({
+        view: window.__store?.getState()?.view,
+        knowledge: !!document.querySelector('.knowledge-page'),
+        navTitles: [...document.querySelectorAll('.nav-btn')].map(b => b.title).slice(0, 6),
+        bodyLen: (document.body.textContent ?? '').length,
+      }))()`).catch(e => ({ err: String(e) }));
+      log(`  [dbg] ${JSON.stringify(dbg)}`);
+    }
+    check('复习页展示到期卡片', reviewShown);
     const graded: any = await wc.executeJavaScript(`(async () => {
       const card = document.querySelector('.flashcard');
       if (!card) return { ok: false, reason: 'no card' };
@@ -327,29 +360,34 @@ app.whenReady().then(async () => {
     const img8 = await wc.capturePage();
     fs.writeFileSync(shotName('08-review'), img8.toPNG());
 
-    // ========== 阶段 9：沉淀页（高亮 + 笔记聚合） ==========
+    // ========== 阶段 9：沉淀页（知识页-沉淀 tab，高亮 + 笔记聚合） ==========
     log('== 阶段 9：沉淀页 ==');
-    await wc.executeJavaScript(`document.querySelector('.nav-btn[title="沉淀：高亮与笔记"]')?.click()`);
-    await new Promise(r => setTimeout(r, 800));
+    await wc.executeJavaScript(`(async () => {
+      document.querySelector('.nav-btn[title="知识：沉淀（高亮/笔记/问答）与闪卡复习"]')?.click();
+      await new Promise(r => setTimeout(r, 300));
+      const tab = [...document.querySelectorAll('.knowledge-page .mode-switch button')].find(b => /沉淀/.test(b.textContent ?? ''));
+      tab?.click();
+    })()`);
+    const notesShown = await waitFor(wc, `document.querySelectorAll('.settle-note, .settle-quote').length >= 1`, 8000, 'notes cards');
     const notesDom: any = await wc.executeJavaScript(`(() => ({
-      cards: document.querySelectorAll('.note-card').length,
+      cards: document.querySelectorAll('.settle-note, .settle-quote').length,
       tabs: (document.querySelector('.notes-toolbar')?.textContent ?? '').slice(0, 60),
-      firstCard: (document.querySelector('.note-card')?.textContent ?? '').slice(0, 80),
+      firstCard: (document.querySelector('.settle-note, .settle-quote')?.textContent ?? '').slice(0, 80),
     }))()`);
-    check('沉淀页聚合高亮/笔记', notesDom.cards >= 1, `cards=${notesDom.cards}, tabs=${notesDom.tabs}`);
+    check('沉淀页聚合高亮/笔记', notesShown && notesDom.cards >= 1, `cards=${notesDom.cards}, tabs=${notesDom.tabs}`);
     const img9 = await wc.capturePage();
     fs.writeFileSync(shotName('09-notes'), img9.toPNG());
 
-    // ========== 阶段 10：主题依赖库 UI ==========
+    // ========== 阶段 10：主题依赖库 UI（图谱入口） ==========
     log('== 阶段 10：主题库 ==');
-    await wc.executeJavaScript(`document.querySelector('.nav-btn[title="主题依赖库"]')?.click()`);
-    await new Promise(r => setTimeout(r, 800));
+    await wc.executeJavaScript(`document.querySelector('.nav-btn[title="图谱：主题依赖库（引用图谱导航）"]')?.click()`);
+    const topicShown = await waitFor(wc, `!!document.querySelector('.topic-build-box input')`, 8000, 'topic build box');
     const topicDom: any = await wc.executeJavaScript(`(() => ({
       input: !!document.querySelector('.topic-build-box input'),
       buildBtn: !!document.querySelector('.topic-build-box button'),
       head: (document.querySelector('.topic-page .list-head h1')?.textContent ?? ''),
     }))()`);
-    check('主题库输入入口', topicDom.input && topicDom.buildBtn, JSON.stringify(topicDom));
+    check('主题库输入入口', topicShown && topicDom.input && topicDom.buildBtn, JSON.stringify(topicDom));
     const img10 = await wc.capturePage();
     fs.writeFileSync(shotName('10-topic'), img10.toPNG());
 
@@ -369,11 +407,15 @@ app.whenReady().then(async () => {
     // ========== 阶段 12：阅读进度持久化（重开论文恢复） ==========
     log('== 阶段 12：进度记忆 ==');
     await wc.executeJavaScript(`window.__store.getState().openPaper(${paperId})`);
-    await new Promise(r => setTimeout(r, 1200));
+    await new Promise(r => setTimeout(r, 1500));
     // 滚到中部（pid 锚点方案：滚动停 600ms 后写 localStorage paper:<id>:pid/scroll）
+    // v3：等正文渲染出高度再滚（A2 自动翻译完成后内容才稳定）
     const scroller: any = await wc.executeJavaScript(`(async () => {
       const el = document.querySelector('.reader-scroll');
       if (!el) return -1;
+      for (let i = 0; i < 30 && el.scrollHeight < el.clientHeight * 2; i++) {
+        await new Promise(r => setTimeout(r, 300));
+      }
       el.scrollTop = Math.round(el.scrollHeight * 0.4);
       el.dispatchEvent(new Event('scroll'));
       await new Promise(r => setTimeout(r, 900));

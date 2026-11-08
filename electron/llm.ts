@@ -76,7 +76,7 @@ export async function chatStream(
   // 守卫遵循 DEVELOPMENT.md E2E 泄漏陷阱规范：仅当显式设置 PR_FAKE_LLM=1 时生效；
   // 打包版（app.isPackaged）永不启用——用户 shell 残留变量也不可能在生产触发假流。
   if (process.env.PR_FAKE_LLM === '1' && !app.isPackaged) {
-    fakeChatStream(messages, handlers);
+    await fakeChatStream(messages, handlers);
     return;
   }
   try {
@@ -92,8 +92,11 @@ export async function chatStream(
 }
 
 // fake 流：按用户消息内容生成确定性回复（问答带【段落 #N】引用格式，摘要/翻译给固定中文）
-// 让上层「引用解析 / QC / 摘要卡渲染」逻辑可被真实地走一遍
-function fakeChatStream(messages: ChatMessage[], h: StreamHandlers) {
+// 让上层「引用解析 / QC / 摘要卡渲染」逻辑可被真实地走一遍。
+// async + 逐片 setTimeout：模拟真实网络的异步节奏——上层 invoke 返回前订阅仍在线，
+// delta 全部送达后 onDone 收尾（2026-11 修复：同步 setImmediate 版本在 onDone 写库前
+// 就让 qa:ask 返回，渲染层 off() 取订后收不到任何事件，气泡永远空白）。
+async function fakeChatStream(messages: ChatMessage[], h: StreamHandlers) {
   const lastUser = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
   let reply: string;
   if (/摘要|一句话|summary/i.test(lastUser)) {
@@ -106,12 +109,13 @@ function fakeChatStream(messages: ChatMessage[], h: StreamHandlers) {
     const ref = m ? (m[1] ?? m[2]) : '1';
     reply = `这是针对该问题的确定性测试回答。依据【段落 #${ref}】，可以解释为核心机制的直接推论。`;
   }
-  // 按 8 字符分片模拟流
+  // 按 8 字符分片、每片间隔 8ms 模拟流（保持函数在流结束后才 resolve）
   const chunks = reply.match(/[\s\S]{1,8}/g) ?? [reply];
-  setImmediate(() => {
-    for (const c of chunks) h.onDelta(c);
-    h.onDone(reply);
-  });
+  for (const c of chunks) {
+    h.onDelta(c);
+    await new Promise(r => setTimeout(r, 8));
+  }
+  h.onDone(reply);
 }
 
 // OpenAI 兼容：OpenAI / GLM / DeepSeek / Qwen / Ollama / vLLM ...
