@@ -16,9 +16,15 @@ await build({
   external: ['yaml'],
   outfile: 'tests/.tmp-vault/vault.js', logLevel: 'silent',
 });
+await build({
+  entryPoints: ['electron/vault-wiring.ts'],
+  bundle: true, platform: 'node', target: 'node20', format: 'cjs',
+  outfile: 'tests/.tmp-vault/vault-wiring.cjs', logLevel: 'silent',
+});
 
 const { createSink } = await import('../tests/.tmp-vault/vault-sink.js');
 const V = await import('../tests/.tmp-vault/vault.js');
+const { createVaultProcessor } = await import('../tests/.tmp-vault/vault-wiring.cjs');
 
 let pass = 0, fail = 0;
 function assert(cond, name) {
@@ -216,6 +222,78 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   V.writeAtomic(path.join(tmp, 'x.json'), '{"a":1}');
   assert(fs.readFileSync(path.join(tmp, 'x.json'), 'utf8') === '{"a":1}', 'writeAtomic');
   assert(fs.readdirSync(tmp).filter(f => f.includes('.tmp-')).length === 0, '无 tmp 残留');
+}
+
+// ---------- vault-wiring 处理器（fake provider + tmp 目录）----------
+{
+  console.log('== vault-wiring 全资产落盘 ==');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-wire-'));
+  // fake provider：一篇论文的全量数据
+  const paper = {
+    id: 3, arxiv_id: '2401.02345', title: 'Test Paper', authors: 'A, B',
+    source_url: 'https://arxiv.org/abs/2401.02345', import_type: 'html',
+    created_at: '2024-01-15 10:00:00', status: 'reading', tags: '["ml"]',
+    dual_pdf_path: null, mono_pdf_path: null,
+  };
+  const blocks = new Map([[10, { seq: 5, en: 'KV cache is like scratch paper' }], [11, { seq: 6, en: 'Second para' }]]);
+  const fake = {
+    getPaper: (id) => (id === 3 ? paper : null),
+    listHighlights: () => [{ id: 12, pid: 5, text_en: 'scratch paper', note: '', color: 'green', created_at: '2026-11-08 10:00:00' }],
+    listPdfHighlights: () => [{ id: 13, side: 'en', page: 3, rects: '[{"x":0.1,"y":0.2,"w":0.3,"h":0.1}]', text: 'rect', pid: null, note: '', color: 'yellow', created_at: '2026-11-08 10:01:00' }],
+    listNotes: () => [{ id: 5, pid: 5, text: '笔记 [[链接]]', created_at: '2026-11-08 10:00:00', updated_at: '2026-11-08 11:00:00' }],
+    listQa: () => [{ id: 3, pid: 5, question: 'Q?', answer: 'A【段落 #5】', provider: 'glm', model: 'glm-4', created_at: '2026-11-08 10:00:00' }],
+    getBlockEn: () => blocks,
+    getTranslationsFull: () => [{ pid: 10, zh: 'KV 缓存就像草稿纸', provider: 'glm', model: 'glm-4', updated_at: '2026-11-08 10:00:00' }],
+    getDigest: (kind) => (kind === 'paper' ? { body: '精炼【H12】【N5】【Q3】', updated_at: '2026-11-08 12:00:00' } : undefined),
+    getSummary: () => ({ provider: 'glm', model: 'glm-4', summary: '{"oneLiner":"x"}', section_summaries: '[]' }),
+    getReadProgress: () => 45,
+    getTopic: (id) => (id === 2 ? { id: 2, name: 'Speculative Decoding', query: 'sd', status: 'ready', node_count: 1, edge_count: 0, note: '', created_at: '2026-11-08 10:00:00', updated_at: '2026-11-08 11:00:00' } : null),
+    listTopicPapers: () => [{ arxiv_id: '2401.02345', title: 'Test Paper', year: 2024, citation_count: 10, layer: 'key', in_degree: 2, out_degree: 1, read_order: 1, imported: 1 }],
+    listTopicEdges: () => [],
+    listAllFlashcards: () => [{ id: 9, paper_id: 3, pid: 5, front: 'F?', back: 'B', interval_days: 1, ease: 2.5, reps: 1, lapses: 0, due: '2026-11-09 00:00:00', created_at: '2026-11-08 10:00:00', arxiv_id: '2401.02345', paper_created_at: '2024-01-15 10:00:00' }],
+    getReaderProfile: () => ({ bg: 'AI Infra', signals: { concept: 3 } }),
+  };
+  const proc = createVaultProcessor({ vaultDir: tmp, provider: fake });
+  await proc.handle([
+    { kind: 'meta', paperId: 3 }, { kind: 'annotations', paperId: 3 },
+    { kind: 'notes', paperId: 3 }, { kind: 'qa', paperId: 3 },
+    { kind: 'translations', paperId: 3 }, { kind: 'digest', paperId: 3 },
+    { kind: 'flashcards' }, { kind: 'topics', topicId: 2 }, { kind: 'profile' },
+  ]);
+  const key = '2024-2401.02345';
+  const dir = path.join(tmp, 'papers', key);
+  assert(fs.existsSync(path.join(dir, 'meta.yaml')), 'meta.yaml');
+  const meta = V.parseMeta(fs.readFileSync(path.join(dir, 'meta.yaml'), 'utf8'));
+  assert(meta.legacy_id === 3 && meta.read_pct === 45 && meta.summary.body === '{"oneLiner":"x"}', 'meta 内容');
+  const annos = V.parseAnnotations(fs.readFileSync(path.join(dir, 'annotations.json'), 'utf8'));
+  assert(annos.length === 2 && annos[0].kind === 'text' && annos[1].kind === 'rect', 'annotations 混合类型');
+  const notes = V.parseNotes(fs.readFileSync(path.join(dir, 'notes.md'), 'utf8'));
+  assert(notes.length === 1 && notes[0].sid === 'n1' && notes[0].seq === 5, 'notes sid 分配');
+  const qa = V.parseQa(fs.readFileSync(path.join(dir, 'qa.jsonl'), 'utf8'));
+  assert(qa.length === 1 && qa[0].sid === 'q1', 'qa sid');
+  const trs = V.parseTranslations(fs.readFileSync(path.join(dir, 'translations.jsonl'), 'utf8'));
+  assert(trs.length === 1 && trs[0].seq === 5 && trs[0].en === 'KV cache is like scratch paper', 'translations 按 pid→seq 映射');
+  const dg = V.parseDigest(fs.readFileSync(path.join(dir, 'digest.md'), 'utf8'));
+  assert(dg.body.includes('【H12】'), 'digest 令牌保留');
+  const fcs = V.parseFlashcards(fs.readFileSync(path.join(tmp, 'flashcards.jsonl'), 'utf8'));
+  assert(fcs.length === 1 && fcs[0].paper_key === key, 'flashcards paper_key');
+  const tp = V.parseTopic(fs.readFileSync(path.join(tmp, 'topics', 'Speculative-Decoding.json'), 'utf8'));
+  assert(tp.legacy_id === 2 && tp.papers[0].imported === 1, 'topic json');
+  const prof = V.parseProfile(fs.readFileSync(path.join(tmp, 'profile.md'), 'utf8'));
+  assert(prof.bg === 'AI Infra', 'profile');
+
+  // paperDelete → trash
+  await proc.handle([{ kind: 'paperDelete', paperId: 3 }]);
+  assert(!fs.existsSync(dir), '论文目录移出 papers/');
+  const trash = fs.readdirSync(path.join(tmp, 'trash'));
+  assert(trash.length === 1 && trash[0].startsWith(key), `trash 保留副本（${trash[0]}）`);
+
+  // 幂等：重复执行不炸
+  paper.id = 3;
+  const fake2 = { ...fake, getPaper: (id) => (id === 3 ? paper : null) };
+  const proc2 = createVaultProcessor({ vaultDir: tmp, provider: fake2 });
+  await proc2.handle([{ kind: 'meta', paperId: 3 }]); // 目录已移除，重新写入
+  assert(fs.existsSync(path.join(tmp, 'papers', key, 'meta.yaml')), '幂等重建');
 }
 
 console.log(`\n${pass} PASS / ${fail} FAIL`);
