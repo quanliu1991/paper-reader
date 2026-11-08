@@ -17,8 +17,54 @@ export default function Settings() {
       <ProfileSection />
       <ProviderSection />
       <LibrarySection />
+      <VaultSection />
       <RepoSection />
     </div>
+  );
+}
+
+// vault 知识库（P1）：本地文件夹作为事实源，双写 sidecar 文件
+function VaultSection() {
+  const [dir, setDir] = useState('');
+  const [status, setStatus] = useState<any>(null);
+
+  async function load() {
+    try {
+      const d = await window.api.vaultGetDir();
+      setDir(d ?? '');
+      setStatus(await window.api.vaultStatus());
+    } catch { /* 静默 */ }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function pick() {
+    try {
+      const d = await window.api.vaultPickDir();
+      if (!d) return;
+      await window.api.vaultSetDir(d);
+      setDir(d);
+      setStatus(await window.api.vaultStatus());
+      toast('success', 'vault 知识库已连接——此后划线/笔记/问答/译文会同步写入该文件夹');
+    } catch (e: any) { toastErr(e); }
+  }
+
+  const errors = status?.errors ?? 0;
+  return (
+    <section className="settings-section">
+      <h2>vault 知识库</h2>
+      <p className="section-desc">把全部沉淀资产（划线/笔记/问答/精炼/译文/闪卡）以人类可读文件写入本地文件夹——文件即事实源，可用任何编辑器打开，后续可接 Git 远端同步。</p>
+      <div className="repo-status">
+        <span>{status?.enabled ? `✓ 已连接：${dir}` : '未连接'}</span>
+        {status?.enabled && errors > 0 && <span className="dim" style={{ marginLeft: 8 }}>（{errors} 次写入失败）</span>}
+      </div>
+      <div className="import-row">
+        <input type="text" value={dir} placeholder="选择 vault 文件夹…" readOnly onClick={pick} style={{ cursor: 'pointer' }} />
+        <button className="primary" onClick={pick}>选择文件夹</button>
+      </div>
+      <div className="hint" style={{ marginTop: 10 }}>
+        连接后每篇论文一个子文件夹（PDF + meta + 标注 + 笔记 + 问答 + 译文）；App 数据库退化为可重建索引——换设备时从 vault 恢复全部资产。
+      </div>
+    </section>
   );
 }
 
