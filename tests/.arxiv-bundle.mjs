@@ -67,7 +67,19 @@ function parseArxivHtml(html, arxivId) {
       return isBlock ? ` $$${tex}$$ ` : ` $${tex}$ `;
     });
   }
-  const re = /<(h[1-6])[^>]*>([\s\S]*?)<\/\1>|<p[^>]*>([\s\S]*?)<\/p>|<(table|div)[^>]*class="[^"]*ltx_equation[^"]*"[^>]*>([\s\S]*?)<\/\4>|<figure[^>]*>([\s\S]*?)<\/figure>/gi;
+  const pushFig = (en, figPath, figKind, rows, htmlTable) => {
+    blocks.push({
+      seq: seq++,
+      type: "fig",
+      level: 0,
+      en,
+      figPath,
+      figKind,
+      figHtmlTable: htmlTable || void 0,
+      figTableRows: rows
+    });
+  };
+  const re = /<(h[1-6])[^>]*>([\s\S]*?)<\/\1>|<p[^>]*>([\s\S]*?)<\/p>|<(table|div)[^>]*class="[^"]*ltx_equation[^"]*"[^>]*>([\s\S]*?)<\/\4>|<figure[^>]*>([\s\S]*?)<\/figure>|<img\b[^>]*>/gi;
   let m;
   while ((m = re.exec(cleaned)) !== null) {
     if (m[1]) {
@@ -76,12 +88,12 @@ function parseArxivHtml(html, arxivId) {
       if (!text || NOISE.test(text)) continue;
       blocks.push({ seq: seq++, type: "heading", level, en: text });
     } else if (m[3] !== void 0) {
-      const text = stripTags(replaceMath(m[3])).trim();
-      if (!text || NOISE.test(text)) continue;
-      if (TOC_LINE.test(text) && text.length > 200) continue;
-      if (text.length < 2) continue;
-      if (/^\d{1,4}$/.test(text)) continue;
-      blocks.push({ seq: seq++, type: "para", level: 0, en: text });
+      const pulled = extractNotes(m[3], replaceMath);
+      for (const src of collectImgSrcs(pulled.html)) pushFig("", absolutizeImg(src, arxivId), "figure");
+      const text = stripTags(replaceMath(pulled.html)).trim();
+      const drop = !text || NOISE.test(text) || TOC_LINE.test(text) && text.length > 200 || text.length < 2 || /^\d{1,4}$/.test(text) || /hereby grants permission to reproduce/i.test(text);
+      if (!drop) blocks.push({ seq: seq++, type: "para", level: 0, en: text });
+      for (const note of pulled.notes) blocks.push({ seq: seq++, type: "para", level: 0, en: note });
     } else if (m[5] !== void 0) {
       const text = stripTags(replaceMath(m[5])).trim();
       if (text && /\$\$/.test(text)) {
@@ -92,25 +104,45 @@ function parseArxivHtml(html, arxivId) {
       const figClass = (m[0].match(/class="([^"]*)"/) || [])[1] ?? "";
       const kind = /ltx_table/.test(figClass) ? "table" : "figure";
       const capMatch = figHtml.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i);
-      const cap = capMatch ? stripTags(replaceMath(capMatch[1])).trim() : "";
-      const imgMatch = figHtml.match(/<(?:img|graphics)[^>]*(?:xlink:href|src)="([^"]+)"[^>]*>/i) || figHtml.match(/<object[^>]*type="image\/svg\+xml"[^>]*data="([^"]+)"[^>]*>/i) || figHtml.match(/<object[^>]*data="([^"]+\.svg)"[^>]*>/i);
-      let img = imgMatch ? imgMatch[1] : "";
-      if (img && !/^data:/.test(img)) img = absolutizeImg(img, arxivId);
-      const hasSvg = /<svg/i.test(figHtml);
-      const tableRows = !img && !hasSvg && /ltx_tabular/i.test(figHtml) ? extractTableRows(figHtml) : void 0;
-      const hasTabular = !!tableRows;
-      if (cap && !NOISE.test(cap) || img || hasSvg) {
-        blocks.push({
-          seq: seq++,
-          type: "fig",
-          level: 0,
-          en: cap || (kind === "table" ? "\u8868\u683C" : "\u56FE"),
-          figPath: img || void 0,
-          figKind: kind,
-          figHtmlTable: hasTabular || void 0,
-          figTableRows: tableRows
+      const capPulled = extractNotes(capMatch ? capMatch[1] : "", replaceMath);
+      const cap = stripTags(replaceMath(capPulled.html)).trim();
+      const capOk = !!cap && !NOISE.test(cap);
+      const pushCapNotes = () => {
+        for (const note of capPulled.notes) blocks.push({ seq: seq++, type: "para", level: 0, en: note });
+      };
+      const srcs = collectImgSrcs(figHtml).map((s) => absolutizeImg(s, arxivId));
+      if (srcs.length) {
+        srcs.forEach((src, idx) => {
+          const en = idx === 0 ? capOk ? cap : kind === "table" ? "\u8868\u683C" : "\u56FE" : " ";
+          pushFig(en, src, kind);
         });
+        pushCapNotes();
+        continue;
       }
+      const objMatch = figHtml.match(/<object[^>]*type="image\/svg\+xml"[^>]*data="([^"]+)"[^>]*>/i) || figHtml.match(/<object[^>]*data="([^"]+\.svg)"[^>]*>/i);
+      const img = objMatch && !/^data:/i.test(objMatch[1]) ? absolutizeImg(objMatch[1], arxivId) : "";
+      const hasSvg = /<svg/i.test(figHtml);
+      const listingRows = !img && !hasSvg ? extractListingLines(figHtml, replaceMath) : void 0;
+      const tableRows = !img && !hasSvg && !listingRows && /ltx_tabular/i.test(figHtml) ? extractTableRows(figHtml) : void 0;
+      const proseRows = !img && !hasSvg && !listingRows && !tableRows ? extractFigureProse(figHtml, replaceMath) : void 0;
+      const rows = listingRows || tableRows || proseRows;
+      if (img || hasSvg || rows) {
+        pushFig(
+          capOk ? cap : kind === "table" ? "\u8868\u683C" : "\u56FE",
+          img || (hasSvg ? "inline:" : void 0),
+          kind,
+          rows,
+          !!tableRows
+        );
+        pushCapNotes();
+      } else if (capOk) {
+        const prev = blocks[blocks.length - 1];
+        if (prev && prev.type === "fig" && prev.figPath && !prev.en.trim()) prev.en = cap;
+        else pushFig(cap, void 0, kind);
+        pushCapNotes();
+      }
+    } else if (/^<img\b/i.test(m[0])) {
+      for (const src of collectImgSrcs(m[0])) pushFig("", absolutizeImg(src, arxivId), "figure");
     }
   }
   return { arxivId, title, authors, blocks, importType: "html" };
@@ -148,13 +180,27 @@ async function downloadToFile(url, dest) {
   const buf = Buffer.from(await resp.arrayBuffer());
   fs.writeFileSync(dest, buf);
 }
+function extractListingLines(figHtml, replaceMath) {
+  if (!/ltx_listingline/i.test(figHtml)) return void 0;
+  const lines = [];
+  const re = /<div[^>]*class="[^"]*\bltx_listingline\b[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+  let m;
+  while ((m = re.exec(figHtml)) !== null) {
+    const mathDone = replaceMath(m[1]);
+    const indented = /[\u2002\u2003]/.test(mathDone.slice(0, 160));
+    let text = stripTags(mathDone).replace(/^\d+\s*:\s*/, "");
+    if (!text) continue;
+    lines.push([indented ? `    ${text}` : text]);
+  }
+  return lines.length ? lines : void 0;
+}
 function extractTableRows(figHtml) {
   const cellText = (raw) => {
     const withMath = raw.replace(/<math([^>]*)>([\s\S]*?)<\/math>/gi, (_x, attrs) => {
       const alt = (attrs.match(/alttext="([^"]*)"/) || [])[1];
       return alt ? ` $${decodeEntities(alt)}$ ` : " ";
     });
-    return " " + withMath.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() + " ";
+    return " " + stripTags(withMath) + " ";
   };
   const spanBlocks = (fragment, cls) => {
     const out = [];
@@ -225,10 +271,74 @@ function parsePlainText(text, arxivId, title) {
   return { arxivId, title: title || arxivId, authors: "", blocks, importType: "text" };
 }
 function decodeEntities(s) {
-  return s.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+  let out = s;
+  for (let i = 0; i < 2; i++) {
+    out = out.replace(/&nbsp;/g, " ").replace(/&middot;/g, "\xB7").replace(/&times;/g, "\xD7").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16))).replace(/&amp;/g, "&");
+  }
+  return out;
 }
 function stripTags(s) {
-  return s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  const t = s.replace(/<br\b[^>]*>/gi, " ").replace(/<\/?(?:span|em|strong|b|i|a|cite|code)\b[^>]*>/gi, "").replace(/<[^>]+>/g, " ");
+  return decodeEntities(t).replace(/\s+/g, " ").trim();
+}
+function extractNotes(html, replaceMath) {
+  const notes = [];
+  const re = /<span\b[^>]*class="[^"]*\bltx_note\b[^"]*"[^>]*>/gi;
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    out += html.slice(last, m.index);
+    let depth = 1;
+    let pos = m.index + m[0].length;
+    while (depth > 0 && pos < html.length) {
+      const op = html.indexOf("<span", pos);
+      const cl = html.indexOf("</span>", pos);
+      if (cl === -1) {
+        pos = html.length;
+        break;
+      }
+      if (op !== -1 && op < cl) {
+        depth++;
+        pos = html.indexOf(">", op) + 1;
+      } else {
+        depth--;
+        pos = cl + 7;
+      }
+    }
+    const inner = html.slice(m.index + m[0].length, Math.max(m.index + m[0].length, pos - 7));
+    const cleaned = inner.replace(/<sup\b[^>]*>[\s\S]*?<\/sup>/gi, " ").replace(/<span\b[^>]*\bltx_tag_note\b[^>]*>[\s\S]*?<\/span>/gi, " ");
+    const text = stripTags(replaceMath(cleaned));
+    if (text.length > 2) notes.push(text);
+    last = pos;
+    re.lastIndex = pos;
+  }
+  out += html.slice(last);
+  return { html: out, notes };
+}
+function collectImgSrcs(fragment) {
+  const out = [];
+  const re = /<(?:img|graphics)\b[^>]*>/gi;
+  let m;
+  while ((m = re.exec(fragment)) !== null) {
+    const src = (m[0].match(/\b(?:src|xlink:href)="([^"]+)"/i) || [])[1];
+    if (!src || /^data:/i.test(src)) continue;
+    if (/\/static\/|arxiv-logo|smileybones|\/funders\//i.test(src)) continue;
+    out.push(src);
+  }
+  return out;
+}
+function extractFigureProse(figHtml, replaceMath) {
+  const body = figHtml.replace(/<figcaption[\s\S]*?<\/figcaption>/gi, "");
+  const parts = /<p\b|<br\b/i.test(body) ? body.split(/<br\b[^>]*>|<\/p>/i) : [body];
+  const lines = [];
+  for (const part of parts) {
+    const text = stripTags(replaceMath(part));
+    if (text.length < 2) continue;
+    lines.push([text]);
+  }
+  if (lines.map((l) => l[0]).join(" ").length < 40) return void 0;
+  return lines;
 }
 function extractTitle(html) {
   const h1 = html.match(/<h1[^>]*class="[^"]*ltx_title[^"]*"[^>]*>([\s\S]*?)<\/h1>/i);
