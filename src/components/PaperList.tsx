@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../store';
 import { toast, toastErr } from './Toast';
-import { IconPlus, IconTrash, IconBib } from './icons';
+import { IconPlus, IconTrash, IconBib, IconTeam } from './icons';
 
 // 论文状态四档：未读 / 在读 / 已读 / 精读（与 db.ts PAPER_STATUSES 对应）
 const STATUS = [
@@ -243,6 +243,29 @@ export default function PaperList() {
     setFTags(v => v.includes(t) ? v.filter(x => x !== t) : [...v, t]);
   }
 
+  // ---------- 分享到团队清单（登录 + 已选团队时可用）----------
+  const [accountInfo, setAccountInfo] = useState<any>(null);
+  const [shareDlg, setShareDlg] = useState<{ arxivId: string; title: string } | null>(null);
+  const [myTeams, setMyTeams] = useState<any[]>([]);
+  const [shareTeamId, setShareTeamId] = useState('');
+  const [shareNote, setShareNote] = useState('');
+  useEffect(() => {
+    window.api.accountGetInfo().then((i: any) => {
+      setAccountInfo(i);
+      if (i?.loggedIn) window.api.teamList().then(setMyTeams).catch(() => setMyTeams([]));
+    }).catch(() => {});
+  }, []);
+  useEffect(() => { if (shareDlg && !shareTeamId && myTeams.length) setShareTeamId(myTeams[0].id); }, [shareDlg, myTeams, shareTeamId]);
+
+  async function doShare() {
+    if (!shareDlg || !shareTeamId) return;
+    try {
+      await window.api.teamAddItem({ teamId: shareTeamId, arxivId: shareDlg.arxivId, title: shareDlg.title, note: shareNote });
+      toast('success', '已分享到团队阅读清单');
+      setShareDlg(null); setShareNote('');
+    } catch (e: any) { toastErr(e); }
+  }
+
   function toggleSel(absPath: string) {
     setSel(v => {
       const n = new Set(v);
@@ -478,9 +501,17 @@ export default function PaperList() {
                   {p.highlight_count > 0 && <span>划线 {p.highlight_count}</span>}
                   {p.read_pct ? <span>读至 {p.read_pct}%</span> : null}
                 </div>
-                <button className="icon-danger" onClick={e => removePaper(e, p.id, p.title)} title="删除">
-                  <IconTrash s={15} />
-                </button>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {accountInfo?.loggedIn && myTeams.length > 0 && p.arxiv_id && (
+                    <button className="icon-btn" title="分享到团队阅读清单"
+                      onClick={e => { e.stopPropagation(); setShareDlg({ arxivId: p.arxiv_id, title: p.title }); }}>
+                      <IconTeam s={15} />
+                    </button>
+                  )}
+                  <button className="icon-danger" onClick={e => removePaper(e, p.id, p.title)} title="删除">
+                    <IconTrash s={15} />
+                  </button>
+                </div>
               </div>
               {p.read_pct ? (
                 <div className="read-progress"><div style={{ width: `${p.read_pct}%` }} /></div>
@@ -561,6 +592,32 @@ export default function PaperList() {
                 在 Finder 中显示
               </button>
               <button className="ghost-btn" onClick={() => { setMoveDlg(null); setNewFolder(''); }}>关闭</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* 分享到团队阅读清单 */}
+      {shareDlg && (
+        <>
+          <div className="menu-backdrop" onClick={() => { setShareDlg(null); setShareNote(''); }} />
+          <div className="move-dlg glass">
+            <div className="te-title">分享到团队阅读清单</div>
+            <div className="md-paper">{shareDlg.title}</div>
+            <div className="import-row" style={{ marginTop: 8 }}>
+              <select value={shareTeamId} onChange={e => setShareTeamId(e.target.value)} style={{ flex: 1 }}>
+                {myTeams.map((t: any) => (
+                  <option key={t.id} value={t.id}>{t.name}（{t.member_count} 人）</option>
+                ))}
+              </select>
+            </div>
+            <input type="text" className="tm-note-input" style={{ marginTop: 8 }}
+              placeholder="为什么值得读（可选，如：组会候选 / 新 SOTA）"
+              value={shareNote} onChange={e => setShareNote(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') doShare(); }} />
+            <div className="md-actions">
+              <button className="primary" onClick={doShare}>分享</button>
+              <button className="ghost-btn" onClick={() => { setShareDlg(null); setShareNote(''); }}>取消</button>
             </div>
           </div>
         </>

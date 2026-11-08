@@ -11,7 +11,8 @@ import ToastHost from './components/Toast';
 import Welcome, { WELCOME_SEEN_KEY } from './components/Welcome';
 import TabBar from './components/TabBar';
 import KnowledgeView from './components/KnowledgeView';
-import { IconLibrary, IconSettings, IconSearch, IconGraph, IconNotes } from './components/icons';
+import TeamView from './components/TeamView';
+import { IconLibrary, IconSettings, IconSearch, IconGraph, IconNotes, IconTeam } from './components/icons';
 import { modKeyLabel } from './platform';
 
 export default function App() {
@@ -85,6 +86,14 @@ export default function App() {
             <IconNotes />
             <span className="nav-label">知识</span>
           </button>
+          <button
+            className={`nav-btn ${view === 'team' ? 'on' : ''}`}
+            onClick={() => useStore.getState().setView('team')}
+            title="团队：实验室共享阅读清单、组会排期与动态"
+          >
+            <IconTeam />
+            <span className="nav-label">团队</span>
+          </button>
         </nav>
         <div className="sidebar-bottom">
           <button
@@ -120,6 +129,7 @@ export default function App() {
           {view === 'topics' && <TopicView />}
           {view === 'notes' && <NotesView />}
           {view === 'knowledge' && <KnowledgeView />}
+          {view === 'team' && <TeamView />}
         </main>
       </div>
 

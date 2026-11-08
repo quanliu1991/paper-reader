@@ -7,6 +7,9 @@
 | 路径 | 职责 | 改动约束 |
 |---|---|---|
 | `electron/main.ts` | 窗口/协议/IPC 注册/E2E 分支 | IPC 一律 `wrap()` 包裹；新 IPC 同步更新 `preload.ts` |
+| `electron/account.ts` | 团队服务端 HTTP 客户端 + 进度上报缓冲 | 凭据只存 settings 表（account.* 键）不入 vault；401 统一清 token + `account:changed` 广播 |
+| `electron/glossary-sync.ts` | 团队术语表双向同步 | 合并策略：追加式 upsert、同名冲突本地优先；落盘必须走 `vault.ts` 序列化 + `writeAtomic` |
+| `server/` | 团队服务端（自托管，纯 Node 标准库） | 零 npm 依赖；schema 改动走 `schema.mjs` 的 user_version 递增迁移；服务端只存协作元数据，vault 资产不上云 |
 | `electron/arxiv.ts` | arXiv 抓取与解析 | 解析器改动必须过 `tests/fixtures.test.mjs` |
 | `electron/db.ts` | SQLite 全部表结构 + CRUD | 新表先加 `CREATE TABLE IF NOT EXISTS`（老库自动迁移）；禁止手写 SQL 散落其他文件 |
 | `electron/translate.ts` | 翻译提示词 + QC | 提示词改动必须过 `tests/translate-qc.test.mjs`（含离线断言） |
@@ -70,6 +73,8 @@ onNsEvent: (cb) => { const l = (_e, p) => cb(p); ipcRenderer.on('ns:event', l);
 | 翻译离线 | `translate-qc.test.mjs` | 不依赖网络/LLM，秒级 |
 | 引擎单元 | `topic-graph.test.mjs` | 纯函数离线测；网络部分单独放 `topic-e2e.mjs` |
 | E2E 黄金路径 | `e2e.test.mjs` | 无窗口主进程级；覆盖导入→划线→闪卡→SM-2→持久化 |
+| 团队服务端 | `server-api.test.mjs` | 全 API round-trip（含限流/转让/术语合并）；改 server/ 必跑 |
+| 团队 UI | `team-ui-e2e.test.mjs` | 真实窗口 + 真实 server；改 account/team IPC 或 TeamView 必跑 |
 | UI E2E | `pdf-ui-e2e.test.mjs` `topic-ui-e2e.test.mjs` | 真实窗口 + vite dev；断言 DOM 结构与 computed 样式（如字体一致性） |
 | 稳定性 | `soak.test.mjs` | 30 轮导入 + 300 读；内存增长阈值 30% |
 

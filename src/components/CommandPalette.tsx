@@ -48,6 +48,7 @@ export default function CommandPalette() {
       { id: 'act-settings', label: '打开设置', hint: '动作', keywords: 'settings 设置 provider', run: () => useStore.getState().setView('settings') },
       { id: 'act-review', label: '闪卡复习', hint: '动作', keywords: 'flashcard review 复习 闪卡', run: () => { localStorage.setItem('pr:knowledge:tab', 'review'); useStore.getState().setView('knowledge'); } },
       { id: 'act-notes', label: '知识沉淀', hint: '动作', keywords: 'notes 沉淀 高亮 笔记', run: () => { localStorage.setItem('pr:knowledge:tab', 'notes'); useStore.getState().setView('knowledge'); } },
+      { id: 'act-team', label: '实验室团队', hint: '动作', keywords: 'team 团队 组会 清单 实验室', run: () => useStore.getState().setView('team') },
     );
     // 论文
     for (const p of papers) {

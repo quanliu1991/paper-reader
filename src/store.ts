@@ -44,7 +44,7 @@ export interface ProviderRow {
 
 export interface ToastMsg { id: number; type: 'success' | 'error' | 'info'; msg: string; action?: { label: string; run: () => void } }
 
-type View = 'list' | 'reader' | 'settings' | 'review' | 'topics' | 'notes' | 'knowledge';
+type View = 'list' | 'reader' | 'settings' | 'review' | 'topics' | 'notes' | 'knowledge' | 'team';
 
 // v3 B2 标签页：每篇论文一个标签；数据按 paperId 分桶缓存（切标签零重载）
 export interface TabInfo { id: number; title: string }

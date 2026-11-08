@@ -259,6 +259,45 @@ export function parseTopic(text: string): any {
   return JSON.parse(text);
 }
 
+// ---------- glossary/terms.yaml ----------
+// 团队术语同步用（追加式合并，冲突本地优先）。格式与 github-bridge.loadGlossary 的
+// 极简解析器双向兼容：terms: 下每条「  <term>:」+ level/解释 两行。
+export function serializeGlossary(items: Array<{ term: string; level: string; explain: string }>): string {
+  const lines = ['terms:'];
+  for (const it of items) {
+    lines.push(`  ${it.term}:`);
+    if (it.level) lines.push(`    level: ${it.level}`);
+    if (it.explain) lines.push(`    解释: ${it.explain}`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+// 与 github-bridge.loadGlossary 同一套解析规则（vault 侧权威实现，repo 桥后续可复用）
+export function parseGlossary(text: string): Array<{ term: string; level: string; explain: string }> {
+  const out: Array<{ term: string; level: string; explain: string }> = [];
+  let current: { term: string; level: string; explain: string } | null = null;
+  let inTerms = false;
+  for (const raw of (text ?? '').split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (/^terms:/.test(line)) { inTerms = true; continue; }
+    if (!inTerms) continue;
+    const nameMatch = line.match(/^  ([^#].+?):\s*$/);
+    if (nameMatch) {
+      if (current) out.push(current);
+      current = { term: nameMatch[1].trim(), level: '', explain: '' };
+      continue;
+    }
+    if (current) {
+      const lv = line.match(/level:\s*(\w+)/);
+      if (lv) current.level = lv[1];
+      const ex = line.match(/解释:\s*(.+)$/);
+      if (ex) current.explain = ex[1].trim();
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
 // ---------- profile.md ----------
 
 const PROFILE_BG_RE = /^<!--\s*profile\s+kind=bg\s+updated=(.+?)\s*-->$/;

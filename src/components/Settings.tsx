@@ -14,12 +14,132 @@ export default function Settings() {
   return (
     <div className="settings-page">
       <AppearanceSection />
+      <AccountSection />
       <ProfileSection />
       <ProviderSection />
       <LibrarySection />
       <VaultSection />
       <RepoSection />
     </div>
+  );
+}
+
+// 账户与团队（自托管服务端）：服务器地址 + 登录/注册/退出 + 团队切换 + 进度上报开关
+function AccountSection() {
+  const [info, setInfo] = useState<any>(null);
+  const [serverUrl, setServerUrl] = useState('');
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [teams, setTeams] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try {
+      const i = await window.api.accountGetInfo();
+      setInfo(i);
+      setServerUrl(i.serverUrl ?? '');
+      if (i.loggedIn) {
+        try { setTeams(await window.api.teamList()); } catch { /* 服务器不可达 */ setTeams([]); }
+      } else setTeams([]);
+    } catch { /* 静默 */ }
+  }
+  useEffect(() => {
+    load();
+    const off = window.api.onAccountChanged(() => load()); // 401 过期/登出统一刷新
+    return () => { off(); };
+  }, []);
+
+  async function saveServer() {
+    try {
+      setBusy(true);
+      await window.api.accountSetServer(serverUrl);
+      await load();
+      toast('success', '服务器地址已保存');
+    } catch (e: any) { toastErr(e); } finally { setBusy(false); }
+  }
+
+  async function submit() {
+    try {
+      setBusy(true);
+      if (mode === 'login') await window.api.accountLogin({ username, password });
+      else await window.api.accountRegister({ username, password, displayName });
+      setPassword('');
+      await load();
+      toast('success', mode === 'login' ? '登录成功' : '注册成功');
+    } catch (e: any) { toastErr(e); } finally { setBusy(false); }
+  }
+
+  async function pickTeam(teamId: string) {
+    try {
+      await window.api.accountSetActiveTeam(teamId || null);
+      await load();
+    } catch (e: any) { toastErr(e); }
+  }
+
+  const activeTeam = teams.find((t: any) => t.id === info?.activeTeamId);
+
+  return (
+    <section className="settings-section">
+      <h3>账户与团队</h3>
+      <div className="import-row">
+        <input
+          type="text"
+          value={serverUrl}
+          placeholder="团队服务器地址（如 http://192.168.1.10:8787，实验室自托管）"
+          onChange={e => setServerUrl(e.target.value)}
+        />
+        <button className="ghost-btn" disabled={busy} onClick={saveServer}>保存</button>
+      </div>
+
+      {!info?.loggedIn ? (
+        <>
+          <div className="mode-switch" style={{ marginTop: 10, width: 'fit-content' }}>
+            <button className={mode === 'login' ? 'on' : ''} onClick={() => setMode('login')}>登录</button>
+            <button className={mode === 'register' ? 'on' : ''} onClick={() => setMode('register')}>注册</button>
+          </div>
+          <div className="import-row" style={{ marginTop: 10 }}>
+            <input type="text" placeholder="用户名" value={username} onChange={e => setUsername(e.target.value)} />
+            <input type="password" placeholder={mode === 'register' ? '密码（至少 8 位）' : '密码'} value={password}
+              onChange={e => setPassword(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submit(); }} />
+            {mode === 'register' && (
+              <input type="text" placeholder="显示名（可选，师门里怎么称呼你）" value={displayName} onChange={e => setDisplayName(e.target.value)} />
+            )}
+            <button className="ghost-btn" disabled={busy || !username || !password} onClick={submit}>
+              {mode === 'login' ? '登录' : '注册'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="more-row" style={{ marginTop: 10 }}>
+            <span>已登录：<b>{info.user?.username}</b>{teams.length ? ` · ${activeTeam?.name ?? '未选择团队'}` : ''}</span>
+            <button onClick={async () => { await window.api.accountLogout(); load(); }}>退出登录</button>
+          </div>
+          {teams.length > 0 && (
+            <div className="import-row" style={{ marginTop: 8 }}>
+              <select value={info.activeTeamId ?? ''} onChange={e => pickTeam(e.target.value)} style={{ flex: 1 }}>
+                <option value="">选择当前团队（进度上报与术语同步目标）</option>
+                {teams.map((t: any) => (
+                  <option key={t.id} value={t.id}>{t.name}（{t.member_count} 人 · {t.role === 'owner' ? '导师/创建者' : '成员'}）</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div className="more-row" style={{ marginTop: 8 }}>
+            <span>上报阅读进度到团队</span>
+            <button onClick={async () => {
+              await window.api.accountSetProgressReport(!info.progressReport);
+              load();
+            }}>{info.progressReport ? '已开启' : '已关闭'}</button>
+          </div>
+          <div className="hint" style={{ marginTop: 8 }}>
+            只上报论文标题与进度百分比到实验室自建服务器；划线/笔记/译文等 vault 资产永远留在本机。
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 

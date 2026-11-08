@@ -1498,3 +1498,100 @@ button.primary.slim { padding: 4px 12px; font-size: 12px; flex-shrink: 0; }
   cursor: pointer; padding: 2px 0; text-align: left;
 }
 .bl-from:hover { text-decoration: underline; }
+
+/* ==================== 团队页 TeamView（tm-）==================== */
+.tm-page {
+  width: 100%; max-width: 860px; min-height: 0; align-self: stretch;
+  margin: 0 auto; padding: 24px 32px 60px; overflow-y: auto;
+}
+.tm-empty {
+  margin-top: 8vh; text-align: center; color: var(--text-2); font-size: 15px;
+  display: flex; flex-direction: column; gap: 10px; align-items: center;
+}
+.tm-empty-icon { font-size: 40px; opacity: 0.8; }
+.tm-empty-sub { font-size: 13px; color: var(--muted); }
+.tm-empty .primary { margin-top: 8px; }
+
+.tm-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.tm-title { display: flex; align-items: center; gap: 10px; }
+.tm-title h2 { font-size: 20px; font-weight: 700; color: var(--text); margin: 0; }
+.tm-title select {
+  height: 30px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--card); color: var(--text); font-size: 13px; padding: 0 8px;
+}
+.tm-invite {
+  font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none;
+  border: 1px dashed var(--border); border-radius: 8px; padding: 5px 10px;
+}
+.tm-invite b { color: var(--accent); letter-spacing: 1.5px; font-size: 13.5px; }
+.tm-invite:hover { border-color: var(--accent); }
+
+.tm-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.tm-tabs button {
+  border: none; background: transparent; color: var(--text-3); font-size: 13.5px;
+  padding: 8px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tm-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tm-tabs button:hover { color: var(--text); }
+
+.tm-panel { display: flex; flex-direction: column; gap: 12px; }
+.tm-toolbar { display: flex; align-items: center; gap: 10px; }
+.tm-count { font-size: 12.5px; color: var(--muted); }
+
+.tm-add { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.tm-add select, .tm-note-input {
+  height: 34px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 0 10px; font-size: 13px; background: var(--bg); color: var(--text); width: 100%;
+}
+.tm-add .import-row input, .tm-add .import-row select { flex: 1; min-width: 0; }
+
+.tm-items { display: flex; flex-direction: column; gap: 8px; }
+.tm-item {
+  display: flex; align-items: center; gap: 12px; background: var(--card);
+  border: 1px solid var(--border); border-radius: var(--r-md); padding: 12px 14px;
+}
+.tm-item.claimed { border-left: 3px solid var(--accent); }
+.tm-item.done { opacity: 0.55; }
+.tm-item-main { flex: 1; min-width: 0; }
+.tm-item-title { font-size: 14px; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-item-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.tm-item-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.tm-item-actions button, .tm-meeting-head button, .tm-member .tm-item-actions button {
+  border: 1px solid var(--border); background: transparent; color: var(--text-2);
+  border-radius: 7px; padding: 4px 10px; font-size: 12.5px; cursor: pointer;
+}
+.tm-item-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.tm-item-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tm-item-actions button.danger:hover { border-color: #e5484d; color: #e5484d; }
+.tm-claim { font-size: 12px; color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 3px 8px; }
+.icon-btn { border: none; background: transparent; cursor: pointer; font-size: 14px; opacity: 0.7; padding: 4px; }
+.icon-btn:hover { opacity: 1; }
+
+.tm-done summary { cursor: pointer; font-size: 13px; color: var(--muted); padding: 6px 0; }
+.tm-done .tm-item { margin-top: 6px; }
+
+.tm-meetings { display: flex; flex-direction: column; gap: 10px; }
+.tm-meeting { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); padding: 12px 14px; }
+.tm-meeting-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tm-when { font-size: 12.5px; color: var(--accent); font-weight: 600; white-space: nowrap; }
+.tm-meeting-title { font-size: 14px; font-weight: 500; color: var(--text); flex: 1; min-width: 0; }
+.tm-meeting-paper { font-size: 12.5px; color: var(--text-2); margin-top: 6px; }
+.tm-notes-line { font-size: 12.5px; color: var(--muted); margin-top: 8px; cursor: pointer; }
+.tm-notes-line:hover { color: var(--text-2); }
+
+.tm-feed { display: flex; flex-direction: column; }
+.tm-feed-item { display: flex; align-items: baseline; gap: 10px; padding: 9px 4px; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.tm-feed-item:last-child { border-bottom: none; }
+.tm-feed-icon { flex-shrink: 0; }
+.tm-feed-line { flex: 1; color: var(--text-2); min-width: 0; }
+.tm-feed-time { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+
+.tm-members { display: flex; flex-direction: column; gap: 8px; }
+.tm-member { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 14px; }
+.tm-avatar {
+  width: 36px; height: 36px; border-radius: 50%; background: var(--accent-soft);
+  color: var(--accent); display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 15px; flex-shrink: 0;
+}
+.tm-member-main { flex: 1; min-width: 0; }
+.tm-member-name { font-size: 14px; font-weight: 500; color: var(--text); }

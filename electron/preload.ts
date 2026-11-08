@@ -186,6 +186,37 @@ const api = {
     ipcRenderer.on('topic:progress', l);
     return () => { ipcRenderer.removeListener('topic:progress', l); };
   },
+  // 账户与团队（自托管服务端）
+  accountGetInfo: () => call('account:getInfo'),
+  accountSetServer: (url: string) => call('account:setServer', url),
+  accountLogin: (arg: { username: string; password: string }) => call('account:login', arg),
+  accountRegister: (arg: { username: string; password: string; displayName?: string }) => call('account:register', arg),
+  accountLogout: () => call('account:logout'),
+  accountSetProgressReport: (on: boolean) => call('account:setProgressReport', on),
+  accountSetActiveTeam: (teamId: string | null) => call('account:setActiveTeam', teamId),
+  onAccountChanged: (cb: (s: any) => void): (() => void) => {
+    const l = (_e: any, s: any) => cb(s);
+    ipcRenderer.on('account:changed', l);
+    return () => { ipcRenderer.removeListener('account:changed', l); };
+  },
+  teamList: () => call('team:list'),
+  teamGet: (teamId: string) => call('team:get', teamId),
+  teamCreate: (name: string) => call('team:create', name),
+  teamJoin: (code: string) => call('team:join', code),
+  teamRemoveMember: (teamId: string, userId: string) => call('team:removeMember', teamId, userId),
+  teamTransfer: (teamId: string, userId: string) => call('team:transfer', teamId, userId),
+  teamReadingList: (teamId: string) => call('team:readingList', teamId),
+  teamAddItem: (arg: { teamId: string; arxivId: string; title: string; note?: string }) => call('team:addItem', arg),
+  teamItemAction: (itemId: string, action: 'claim' | 'unclaim' | 'done') => call('team:itemAction', itemId, action),
+  teamRemoveItem: (itemId: string) => call('team:removeItem', itemId),
+  teamMeetings: (teamId: string) => call('team:meetings', teamId),
+  teamAddMeeting: (arg: { teamId: string; title: string; scheduledAt: string; paperArxivId?: string; paperTitle?: string }) => call('team:addMeeting', arg),
+  teamMeetingAction: (meetingId: string, arg: { action?: 'claim' | 'unclaim'; scheduledAt?: string; notes?: string; paperArxivId?: string; paperTitle?: string }) => call('team:meetingAction', meetingId, arg),
+  teamRemoveMeeting: (meetingId: string) => call('team:removeMeeting', meetingId),
+  teamFeed: (teamId: string, limit?: number) => call('team:feed', teamId, limit),
+  teamReportProgress: (arg: { paperId: number; pct: number }) => call('team:reportProgress', arg),
+  teamSyncTerms: () => call('team:syncTerms'),
+  teamTerms: (teamId: string) => call('team:terms', teamId),
 };
 
 contextBridge.exposeInMainWorld('api', api);

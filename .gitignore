@@ -16,3 +16,5 @@ llm.txt
 tests/.tmp-vault/
 web/node_modules/
 web/dist/
+server/*.db
+server/*.db-*

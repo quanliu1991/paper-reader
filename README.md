@@ -195,6 +195,23 @@ vault 本身是 git 仓库——**文件即事实源，git 即传输层**：
 - **同步**（设置 → vault 知识库）：填远端 URL，90s 静默防抖自动 commit+push，5min 拉取增量导入；冲突取远端 + 本地副本存 `*.conflict.<device>.<ts>`，桌面 DB 为本地权威自动重写回。dry-run 默认开（只 commit 不 push），PDF 总量 >5GB 提示 LFS。
 - **Web 端**（`web/`）：手机/平板浏览器读 vault。GitLab Pages 静态部署，PAT 存浏览器本地直连 GitLab API；双语流阅读 + 段落锚挂载笔记/问答/划线 + 划选英文一键回写 `annotations.json`。部署见 [web/DEPLOY.md](web/DEPLOY.md)。
 
+## 实验室团队（自托管）
+
+师门共享阅读清单、组会排期、团队动态与共享术语表。服务端零依赖自托管（[server/README.md](server/README.md)）：
+
+```bash
+# 实验室任意服务器（Node ≥ 22.5）
+cd server && node server.mjs        # 默认 :8787，数据单文件 SQLite
+```
+
+桌面端：设置 → 账户与团队 → 填服务器地址注册登录；侧栏「团队」页凭 8 位邀请码加入或创建团队。
+
+- **阅读清单**：论文库卡片一键分享（含 arXiv ID，他人可一键导入）；认领 → 读完状态流转
+- **组会排期**：排期 + 领读认领 + 挂接清单论文 + 会议笔记
+- **动态**：谁在读什么（进度%）、认领/读完、组会变更、术语同步——一个流看全组
+- **术语表**：vault `glossary/terms.yaml` 与团队双向同步（同名冲突保留本地并提示）
+- **隐私边界**：只上报论文标题与进度百分比；划线/笔记/译文等 vault 资产永远留在本机；进度上报可在设置中关闭
+
 ## 数据与隐私
 
 - 全部数据本地存储：`%APPDATA%/paper-reader-app/`（SQLite + PDF/图表缓存）

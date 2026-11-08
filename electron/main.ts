@@ -14,6 +14,8 @@ import * as vaultInit from './vault-init';
 import * as vaultMig from './vault-migrate';
 import * as syncSvc from './vault-sync-service';
 import * as vaultImp from './vault-import';
+import * as account from './account';
+import * as glossarySync from './glossary-sync';
 import fs from 'fs';
 
 let win: BrowserWindow | null = null;
@@ -1226,6 +1228,117 @@ app.whenReady().then(async () => {
     }
     return;
   }
+  if (e2eEnabled && process.env.PR_TEAM_UI_E2E) {
+    // 团队功能 UI E2E：真实窗口 + 真实 team server（PR_TEAM_SERVER_URL 指向测试启动器起的 server.mjs）
+    if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
+    const win = new BrowserWindow({
+      width: 1400, height: 900, show: true,
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
+    });
+    registerIpc();
+    const logFile = process.env.PR_E2E_LOG!;
+    const doneFile = process.env.PR_E2E_DONE!;
+    const log = (s: string) => fs.appendFileSync(logFile, s + '\n');
+    try {
+      await win.loadURL(process.env.VITE_DEV_SERVER_URL!);
+      await new Promise(r => setTimeout(r, 1000));
+      const serverUrl = process.env.PR_TEAM_SERVER_URL!;
+
+      // 阶段 0：侧栏有团队入口
+      const shell: any = await win.webContents.executeJavaScript(`
+        (() => ({ navBtnTitles: [...document.querySelectorAll('.nav-btn')].map(b => b.title) }))()
+      `);
+      log(`sidebar team entry: ${shell.navBtnTitles.some((t: string) => t.includes('团队')) ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 1：注册（随机用户名防撞）+ 建团队 + 设为当前团队
+      const uname = `ui_${Date.now().toString(36)}`;
+      await win.webContents.executeJavaScript(`window.api.accountSetServer(${JSON.stringify(serverUrl)})`);
+      const reg: any = await win.webContents.executeJavaScript(`window.api.accountRegister(${JSON.stringify({ username: uname, password: 'password123', displayName: 'UI测试' })})`);
+      log(`register: ${reg?.loggedIn === true ? 'PASS' : 'FAIL'}`);
+      const team: any = await win.webContents.executeJavaScript(`window.api.teamCreate('UI 测试师门')`);
+      log(`team create: ${team?.invite_code?.length === 8 ? 'PASS' : 'FAIL'}`);
+      await win.webContents.executeJavaScript(`window.api.accountSetActiveTeam(${JSON.stringify(team.id)})`);
+
+      // 阶段 2：团队页四区渲染（清单空态 + 邀请码可见）
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('team')`);
+      await new Promise(r => setTimeout(r, 800));
+      const tv: any = await win.webContents.executeJavaScript(`
+        (() => ({
+          hasTabs: document.querySelectorAll('.tm-tabs button').length,
+          invite: (document.querySelector('.tm-invite b')?.textContent ?? '').length,
+          emptyHint: !!document.querySelector('.tm-empty, .tm-count'),
+        }))()
+      `);
+      log(`team view tabs=${tv.hasTabs} (want 4): ${tv.hasTabs === 4 ? 'PASS' : 'FAIL'}`);
+      log(`invite code visible: ${tv.invite === 8 ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 3：清单增项（直接走 API）→ UI 出现条目 → 认领按钮存在
+      await win.webContents.executeJavaScript(`window.api.teamAddItem(${JSON.stringify({ teamId: team.id, arxivId: '2609.34683', title: 'UI E2E 测试论文' })})`);
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('list')`);
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('team')`);
+      await new Promise(r => setTimeout(r, 800));
+      const item: any = await win.webContents.executeJavaScript(`
+        (() => ({
+          titles: [...document.querySelectorAll('.tm-item-title')].map(x => x.textContent),
+          hasClaimBtn: [...document.querySelectorAll('.tm-item-actions button')].some(b => b.textContent === '认领'),
+        }))()
+      `);
+      log(`reading item visible: ${item.titles.some((t: string) => t.includes('UI E2E 测试论文')) ? 'PASS' : 'FAIL'}`);
+      log(`claim button: ${item.hasClaimBtn ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 4：认领 → 状态流转 UI
+      await win.webContents.executeJavaScript(`
+        (async () => {
+          const items = await window.api.teamReadingList(${JSON.stringify(team.id)});
+          await window.api.teamItemAction(items[0].id, 'claim');
+        })()
+      `);
+      await new Promise(r => setTimeout(r, 600));
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('list')`);
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('team')`);
+      await new Promise(r => setTimeout(r, 800));
+      const claimed: any = await win.webContents.executeJavaScript(`
+        (() => ({ claimBadge: !!document.querySelector('.tm-claim') }))()
+      `);
+      log(`claimed badge: ${claimed.claimBadge ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 5：动态流含 add + claim + join
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('list')`);
+      await win.webContents.executeJavaScript(`window.__store.getState().setView('team')`);
+      await new Promise(r => setTimeout(r, 400));
+      await win.webContents.executeJavaScript(`[...document.querySelectorAll('.tm-tabs button')].find(b => b.textContent === '动态').click()`);
+      await new Promise(r => setTimeout(r, 800));
+      const feed: any = await win.webContents.executeJavaScript(`
+        (() => ({ lines: [...document.querySelectorAll('.tm-feed-line')].map(x => x.textContent) }))()
+      `);
+      log(`feed has add: ${feed.lines.some((l: string) => l.includes('UI E2E 测试论文')) ? 'PASS' : 'FAIL'}`);
+      log(`feed has join: ${feed.lines.some((l: string) => l.includes('加入了团队')) ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 6：进度上报（先插一篇真论文——手动上报路径依赖论文存在）
+      const paperId = db.insertPaper({ arxivId: '2609.34683', title: 'UI E2E 测试论文', authors: 'Test', sourceUrl: '', importType: 'html' }) as number;
+      const rep: any = await win.webContents.executeJavaScript(`window.api.teamReportProgress({ paperId: ${paperId}, pct: 55 })`);
+      log(`progress report: ${rep === true ? 'PASS' : 'FAIL'}`);
+      await new Promise(r => setTimeout(r, 400));
+      const feed2: any = await win.webContents.executeJavaScript(`window.api.teamFeed(${JSON.stringify(team.id)})`);
+      log(`feed has progress: ${feed2.some((f: any) => f.type === 'progress' && f.payload.pct === 55) ? 'PASS' : 'FAIL'}`);
+
+      // 阶段 7：登出 → 引导态
+      await win.webContents.executeJavaScript(`window.api.accountLogout()`);
+      await new Promise(r => setTimeout(r, 600));
+      const loggedOut: any = await win.webContents.executeJavaScript(`
+        (() => ({ hint: !!document.querySelector('.tm-empty') }))()
+      `);
+      log(`logout guide view: ${loggedOut.hint ? 'PASS' : 'FAIL'}`);
+
+      fs.writeFileSync(doneFile, 'done');
+    } catch (e: any) {
+      log(`FAIL unexpected: ${e?.message ?? e}`);
+      fs.writeFileSync(doneFile, 'error');
+    }
+    try { win.destroy(); } catch { /* */ }
+    app.quit();
+    return;
+  }
   if (e2eEnabled && process.env.PR_TOPIC_UI_E2E) {
     // 主题依赖库 UI E2E：真实网络构建 → 断言分层列表 + 阅读顺序（隔离 userData）
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
@@ -1596,15 +1709,17 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// 退出前：vault 队列落盘 + 同步 flush + 取消所有在途请求
+// 退出前：vault 队列落盘 + 同步 flush + 团队进度上报 + 取消所有在途请求
 let vaultFlushed = false;
 app.on('before-quit', (ev) => {
-  if (!vaultFlushed && (vaultInit.vaultStatus().enabled || syncScheduler)) {
+  // 进度上报也需要一次退出 flush（登录了团队就进分支，即使 vault 未启用）
+  if (!vaultFlushed && (vaultInit.vaultStatus().enabled || syncScheduler || account.getAccountInfo().loggedIn)) {
     ev.preventDefault();
     vaultFlushed = true;
     (async () => {
       try { await vaultInit.flushVault(); } catch { /* 尽力而为 */ }
       try { await syncScheduler?.flushPending(); } catch { /* 尽力而为 */ }
+      try { await account.flushProgress(); } catch { /* 尽力而为 */ }
     })().finally(() => app.quit());
     return;
   }
@@ -1634,6 +1749,8 @@ function send(channel: string, payload: any) {
 
 // ==================== IPC ====================
 export function registerIpc() {
+  // 账户事件广播（account:changed → 渲染层 Settings/TeamView 刷新；401 登出也走这里）
+  account.setBroadcaster((channel, payload) => send(channel, payload));
   // vault 写穿通道（幂等）：任何写路径的 IPC 打开前挂好 hook
   try { vaultInit.initVault(); ensureSyncScheduler(); } catch { /* vault 初始化失败不阻塞 App */ }
   // ---------- vault ----------
@@ -1681,9 +1798,71 @@ export function registerIpc() {
   wrap('papers:setReadPct', (_e, paperId: number, pct: number) => {
     const p = Math.max(0, Math.min(100, Math.round(pct)));
     const prev = db.getReadProgress(paperId);
-    if (p > prev) db.setSetting(`read:${paperId}`, String(p));
+    if (p > prev) {
+      db.setSetting(`read:${paperId}`, String(p));
+      // 团队进度上报：低频缓冲（5min 防抖），绝不阻塞滚动路径
+      const paper = db.getPaper(paperId) as any;
+      if (paper) account.noteProgress({ id: paperId, arxiv_id: paper.arxiv_id, title: paper.title, created_at: paper.created_at }, p);
+    }
     return true;
   });
+
+  // ---------- 账户与团队（自托管服务端）----------
+  wrap('account:getInfo', () => account.getAccountInfo());
+  wrap('account:setServer', (_e, url: string) => { account.setServerUrl(String(url || '')); return account.getAccountInfo(); });
+  wrap('account:login', (_e, arg: { username: string; password: string }) => account.login(arg.username, arg.password));
+  wrap('account:register', (_e, arg: { username: string; password: string; displayName?: string }) =>
+    account.register(arg.username, arg.password, arg.displayName ?? ''));
+  wrap('account:logout', () => account.logout());
+  wrap('account:setProgressReport', (_e, on: boolean) => { account.setProgressReport(on); return true; });
+  wrap('account:setActiveTeam', (_e, teamId: string | null) => { account.setActiveTeam(teamId); return true; });
+  wrap('team:list', () => account.api('GET', '/api/teams'));
+  wrap('team:get', (_e, teamId: string) => account.api('GET', `/api/teams/${teamId}`));
+  wrap('team:create', (_e, name: string) => account.api('POST', '/api/teams', { name }));
+  wrap('team:join', (_e, code: string) => account.api('POST', `/api/join/${String(code).trim().toUpperCase()}`));
+  wrap('team:removeMember', (_e, teamId: string, userId: string) => account.api('DELETE', `/api/teams/${teamId}/members/${userId}`));
+  wrap('team:transfer', (_e, teamId: string, userId: string) => account.api('POST', `/api/teams/${teamId}/transfer`, { user_id: userId }));
+  wrap('team:readingList', (_e, teamId: string) => account.api('GET', `/api/teams/${teamId}/reading-list`));
+  wrap('team:addItem', (_e, arg: { teamId: string; arxivId: string; title: string; note?: string }) =>
+    account.api('POST', `/api/teams/${arg.teamId}/reading-list`, { arxiv_id: arg.arxivId, title: arg.title, note: arg.note ?? '' }));
+  wrap('team:itemAction', (_e, itemId: string, action: 'claim' | 'unclaim' | 'done') =>
+    account.api('PATCH', `/api/reading-items/${itemId}`, { action }));
+  wrap('team:removeItem', (_e, itemId: string) => account.api('DELETE', `/api/reading-items/${itemId}`));
+  wrap('team:meetings', (_e, teamId: string) => account.api('GET', `/api/teams/${teamId}/meetings`));
+  wrap('team:addMeeting', (_e, arg: { teamId: string; title: string; scheduledAt: string; paperArxivId?: string; paperTitle?: string }) =>
+    account.api('POST', `/api/teams/${arg.teamId}/meetings`, {
+      title: arg.title, scheduled_at: arg.scheduledAt,
+      paper_arxiv_id: arg.paperArxivId, paper_title: arg.paperTitle,
+    }));
+  wrap('team:meetingAction', (_e, meetingId: string, arg: { action?: 'claim' | 'unclaim'; scheduledAt?: string; notes?: string; paperArxivId?: string; paperTitle?: string }) => {
+    const body: any = {};
+    if (arg.action) body.action = arg.action;
+    if (arg.scheduledAt !== undefined) body.scheduled_at = arg.scheduledAt;
+    if (arg.notes !== undefined) body.notes = arg.notes;
+    if (arg.paperArxivId !== undefined) body.paper_arxiv_id = arg.paperArxivId;
+    if (arg.paperTitle !== undefined) body.paper_title = arg.paperTitle;
+    return account.api('PATCH', `/api/meetings/${meetingId}`, body);
+  });
+  wrap('team:removeMeeting', (_e, meetingId: string) => account.api('DELETE', `/api/meetings/${meetingId}`));
+  wrap('team:feed', (_e, teamId: string, limit = 50) => account.api('GET', `/api/teams/${teamId}/feed?limit=${limit}`));
+  wrap('team:reportProgress', async (_e, arg: { paperId: number; pct: number }) => {
+    // 手动触发（论文关闭时）：立即 flush 缓冲
+    const paper = db.getPaper(arg.paperId) as any;
+    if (paper) {
+      account.noteProgress({ id: arg.paperId, arxiv_id: paper.arxiv_id, title: paper.title, created_at: paper.created_at }, arg.pct);
+      await account.flushProgress();
+    }
+    return true;
+  });
+  wrap('team:syncTerms', async () => {
+    const info = account.getAccountInfo();
+    const vaultDir = vaultInit.getVaultDir();
+    if (!info.activeTeamId) throw new Error('先选择一个团队');
+    if (!vaultDir) throw new Error('先在设置中连接 vault 知识库（术语表存在 vault/glossary/）');
+    return glossarySync.syncGlossaryAsync(vaultDir, info.activeTeamId);
+  });
+  wrap('team:terms', (_e, teamId: string) => account.api('GET', `/api/teams/${teamId}/terms`));
+
 
   // ---------- 本地论文库（v0.4）----------
   const LIB_DIR_KEY = 'library_dir';

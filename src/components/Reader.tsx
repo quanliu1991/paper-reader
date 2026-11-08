@@ -254,7 +254,12 @@ export default function Reader() {
       }, 500);
     };
     el.addEventListener('scroll', onScroll, { passive: true });
-    return () => { el.removeEventListener('scroll', onScroll); clearTimeout(timer); };
+    return () => {
+      el.removeEventListener('scroll', onScroll); clearTimeout(timer);
+      // 论文关闭/切换：立即上报团队进度（主进程侧 flush 缓冲；未登录时 no-op）
+      const pct = Number(localStorage.getItem(`paper:${paper.id}:pct`) || 0);
+      if (pct > 0) window.api.teamReportProgress({ paperId: paper.id, pct }).catch(() => {});
+    };
   }, [paper.id]);
 
   // 布局切换时按 pid 锚点恢复阅读位置（PDF 容器异步挂载 → 轮询等待最多 3s）
