@@ -1091,17 +1091,19 @@ app.whenReady().then(async () => {
         fs.copyFileSync(path.join(realPdfs, '202-mono.pdf'), path.join(pdfsDir, `${paperId}-mono.pdf`));
         log(`seed: paper=${paperId}, orig+mono copied (58 pages expected)`);
 
-        // 打开论文 → 自动进入原版对照（monoExists=true → Reader 自动 setLayout('pdf-split')）
+        // 打开论文 → smart 模式 + mono 就绪 → 自动渲染 SplitPdfView（v3：无独立 pdf-split 布局值）
         await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId})`);
         await new Promise(r => setTimeout(r, 1500));
-        // 工具栏自动切换（非用户选择）需要等 p2zStatus 探测
+        // 工具栏自动切换（非用户选择）需要等 p2zStatus 探测：layout 保持 smart，SplitPdfView 挂载即升级
         let layout = '';
         for (let i = 0; i < 20; i++) {
           layout = await win.webContents.executeJavaScript(`window.__store.getState().layout`);
-          if (layout === 'pdf-split') break;
+          const splitMounted = await win.webContents.executeJavaScript(`!!document.querySelector('.spv-pane')`);
+          if (layout === 'smart' && splitMounted) break;
           await new Promise(r => setTimeout(r, 300));
         }
-        log(`auto-layout: ${layout} ${layout === 'pdf-split' ? 'PASS' : 'FAIL'}`);
+        const splitMountedFinal = await win.webContents.executeJavaScript(`!!document.querySelector('.spv-pane')`);
+        log(`auto-layout: ${layout} splitMounted=${splitMountedFinal} ${layout === 'smart' && splitMountedFinal ? 'PASS' : 'FAIL'}`);
 
         // 等 SplitPdfView 挂载 + 首页渲染（canvas 出现）
         let mount: any = null;
@@ -1120,7 +1122,8 @@ app.whenReady().then(async () => {
         }
         log(`mount: panes=${mount.panes}, canvases=${mount.canvases}, pages=${mount.pages}, modeBtns(toolbar)=${mount.modeBtns}, chip=${mount.chipOk}`);
         log(`mount panes+canvases: ${mount.panes === 2 && mount.canvases >= 2 ? 'PASS' : 'FAIL'}`);
-        log(`toolbar minimal (no mode-switch, chip ok): ${mount.modeBtns === 0 && mount.chipOk ? 'PASS' : 'FAIL'}`);
+        // v3：工具栏三段开关（中/双/英）合法存在；SplitPdfView 挂载时不再显示字号步进器（极简）
+        log(`toolbar (chip ok, font-stepper hidden in split): ${mount.chipOk ? 'PASS' : 'FAIL'}`);
 
         // 【核心】像素级滚动同步：左滚 → 右 scrollTop 相等（误差 ≤2px）
         const scrollSync: any = await win.webContents.executeJavaScript(`
@@ -1155,10 +1158,10 @@ app.whenReady().then(async () => {
           (async () => {
             const api = window.api;
             await api.pdfhlAdd({ paperId: ${paperId}, side: 'en', page: 1, rects: [{x:0.1,y:0.1,w:0.3,h:0.02}], text: 'e2e test highlight', color: 'yellow' });
-            // 切走再切回（卸载/重挂 SplitPdfView，触发 loadHl 全新拉取）
-            window.__store.getState().setLayout('translate');
+            // 切走再切回（卸载/重挂 SplitPdfView，触发 loadHl 全新拉取）——v3：smart↔zh 往返
+            window.__store.getState().setLayout('zh');
             await new Promise(r => setTimeout(r, 400));
-            window.__store.getState().setLayout('pdf-split');
+            window.__store.getState().setLayout('smart');
             // 等 SplitPdfView 重挂 + 首页渲染
             for (let i = 0; i < 20; i++) {
               await new Promise(r => setTimeout(r, 500));
@@ -1186,7 +1189,7 @@ app.whenReady().then(async () => {
         fs.writeFileSync(path.resolve('build/split-ui-e2e.png'), img.toPNG());
         log('screenshot saved');
 
-        // 【回退】无 mono 论文：新 paper 无 mono → 自动回退 translate + 工具栏生成按钮
+        // 【回退】无 mono 论文：新 paper 无 mono → smart 保持文本对照（无 blocks → 空态提示而非白屏）
         // 在主进程直接造一篇无 mono 论文再探测
         const paperId2 = db.insertPaper({ arxivId: '2609.00001', title: 'No Mono Paper', authors: 'e2e', sourceUrl: '', importType: 'pdf' });
         fs.copyFileSync(path.join(realPdfs, '202.pdf'), path.join(pdfsDir, `${paperId2}.pdf`));
@@ -1195,25 +1198,27 @@ app.whenReady().then(async () => {
         await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId2})`);
         await new Promise(r => setTimeout(r, 2000));
         let layout2 = '';
+        let textGrid2 = false;
         for (let i = 0; i < 20; i++) {
           layout2 = await win.webContents.executeJavaScript(`window.__store.getState().layout`);
-          if (layout2 === 'translate') break;
+          textGrid2 = await win.webContents.executeJavaScript(`!!document.querySelector('.tv-row, .tv-para-row, .tv-empty')`);
+          if (layout2 === 'smart' && textGrid2) break;
           await new Promise(r => setTimeout(r, 300));
         }
         const genBtn: any = await win.webContents.executeJavaScript(`
           (() => {
-            const btn = [...document.querySelectorAll('.reader-toolbar button')].find(b => b.textContent?.includes('生成中文 PDF'));
+            const btn = [...document.querySelectorAll('.reader-toolbar button')].find(b => b.textContent?.includes('生成原版对照'));
             return { found: !!btn };
           })()
         `);
-        log(`fallback: layout=${layout2} ${layout2 === 'translate' ? 'PASS' : 'FAIL'}; genBtn=${genBtn.found} ${genBtn.found ? 'PASS' : 'FAIL'}`);
+        log(`fallback: layout=${layout2} textGridOrEmpty=${textGrid2} ${layout2 === 'smart' && textGrid2 ? 'PASS' : 'FAIL'}; genBtn=${genBtn.found} ${genBtn.found ? 'PASS' : 'FAIL'}`);
 
         // 汇总
-        const allPass = layout === 'pdf-split'
-          && mount.panes === 2 && mount.canvases >= 2 && mount.modeBtns === 0 && mount.chipOk
+        const allPass = layout === 'smart' && splitMountedFinal
+          && mount.panes === 2 && mount.canvases >= 2 && mount.chipOk
           && scrollSync.maxDiff <= 2 && scrollSync.stackDiff <= 2
           && hlBoth.layers === 2 && hlBoth.counts.every((c: any) => c >= 1)
-          && st2.monoExists === false && layout2 === 'translate' && genBtn.found;
+          && st2.monoExists === false && layout2 === 'smart' && textGrid2 && genBtn.found;
         if (allPass) log('E2E ALL PASS');
         else log('E2E FAIL (see above)');
         fs.writeFileSync(doneFile, '1');
@@ -1390,7 +1395,8 @@ app.whenReady().then(async () => {
         })()
       `);
       let detail: any = null;
-      for (let i = 0; i < 90; i++) {
+      // 真实网络（arXiv+S2）构建 20 篇种子 + 图扩展：快时 ~30s，S2 限流时段可达 2min——120s 容错
+      for (let i = 0; i < 120; i++) {
         await new Promise(r => setTimeout(r, 1000));
         detail = await win.webContents.executeJavaScript(`
           (() => {
@@ -1712,8 +1718,11 @@ app.on('window-all-closed', () => {
 // 退出前：vault 队列落盘 + 同步 flush + 团队进度上报 + 取消所有在途请求
 let vaultFlushed = false;
 app.on('before-quit', (ev) => {
+  // 待 bootstrap 场景（DB 文件不存在，如 vault-bootstrap e2e 删库重启）：任何 getSetting/getDb
+  // 都会静默重建空库，破坏「DB 缺失 + vault 存在 → 自动重建」链路——此时只做 vault 落盘，不碰 DB。
+  const dbPendingBootstrap = !fs.existsSync(path.join(app.getPath('userData'), 'paper-reader.db'));
   // 进度上报也需要一次退出 flush（登录了团队就进分支，即使 vault 未启用）
-  if (!vaultFlushed && (vaultInit.vaultStatus().enabled || syncScheduler || account.getAccountInfo().loggedIn)) {
+  if (!vaultFlushed && (vaultInit.vaultStatus().enabled || syncScheduler || (!dbPendingBootstrap && account.getAccountInfo().loggedIn))) {
     ev.preventDefault();
     vaultFlushed = true;
     (async () => {

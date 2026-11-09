@@ -32,7 +32,8 @@ async function run() {
   await win.webContents.executeJavaScript(`window.__store.getState().openPaper(1)`);
   await new Promise(r => setTimeout(r, 2000));
 
-  const layouts = ['pdf-layout', 'translate', 'bilingual', 'zh'] as const;
+  // v3 布局收敛：smart/zh/en（旧 pdf-layout/translate/bilingual 已废弃——setLayout 非法值导致空白视图）
+  const layouts = ['smart', 'zh', 'en'] as const;
   let allOk = true;
   for (const lay of layouts) {
     await win.webContents.executeJavaScript(`window.__store.getState().setLayout(${JSON.stringify(lay)})`);

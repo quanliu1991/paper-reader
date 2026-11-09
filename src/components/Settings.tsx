@@ -236,7 +236,7 @@ function VaultSection() {
         </div>
       )}
       {status?.enabled && (
-        <div style={{ marginTop: 14, borderTop: '1px solid rgba(128,128,128,.2)', paddingTop: 12 }}>
+        <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
           <div className="repo-status">
             <span>Git 同步：{stateLabel[syncState?.state] ?? '未配置'}</span>
             <button className="ghost-btn" onClick={async () => {

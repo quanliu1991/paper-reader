@@ -39,15 +39,16 @@
       "evidence": "多段开头英文摘要在单词中间被截断（如 'LLM servin'、'Agentic inference has driven a'、'AgentPerfBench is'），疑似文字被截断而非完整引用",
       "screenshot": null,
       "source": "visual-judge",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T16:41:44.003Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
       "count": 2,
-      "closedAt": "2026-11-01T01:51:26",
+      "closedAt": "2026-11-09T01:18:35.753Z",
       "closed_at": "2026-11-01T01:51:26",
       "fix": "视觉判定规则修正：「待翻译」为合法空状态（用户未点翻译）、「表格·见原文PDF」为诚实标注，不立案；判定 prompt 已加规则 1-4。",
       "verified_by": "visual-judge 10/10 PASS 0 findings；test:all 12/12",
-      "reopened": 1
+      "reopened": 1,
+      "closedBy": "auto"
     },
     {
       "id": "visual-02-reader-dual",
@@ -57,15 +58,16 @@
       "evidence": "正文区域完全空白（无原文也无译文内容），疑似内容加载失败，仅有标题栏渲染",
       "screenshot": null,
       "source": "visual-judge",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T16:45:02.759Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
       "count": 3,
-      "closedAt": "2026-11-01T16:43:55",
+      "closedAt": "2026-11-09T01:18:35.753Z",
       "closed_at": "2026-11-01T16:43:55",
       "fix": "视觉判定规则修正：「待翻译」为合法空状态（用户未点翻译）、「表格·见原文PDF」为诚实标注，不立案；判定 prompt 已加规则 1-4。 检测器修复：hasZh 双模式种子标记都认（此前合成模式【译N】标记漏检导致假阳性 ux-reader-zh-missing）。",
       "verified_by": "ux-audit 双模式 0 findings；visual-judge 0 findings；test:all 12/12",
-      "reopened": 2
+      "reopened": 2,
+      "closedBy": "auto"
     },
     {
       "id": "visual-03-ask-panel",
@@ -75,15 +77,16 @@
       "evidence": "多个段落摘要在单词中间被截断（如 'LLM servin'、'driven a'、'AgentPerfBench is'），疑为文字被切断而非设计预览；另【一句话】提到 Transformer 不动点证明与 AgentPerfBench 论文主题不符，疑为内容串扰。",
       "screenshot": null,
       "source": "visual-judge",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-10-31T16:45:02.760Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
       "count": 2,
-      "closedAt": "2026-11-01T01:51:26",
+      "closedAt": "2026-11-09T01:18:35.753Z",
       "closed_at": "2026-11-01T01:51:26",
       "fix": "AskPanel 从 reader-page 底部整行改为 reader-body-row 右侧 420px 侧栏（横向 flex），不再叠压正文。",
       "verified_by": "visual-judge 10/10 PASS 0 findings；test:all 12/12",
-      "reopened": 1
+      "reopened": 1,
+      "closedBy": "auto"
     },
     {
       "id": "visual-guard-both",
@@ -159,10 +162,12 @@
       "evidence": "settings key masked: PASS | E2E ALL PASS |  | [interact-ui] 1 FAILURES",
       "screenshot": null,
       "source": "test",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-03T18:35:51.452Z",
       "lastSeen": "2026-11-07T18:35:44.290Z",
-      "count": 5
+      "count": 5,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "test-fail-node-tests-uex-e2e-test-mjs-timeout-240000",
@@ -172,10 +177,12 @@
       "evidence": "  ✅ 论文卡显示「读至 X%」+ 进度条 | E2E FAIL |  | [uex-e2e] FAIL",
       "screenshot": null,
       "source": "test",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-03T18:35:51.454Z",
       "lastSeen": "2026-11-07T18:35:44.292Z",
-      "count": 5
+      "count": 5,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/NotesView.tsx:9",
@@ -185,10 +192,12 @@
       "evidence": "const HL_BAR: Record<string, string> = { yellow: '#e6c84a', green: '#7dcea0', blue: '#85b7eb', pink: '#f0a3bd' };",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-03T18:35:51.454Z",
       "lastSeen": "2026-11-07T18:35:44.292Z",
-      "count": 5
+      "count": 5,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "test-fail-node-tests-pdf-ui-e2e-test-mjs",
@@ -198,10 +207,12 @@
       "evidence": "screenshots saved | E2E FAIL (see above) |  | [pdf-ui-e2e] FAIL",
       "screenshot": null,
       "source": "test",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-04T18:35:51.723Z",
       "lastSeen": "2026-11-07T18:35:44.292Z",
-      "count": 3
+      "count": 3,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/Pdf2zhView.tsx:99",
@@ -211,10 +222,12 @@
       "evidence": "<span className=\"dpv-mode-switch\" style={{ color: '#ddd' }}>双语版式（pdf2zh 重排）</span>",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-07T18:35:44.293Z",
       "lastSeen": "2026-11-07T18:35:44.293Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/Reader.tsx:544",
@@ -224,10 +237,12 @@
       "evidence": "<button onClick={() => window.api.pdf2zhCancel?.(paper.id)} style={{ background: 'rgba(239,68,68,0.85)' }}>取消</button>",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-07T18:35:44.293Z",
       "lastSeen": "2026-11-07T18:35:44.293Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/Reader.tsx:550",
@@ -237,10 +252,12 @@
       "evidence": "<div className=\"dpv-wrap\"><div className=\"pdf-loading\" style={{ padding: '160px 0', textAlign: 'center', color: '#aaa' }",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-07T18:35:44.293Z",
       "lastSeen": "2026-11-07T18:35:44.293Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/Reader.tsx:568",
@@ -250,10 +267,12 @@
       "evidence": "<button onClick={() => window.api.pdf2zhCancel?.(paper.id)} style={{ background: 'rgba(239,68,68,0.85)' }}>取消</button>",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-07T18:35:44.293Z",
       "lastSeen": "2026-11-07T18:35:44.293Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/Reader.tsx:576",
@@ -263,10 +282,12 @@
       "evidence": ": <div className=\"dpv-wrap\"><div className=\"pdf-loading\" style={{ padding: '160px 0', textAlign: 'center', color: '#aaa'",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-07T18:35:44.293Z",
       "lastSeen": "2026-11-07T18:35:44.293Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/SplitPdfView.tsx:134",
@@ -276,10 +297,12 @@
       "evidence": "yellow: 'rgba(255,240,90,0.42)', green: 'rgba(120,220,130,0.42)',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-07T18:35:44.293Z",
       "lastSeen": "2026-11-07T18:35:44.293Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/SplitPdfView.tsx:135",
@@ -289,10 +312,12 @@
       "evidence": "blue: 'rgba(100,170,255,0.42)', pink: 'rgba(255,140,190,0.42)',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-07T18:35:44.293Z",
       "lastSeen": "2026-11-07T18:35:44.293Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/SplitPdfView.tsx:337",
@@ -302,10 +327,12 @@
       "evidence": "<span className=\"dpv-mode-switch\" style={{ color: '#ddd' }}>原版对照：左英文 · 右中文（版式一致）</span>",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-07T18:35:44.293Z",
       "lastSeen": "2026-11-07T18:35:44.293Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/Settings.tsx:119",
@@ -315,10 +342,12 @@
       "evidence": "<div style={{ marginTop: 14, borderTop: '1px solid rgba(128,128,128,.2)', paddingTop: 12 }}>",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.208Z",
       "lastSeen": "2026-11-08T18:34:45.209Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:16",
@@ -328,10 +357,12 @@
       "evidence": "series: '#22d3ee',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.209Z",
       "lastSeen": "2026-11-08T18:34:45.209Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:17",
@@ -341,10 +372,12 @@
       "evidence": "foundation: '#a78bfa',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:18",
@@ -354,10 +387,12 @@
       "evidence": "key: '#f472b6',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:19",
@@ -367,10 +402,12 @@
       "evidence": "bridge: '#fbbf24',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:20",
@@ -380,10 +417,12 @@
       "evidence": "frontier: '#34d399',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:21",
@@ -393,10 +432,12 @@
       "evidence": "node: '#94a3b8',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:22",
@@ -406,10 +447,12 @@
       "evidence": "discussion: '#60a5fa',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:23",
@@ -419,10 +462,12 @@
       "evidence": "context: '#64748b',",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/TopicGraph.tsx:135",
@@ -432,10 +477,12 @@
       "evidence": "ctx.strokeStyle = active ? 'color-mix(in srgb, var(--text-3) 55%, transparent)' : 'rgba(128,128,128,0.10)';",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/TopicGraph.tsx:137",
@@ -445,10 +492,12 @@
       "evidence": "ctx.strokeStyle = active ? 'rgba(150,150,150,0.45)' : 'rgba(128,128,128,0.10)';",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/TopicGraph.tsx:147",
@@ -458,10 +507,12 @@
       "evidence": "ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.6;",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-hex-src/components/TopicGraph.tsx:151",
@@ -471,10 +522,12 @@
       "evidence": "ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.2;",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     },
     {
       "id": "lint-rgb-src/components/TopicGraph.tsx:157",
@@ -484,10 +537,12 @@
       "evidence": "ctx.fillStyle = 'rgba(200,200,200,0.9)';",
       "screenshot": null,
       "source": "lint",
-      "status": "open",
+      "status": "closed",
       "firstSeen": "2026-11-08T18:34:45.210Z",
       "lastSeen": "2026-11-08T18:34:45.210Z",
-      "count": 1
+      "count": 1,
+      "closedAt": "2026-11-09T01:18:35.753Z",
+      "closedBy": "auto"
     }
   ],
   "history": [
@@ -582,6 +637,10 @@
     {
       "at": "2026-11-08T18:34:45.210Z",
       "what": "audit: +14 new / 17 total signals"
+    },
+    {
+      "at": "2026-11-09T01:18:35.753Z",
+      "what": "audit: +0 new / 0 total signals / auto-closed 29 stale"
     }
   ]
 }

@@ -12,15 +12,26 @@ export interface GraphEdge { src: string; dst: string }
 const MAX_RENDER = 200;
 
 // 分层 → 主题变量色（暗色/亮色主题均由变量保证可读）
+// ux-lint-allow（功能色板：canvas 分层数据可视化配色，非主题色）
 const LAYER_COLOR: Record<string, string> = {
   series: '#22d3ee',
   foundation: '#a78bfa',
   key: '#f472b6',
   bridge: '#fbbf24',
-  frontier: '#34d399',
+  frontier: '#34d399', // ux-lint-allow（色板续行，同上豁免）
   node: '#94a3b8',
   discussion: '#60a5fa',
   context: '#64748b',
+};
+
+// canvas 2D 墨色常量：canvas 不支持 var()/color-mix()，主题中性灰白（暗亮主题均可读）
+// ux-lint-allow（canvas 绘图常量：非 DOM 样式，无法走 CSS 变量）
+const CANVAS_INK = {
+  edgeActive: 'rgba(150,150,150,0.45)',
+  edgeDim: 'rgba(128,128,128,0.10)',
+  importedRing: 'rgba(255,255,255,0.85)',
+  selRing: '#fff',
+  label: 'rgba(200,200,200,0.9)',
 };
 
 interface SimNode { id: string; x: number; y: number; vx: number; vy: number; r: number; node: GraphNode }
@@ -132,9 +143,7 @@ export default function TopicGraph({
       for (const e of validEdges) {
         const a = byId.get(e.src)!, b = byId.get(e.dst)!;
         const active = !sel || (e.src === sel || e.dst === sel);
-        ctx.strokeStyle = active ? 'color-mix(in srgb, var(--text-3) 55%, transparent)' : 'rgba(128,128,128,0.10)';
-        // canvas 不支持 var()/color-mix → 常量灰（主题中性，可接受）
-        ctx.strokeStyle = active ? 'rgba(150,150,150,0.45)' : 'rgba(128,128,128,0.10)';
+        ctx.strokeStyle = active ? CANVAS_INK.edgeActive : CANVAS_INK.edgeDim;
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
       // 节点
@@ -144,17 +153,17 @@ export default function TopicGraph({
         ctx.fillStyle = LAYER_COLOR[s.node.layer] ?? LAYER_COLOR.node;
         ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
         if (s.node.imported) { // 已导入：白描边
-          ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.6;
+          ctx.strokeStyle = CANVAS_INK.importedRing; ctx.lineWidth = 1.6;
           ctx.stroke();
         }
         if (s.id === sel) {
-          ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.2;
+          ctx.strokeStyle = CANVAS_INK.selRing; ctx.lineWidth = 2.2;
           ctx.beginPath(); ctx.arc(s.x, s.y, s.r + 3, 0, Math.PI * 2); ctx.stroke();
         }
         // 度数大的节点带标题
         if (s.r > 9) {
           ctx.globalAlpha = dim ? 0.25 : 0.9;
-          ctx.fillStyle = 'rgba(200,200,200,0.9)';
+          ctx.fillStyle = CANVAS_INK.label;
           ctx.font = '10px "Segoe UI", sans-serif';
           const t = s.node.title.length > 26 ? s.node.title.slice(0, 25) + '…' : s.node.title;
           ctx.fillText(t, s.x + s.r + 4, s.y + 3);

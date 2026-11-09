@@ -9,7 +9,10 @@ tests/.tmp-ins/
 tests/.tmp-digest/
 tests/.tmp-hl/
 tests/.tmp-align/
-build/
+tests/.tmp-vg/
+build/*
+!build/icon.ico
+!build/icon.png
 llm.txt
 .env.local
 .env.*.local

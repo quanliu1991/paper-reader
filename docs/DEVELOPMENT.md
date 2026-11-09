@@ -73,10 +73,13 @@ onNsEvent: (cb) => { const l = (_e, p) => cb(p); ipcRenderer.on('ns:event', l);
 | 翻译离线 | `translate-qc.test.mjs` | 不依赖网络/LLM，秒级 |
 | 引擎单元 | `topic-graph.test.mjs` | 纯函数离线测；网络部分单独放 `topic-e2e.mjs` |
 | E2E 黄金路径 | `e2e.test.mjs` | 无窗口主进程级；覆盖导入→划线→闪卡→SM-2→持久化 |
+| 存储层单元 | `vault-unit.test.mjs` 等 | 离线秒级：sink/序列化/格式对齐/划线高亮/行对齐/精炼组装/读者画像 |
 | 团队服务端 | `server-api.test.mjs` | 全 API round-trip（含限流/转让/术语合并）；改 server/ 必跑 |
 | 团队 UI | `team-ui-e2e.test.mjs` | 真实窗口 + 真实 server；改 account/team IPC 或 TeamView 必跑 |
-| UI E2E | `pdf-ui-e2e.test.mjs` `topic-ui-e2e.test.mjs` | 真实窗口 + vite dev；断言 DOM 结构与 computed 样式（如字体一致性） |
+| UI E2E | `pdf-ui-e2e.test.mjs` `topic-ui-e2e.test.mjs` `split-ui-e2e.test.mjs` | 真实窗口 + vite dev；断言 DOM 结构与 computed 样式（如字体一致性） |
 | 稳定性 | `soak.test.mjs` | 30 轮导入 + 300 读；内存增长阈值 30% |
+
+全量回归 `npm run test:all`（27 层，串行产出 `build/test-report.json`）；`--full` 追加真实网络/真实 LLM/真实库层。
 
 规则：
 1. **改一处跑一层**：解析改 → fixtures；提示词改 → qc；IPC/DB 改 → e2e；UI 改 → 对应 ui-e2e；发版前全量。
@@ -96,7 +99,7 @@ onNsEvent: (cb) => { const l = (_e, p) => cb(p); ipcRenderer.on('ns:event', l);
 - `master` 单线开发；每个功能/修复一个 commit（`feat:/fix:/ui:/chore:/test:`）
 - **禁止**命令行裸 `git commit`（Cursor shell 注入 trailer，本机 git 2.24 不支持）；用 IDE 提交或脚本
 - **禁止** force push；push 失败先 `pull --rebase`
-- `build/` 里的截图是调试产物但已入库（历史依据），新截图继续放 `build/`，但**不要**提交 `dist/`、`release/`、`tests/.tmp-tg/`
+- `build/` 是调试产物目录（2026-11-09 起不入库，`.gitignore` 只豁免 `icon.ico/png` 给 electron-builder）；**不要**提交 `dist/`、`release/`、`tests/.tmp-tg/`
 
 ## 已知陷阱（踩过的坑）
 

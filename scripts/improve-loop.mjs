@@ -53,6 +53,18 @@ function readJsonSafe(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
 
+// 各数据源的「新鲜度时间戳」：判断采集物是否晚于 finding lastSeen（信号消失自动关闭的前提）
+function sourceFreshness() {
+  const t = (p) => { try { return fs.statSync(p).mtime.toISOString(); } catch { return null; } };
+  return {
+    'test': t('build/test-report.json'),
+    'ux-audit': t('build/ux/findings.json'),
+    'lint': t('build/ux/lint-findings.json'),
+    'llm-judge': t('build/ux/llm-judge.json'),
+    'visual-judge': t('build/ux/visual-judge.json'),
+  };
+}
+
 function collectAudit() {
   const found = [];
   const mark = (source) => (f) => found.push({ ...f, source });
@@ -96,10 +108,14 @@ function collectAudit() {
   }
 
   // 5) visual-judge
+  // 注意：与 visual-judge-entry 的立案阈值对齐（conf ≥0.7 才立案）——低置信判定是噪音，
+  // 不应入台账也不应触发「信号消失」误关已立案项（此处过滤后未达阈值的信号根本不进 found）。
   const vj = readJsonSafe('build/ux/visual-judge.json');
   if (vj) {
     for (const r of vj.results ?? []) {
       if (r.error === 'parse-fail') continue;
+      const conf = Number(r.confidence ?? 0.5);
+      if (conf < 0.7) continue;
       if (r.render_ok === false || r.content_truncated || r.tofu_boxes) {
         mark('visual-judge')({ id: `visual-${r.view}`, severity: 'high', view: r.view, title: `视觉异常：${r.view}`, evidence: r.note ?? '' });
       } else if (r.layout_broken) {
@@ -161,10 +177,29 @@ if (args.includes('--audit')) {
   const found = collectAudit();
   let added = 0;
   for (const f of found) { if (upsertFinding(l, f)) added++; }
+
+  // ---- 信号消失自动关闭 ----
+  // 规则：open finding 在本轮采集中未再出现，且其数据源的采集物时间戳晚于 finding.lastSeen
+  // （即数据源已刷新过、刷新后仍无此信号）→ 判定已修复，自动关闭。
+  // 防误关：数据源缺失（freshness=null）不关闭——不能证明信号消失。
+  const fresh = sourceFreshness();
+  const seenIds = new Set(found.map(f => f.id));
+  let autoClosed = 0;
+  for (const f of l.findings) {
+    if (f.status !== 'open' || seenIds.has(f.id)) continue;
+    const fr = fresh[f.source];
+    if (fr && fr > (f.lastSeen ?? f.firstSeen ?? '')) {
+      f.status = 'closed';
+      f.closedAt = new Date().toISOString();
+      f.closedBy = 'auto';
+      autoClosed++;
+    }
+  }
+
   l.history = l.history ?? [];
-  l.history.push({ at: new Date().toISOString(), what: `audit: +${added} new / ${found.length} total signals` });
+  l.history.push({ at: new Date().toISOString(), what: `audit: +${added} new / ${found.length} total signals${autoClosed ? ` / auto-closed ${autoClosed} stale` : ''}` });
   saveLedger(l);
-  console.log(`[improve-loop] audit: ${found.length} signals → ${added} new findings (ledger ${l.findings.length})`);
+  console.log(`[improve-loop] audit: ${found.length} signals → ${added} new findings (ledger ${l.findings.length})${autoClosed ? `, auto-closed ${autoClosed} stale findings` : ''}`);
   genReport(l);
 } else if (args.includes('--next')) {
   const open = l.findings.filter(f => f.status === 'open').sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity] || b.count - a.count);
@@ -217,11 +252,11 @@ if (args.includes('--audit')) {
   const add = spawnSync('git', ['add', '-A'], { stdio: 'inherit' });
   const cm = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', 'commit', '-m', msg], { stdio: 'inherit' });
   if (cm.status !== 0) { console.error('commit 失败'); process.exit(1); }
-  const push = spawnSync('git', ['push', 'origin', 'master'], { stdio: 'inherit' });
+  const push = spawnSync('git', ['push', '-u', 'origin', 'HEAD'], { stdio: 'inherit' });
   process.exit(push.status === 0 ? 0 : 1);
 } else {
   console.log(`improve-loop 用法：
-  --audit        采集 test:all/ux/lint/llm-judge/visual-judge 信号并入台账（含回归重开）
+  --audit        采集 test:all/ux/lint/llm-judge/visual-judge 信号并入台账（含回归重开 + 信号消失自动关闭）
   --next         输出最高优先级问题工作简报
   --verify <id>  重跑全量回归验证修复（通过关闭）
   --open-list    列出 open findings

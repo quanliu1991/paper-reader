@@ -15,10 +15,11 @@ const shotDir = path.resolve('build/ux/screenshots');
 const pdfShotsDir = path.resolve('build');
 
 // 每个视图的检查点（图表可见性只对含图表的视图强断言）
+// 2026-11-09：键名对齐 v3 布局收敛（smart/zh/en，commit da8b1b6）；旧 dual/bilingual 已废弃
 const CHECKS: Record<string, { blank: boolean; formula: boolean; layout: boolean; desc: string }> = {
   '01-paper-list': { blank: true, formula: false, layout: true, desc: '论文卡列表' },
-  '02-reader-dual': { blank: true, formula: true, layout: true, desc: '双栏对照阅读' },
-  '02-reader-bilingual': { blank: true, formula: true, layout: true, desc: '双语书模式' },
+  '02-reader-smart': { blank: true, formula: true, layout: true, desc: '智能对照阅读（文本网格，原版 PDF 就绪后自动升级）' },
+  '02-reader-en': { blank: true, formula: true, layout: true, desc: '纯英文原文模式' },
   '02-reader-zh': { blank: true, formula: true, layout: true, desc: '纯译文模式' },
   '03-ask-panel': { blank: true, formula: false, layout: true, desc: '问答侧栏' },
   '04-review': { blank: true, formula: false, layout: true, desc: '闪卡复习' },
@@ -82,6 +83,8 @@ app.whenReady().then(async () => {
 4. 侧栏/浮层按设计会占据一侧，与正文并排不是重叠缺陷；
 5. 双栏对照（dual）视图右侧是「原文页 → 中文译文流」对照：顶部显示概要卡（一句话总结）+
    未翻译段显示「待翻译」，是应用初始合法状态（用户还没点翻译），右侧内容稀疏不算加载失败；
+5b. 智能对照（smart）视图是行级网格双栏（左英右中），未翻译段右侧显示「待翻译」占位属合法状态；
+5c. 纯原文（en）模式全是英文、纯译文（zh）模式未翻译段显示「待翻译」，都属正常状态；
 6. 真正要报的：乱码方块（豆腐块）、整块灰白/加载失败、文字明显截断为省略号或错位叠字、图片裂图图标、布局崩坏（元素溢出容器/重叠成一团）。
 ${pdfRule} 只输出 JSON：
 {"render_ok": 布尔(内容是否正常渲染), "content_truncated": 布尔(仅指内容加载失败/显示错误占位/文字被截断叠加，不含「待翻译」空状态), "tofu_boxes": 布尔(是否有乱码方块/未渲染字符), "layout_broken": 布尔(布局是否明显错位/重叠成一团/元素溢出), "confidence": 0-1(判定置信度), "note": "一句话异常描述或空"}` },

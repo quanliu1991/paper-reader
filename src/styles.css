@@ -803,6 +803,10 @@ mark.hl { animation: hl-in 0.3s ease; }
   font-synthesis: none;
   display: flex; flex-direction: column; gap: 2px;
 }
+/* 空态：纯 PDF 论文无解析文本（smart 文本对照无行可渲染） */
+.tv-empty { padding: 120px 24px; text-align: center; }
+.tv-empty-title { font-size: 16px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.tv-empty-hint { font-size: 13px; color: var(--muted); max-width: 480px; margin: 0 auto; line-height: 1.8; }
 
 /* ===== 双语书模式（一段英、一段中，书页式交错） ===== */
 .bilingual-view {

@@ -17,10 +17,10 @@ npm run electron:dev # 开发模式（vite dev server + electron 热加载）
 
 ### 论文导入与阅读
 1. **论文库**页顶部输入框：粘贴 arXiv ID（如 `2609.34683`）或链接，回车导入。导入自动完成：解析正文（LaTeXML HTML，公式转 LaTeX）、下载图表、下载 PDF、生成 AI 摘要卡（一句话/问题/方法/结果）。
-2. 点击卡片进入阅读器，三种模式（Ctrl+Shift+L 循环）：
-   - **对照**：左英右中双栏，行级网格对齐，点行联动高亮
-   - **PDF 阅读**：原版 PDF 单栏展示，译文按原文行距**原位覆盖**，顶部「中文/英文」一键切换；滚到哪自动翻到哪
-   - **译文**：纯中文学术排版（宋体衬线、首行缩进、KaTeX 公式）
+2. 点击卡片进入阅读器，三种模式（Ctrl+Shift+L 循环，v3 布局收敛）：
+   - **智能对照（默认）**：文本行级网格秒开（左英右中，点行联动高亮），原版 PDF 就绪后自动升级为原位对照
+   - **中**：纯中文学术排版（宋体衬线、首行缩进、KaTeX 公式）
+   - **英**：纯英文原文
 3. 阅读进度自动记忆；字号、栏宽可调；沉浸模式 Ctrl+Shift+F。
 
 ### 翻译
@@ -54,7 +54,7 @@ npm run electron:dev # 开发模式（vite dev server + electron 热加载）
 | 键 | 功能 |
 |---|---|
 | Ctrl+K | 命令面板（搜论文/段落/动作） |
-| Ctrl+Shift+L | 循环切换 对照/PDF/译文 |
+| Ctrl+Shift+L | 循环切换 智能对照/中/英 |
 | Ctrl+Shift+K | 问答侧栏 |
 | Ctrl+Shift+F | 沉浸模式（Esc 退出） |
 
@@ -99,7 +99,7 @@ npm run electron:dev    # 起开发窗口，日常阅读够用
 | Win/Linux | Mac | 功能 |
 |---|---|---|
 | Ctrl+K | Cmd+K | 命令面板 |
-| Ctrl+Shift+L | Cmd+Shift+L | 循环切换 对照/PDF/译文 |
+| Ctrl+Shift+L | Cmd+Shift+L | 循环切换 智能对照/中/英 |
 | Ctrl+Shift+K | Cmd+Shift+K | 问答侧栏 |
 | Ctrl+Shift+F | Cmd+Shift+F | 沉浸模式（Esc 退出） |
 
@@ -108,19 +108,26 @@ npm run electron:dev    # 起开发窗口，日常阅读够用
 ```bash
 node tests/fixtures.test.mjs        # arXiv 解析回归（fixtures 快照断言）
 node tests/translate-qc.test.mjs    # 翻译 QC + 提示词（离线）
+node tests/highlight.test.mjs       # 划线高亮渲染（离线）
+node tests/pdf-align.test.mjs       # PDF 行对齐（离线）
+node tests/digest.test.mjs          # 精炼笔记材料组装（离线）
+node tests/reader-profile.test.mjs  # 读者画像策略（离线）
+node tests/fig-listing.test.mjs     # 图表提取（离线）
 node tests/e2e.test.mjs             # E2E 黄金路径（导入→划线→闪卡→SM-2→持久化）
 node tests/uex-e2e.test.mjs         # 用户旅程全流程 UI E2E（导入→阅读→翻译→划线提问→高亮笔记→闪卡复习→沉淀→管理→进度）
 node tests/topic-graph.test.mjs     # 主题依赖库分层/排序（离线单元）
 node tests/topic-e2e.mjs            # 主题构建真实网络 E2E（arXiv + S2）
 node tests/pdf-ui-e2e.test.mjs      # PDF 视图 UI E2E（真实窗口 + 字体断言）
 node tests/topic-ui-e2e.test.mjs    # 主题库 UI E2E（真实窗口全流程）
-node tests/soak.test.mjs            # 稳定性（30 轮导入+300 读，内存增长 <30%）
+node tests/server-api.test.mjs      # 团队服务端全 API round-trip
+node tests/team-ui-e2e.test.mjs     # 团队功能 UI E2E（server + vite + 真实窗口）
+node tests/split-ui-e2e.test.mjs    # 原版对照 UI E2E（像素同步/划线双边）
 node tests/vault-unit.test.mjs      # vault 写穿层离线单元（sink/序列化/处理器）
 node tests/vault-sync.test.mjs      # git 同步 agent 离线单测（裸仓库 pull/rebase/push）
 node tests/vault-format-align.test.mjs  # desktop↔web 序列化格式对齐
 ```
 
-全量回归：`npm run test:all`（含真实窗口 e2e：vault 双写/迁移/重建/双设备同步）。
+全量回归：`npm run test:all`（27 层：离线单元 → 主进程 e2e → UI e2e → 视觉门禁；含团队功能与 vault 全链路）。`npm run test:all:full` 追加 soak/PDF 真实下载/主题真实网络/翻译质量/真实库图表验证。
 
 测试规范详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
@@ -148,13 +155,16 @@ web/                     # Web 阅读端（独立 Vite+React 工程，零后端�
   src/gitlab.ts           # GitLab REST（PAT/tree/raw/commits）
   src/vault-format.ts     # sidecar 解析（与 electron/vault.ts 对齐）
 src/                      # 渲染层（React + zustand）
-  components/Reader.tsx          # 阅读器壳（模式切换/划词/工具栏）
-  components/DualPdfView.tsx     # PDF 原位翻译视图（canvas+译文层+按需翻译）
-  components/TranslateView.tsx   # 双栏对照视图
+  components/Reader.tsx          # 阅读器壳（v3 三模式 smart/zh/en、划词、工具栏、原版对照升级）
+  components/TranslateView.tsx   # 智能对照文本网格视图（行级对齐，smart 模式主体）
+  components/SplitPdfView.tsx    # 原版对照视图（左原版 PDF + 右 mono 中文 PDF）
   components/TopicView.tsx       # 主题依赖库页
+  components/TopicGraph.tsx      # 主题力导向 Canvas 图谱（分层着色）
   components/PaperList.tsx       # 论文库卡片流
   components/Review.tsx          # 闪卡复习
-  components/Settings.tsx        # Provider/vault/仓库/偏好设置
+  components/KnowledgeView.tsx   # 知识沉淀页（笔记/问答/精炼）
+  components/TeamView.tsx        # 实验室团队页（清单/组会/动态）
+  components/Settings.tsx        # Provider/vault/仓库/账户/偏好设置
   components/CommandPalette.tsx  # Ctrl+K 命令面板
 ```
 

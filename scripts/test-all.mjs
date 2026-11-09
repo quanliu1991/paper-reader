@@ -16,11 +16,20 @@ const guiAvailable = (() => {
 })();
 
 // 每层：名字、命令、超时（ms）、是否需要网络
+// 2026-11-09 差缺补漏：纳入游离测试层（团队功能 MVP server-api/team-ui、格式对齐、digest/highlight/
+// reader-profile/pdf-align/fig-listing 离线单元、split-ui GUI）——18 层 → 27 层；--full 增真实网络层
 const LAYERS = [
   { name: 'fixtures（arXiv 解析回归）', cmd: ['node', 'tests/fixtures.test.mjs'], timeout: 60000, offline: true },
   { name: 'translate-qc（翻译 QC 离线）', cmd: ['node', 'tests/translate-qc.test.mjs'], timeout: 60000, offline: true },
   { name: 'topic-graph（分层引擎单元）', cmd: ['node', 'tests/topic-graph.test.mjs'], timeout: 60000, offline: true },
+  { name: 'highlight（划线高亮单元）', cmd: ['node', 'tests/highlight.test.mjs'], timeout: 60000, offline: true },
+  { name: 'pdf-align（PDF 行对齐单元）', cmd: ['node', 'tests/pdf-align.test.mjs'], timeout: 60000, offline: true },
+  { name: 'digest（精炼笔记单元）', cmd: ['node', 'tests/digest.test.mjs'], timeout: 60000, offline: true },
+  { name: 'reader-profile（读者画像单元）', cmd: ['node', 'tests/reader-profile.test.mjs'], timeout: 60000, offline: true },
+  { name: 'fig-listing（图表提取单元）', cmd: ['node', 'tests/fig-listing.test.mjs'], timeout: 60000, offline: true },
   { name: 'vault-unit（存储层序列化/队列）', cmd: ['node', 'tests/vault-unit.test.mjs'], timeout: 60000, offline: true },
+  { name: 'vault-format-align（桌面↔Web 格式对齐）', cmd: ['node', 'tests/vault-format-align.test.mjs'], timeout: 120000, offline: true },
+  { name: 'server-api（团队服务端 API）', cmd: ['node', 'tests/server-api.test.mjs'], timeout: 120000, offline: true },
   { name: 'e2e（黄金路径主进程）', cmd: ['node', 'tests/e2e.test.mjs'], timeout: 120000, offline: true },
   { name: 'vault-e2e（写穿/迁移/重建）', cmd: ['node', 'tests/vault-e2e.test.mjs'], timeout: 120000, offline: true },
   { name: 'vault-bootstrap（启动引导）', cmd: ['node', 'tests/vault-bootstrap.test.mjs'], timeout: 120000, offline: true },
@@ -30,14 +39,19 @@ const LAYERS = [
   { name: 'interact-ui（命令面板/复习/问答/设置 UI）', cmd: ['node', 'tests/interact-ui-e2e.test.mjs'], timeout: 240000, offline: true },
   { name: 'dedup-scroll（滚动同步 UI）', cmd: ['node', 'tests/dedup-scroll.test.mjs'], timeout: 240000, offline: true, needsGui: true },
   { name: 'bilingual-ui（双语书 UI）', cmd: ['node', 'tests/bilingual-ui-e2e.test.mjs'], timeout: 240000, offline: true },
+  { name: 'split-ui（原版对照 UI）', cmd: ['node', 'tests/split-ui-e2e.test.mjs'], timeout: 240000, offline: true },
   { name: 'pdf-ui（PDF 原位翻译 UI）', cmd: ['node', 'tests/pdf-ui-e2e.test.mjs'], timeout: 240000, offline: true },
-  { name: 'topic-ui（主题库 UI）', cmd: ['node', 'tests/topic-ui-e2e.test.mjs'], timeout: 300000, offline: false },
+  { name: 'topic-ui（主题库 UI）', cmd: ['node', 'tests/topic-ui-e2e.test.mjs'], timeout: 330000, offline: false },
+  { name: 'team-ui（团队功能 UI）', cmd: ['node', 'tests/team-ui-e2e.test.mjs'], timeout: 300000, offline: true, needsGui: true },
   { name: 'profile-ui（用户画像 UI）', cmd: ['node', 'tests/profile-ui-e2e.test.mjs'], timeout: 240000, offline: true },
   { name: 'uex（用户旅程全流程）', cmd: ['node', 'tests/uex-e2e.test.mjs', '--timeout', '240000'], timeout: 300000, offline: true },
   { name: 'guard（视觉门禁）', cmd: ['node', 'tests/visual-guard.test.mjs'], timeout: 240000, offline: true, needsGui: true },
   ...(FULL ? [
     { name: 'soak（30 轮稳定性）', cmd: ['node', 'tests/soak.test.mjs'], timeout: 420000, offline: true },
     { name: 'pdf-e2e（PDF 真实下载链路）', cmd: ['node', 'tests/pdf-e2e.test.mjs'], timeout: 300000, offline: false },
+    { name: 'topic-e2e（主题构建真实网络）', cmd: ['node', 'tests/topic-e2e.mjs'], timeout: 300000, offline: false },
+    { name: 'translate-quality（翻译质量真实 LLM）', cmd: ['node', 'tests/translate-quality.test.mjs', '--isolated'], timeout: 300000, offline: false },
+    { name: 'fig-verify（真实库图表验证）', cmd: ['node', 'tests/fig-verify.test.mjs'], timeout: 240000, offline: true, needsGui: true },
   ] : []),
 ];
 

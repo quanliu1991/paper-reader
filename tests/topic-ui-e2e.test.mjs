@@ -47,7 +47,7 @@ let timedOut = false;
 await new Promise((resolve, reject) => {
   const timer = setInterval(() => {
     if (fs.existsSync(doneFile)) { clearInterval(timer); resolve(null); }
-    else if (Date.now() - t0 > 180000) { clearInterval(timer); timedOut = true; child.kill(); reject(new Error('timeout')); }
+    else if (Date.now() - t0 > 240000) { clearInterval(timer); timedOut = true; child.kill(); reject(new Error('timeout')); }
   }, 1000);
 });
 

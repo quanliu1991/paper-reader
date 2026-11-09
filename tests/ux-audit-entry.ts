@@ -24,6 +24,8 @@ async function shot(win: BrowserWindow, name: string): Promise<string> {
 app.whenReady().then(async () => {
   try {
     if (process.env.PR_E2E_USER_DATA) app.setPath('userData', process.env.PR_E2E_USER_DATA);
+    // 清旧截图再建目录：防历史视图名（v2 布局 dual/bilingual 等）残图被 visual-judge 重复消费
+    if (fs.existsSync(shotDir)) fs.rmSync(shotDir, { recursive: true, force: true });
     fs.mkdirSync(shotDir, { recursive: true });
     log('== UX 审计黄金旅程 ==');
 
@@ -40,10 +42,12 @@ app.whenReady().then(async () => {
       db.insertBlocks(paperId, parsed.blocks);
       blocks = db.getBlocks(paperId) as any[];
       // 预填译文：每 2 段译 1 段（模拟部分翻译完成态——比全译更能暴露 pending 混排问题）
+      // 英文切片必须裁掉尾部残词（词中截断会被 visual-judge 误判为渲染截断——2026-11-09 02-reader-zh 根因）
+      const cutWords = (s: string, n: number) => String(s).slice(0, n).replace(/[\s]+[^\s]*$/, '').replace(/[.\s]+$/, '');
       let m = 0;
       for (const b of blocks) {
         if (b.type === 'para' && m % 2 === 0 && m < 30) {
-          const zhSeed = `研究指出：${String(b.en).slice(0, 40)}……对应中文译文第 ${m / 2 + 1} 段，内容完整覆盖原文要点与论证结构。`;
+          const zhSeed = `研究指出：${cutWords(b.en, 40)}……对应中文译文第 ${m / 2 + 1} 段，内容完整覆盖原文要点与论证结构。`;
           db.saveTranslation(paperId, b.pid, zhSeed, 'ux', 'ux');
         }
         m++;
@@ -55,7 +59,7 @@ app.whenReady().then(async () => {
       const firstScreen = blocks.filter((b: any) => b.type === 'para').slice(0, 8);
       let fi = 0;
       for (const b of firstScreen) {
-        if (!b.zh) { db.saveTranslation(paperId, b.pid, `本段论述：${String(b.en).slice(0, 30).replace(/[.\s]+$/, '')}的研究进展与方法对比。${zhTail[fi % zhTail.length]}`, 'ux', 'ux'); fi++; }
+        if (!b.zh) { db.saveTranslation(paperId, b.pid, `本段论述：${cutWords(b.en, 30)}的研究进展与方法对比。${zhTail[fi % zhTail.length]}`, 'ux', 'ux'); fi++; }
       }
     } else {
     const text = `Vision-Language Models Survey
@@ -82,7 +86,9 @@ Unified models reach state of the art on most benchmarks while remaining cheaper
     db.addFlashcard({ paperId, pid: blocks.find((b: any) => b.type === 'para').pid, front: 'VLM 是什么？', back: '视觉-语言模型' });
     db.getDb().prepare('INSERT INTO providers (name, protocol, base_url, api_key, model, is_default) VALUES (?,?,?,?,?,?)')
       .run('ux-audit', 'openai', 'http://localhost:9/v1', 'enc-x', 'fake', 1);
-    db.saveSummary(paperId, JSON.stringify({ oneLiner: useReal ? '证明 Transformer 在特定条件下收敛到不动点（条件无发定理）' : 'VLM 综述', problem: '多模态', method: '编码器+解码器', results: 'SOTA', related: '' }), '[]', 'ux', 'ux');
+    // oneLiner 从论文标题派生——杜绝种子文案与 fixture 论文主题串扰（2026-11-08 visual-03-ask-panel 误报根因）
+    const seededTitle = (db.getDb().prepare('SELECT title FROM papers WHERE id = ?').get(paperId) as any)?.title ?? '种子论文';
+    db.saveSummary(paperId, JSON.stringify({ oneLiner: `《${String(seededTitle).replace(/\s+/g, ' ').trim()}》提出新方法并给出系统实验验证`, problem: '核心问题待解决', method: '提出新方法', results: '实验验证有效', related: '' }), '[]', 'ux', 'ux');
     log(`seed: paper=${paperId}, real=${useReal}, blocks=${blocks.length}, zhFilled=${(db.getBlocks(paperId) as any[]).filter((b: any) => b.zh).length}`);
 
     const win = new BrowserWindow({
@@ -129,11 +135,11 @@ Unified models reach state of the art on most benchmarks while remaining cheaper
       if (!st.hasImport) finding({ id: 'ux-list-noimport', severity: 'high', view: 'list', title: '导入入口不可见', evidence: 'no import input found' });
     }
 
-    // ---- 视图 2-4：阅读器三模式 ----
+    // ---- 视图 2-4：阅读器三模式（v3 布局收敛：smart/zh/en）----
     await win.webContents.executeJavaScript(`window.__store.getState().openPaper(${paperId})`);
     await new Promise(r => setTimeout(r, 900));
     const zhCount = (db.getBlocks(paperId) as any[]).filter((b: any) => b.zh).length;
-    for (const layout of ['dual', 'bilingual', 'zh']) {
+    for (const layout of ['smart', 'zh', 'en']) {
       await win.webContents.executeJavaScript(`window.__store.getState().setLayout('${layout}')`);
       await new Promise(r => setTimeout(r, 700));
       await shot(win, `02-reader-${layout}`);

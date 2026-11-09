@@ -52,6 +52,12 @@ export default function TranslateView({
 
   return (
     <div className={`translate-view fs-${fontSize}`} ref={containerRef} style={{ fontSize: `${fontSize}px` }}>
+      {blocks.length === 0 && (
+        <div className="tv-empty">
+          <div className="tv-empty-title">这篇还没有可对照的正文</div>
+          <div className="tv-empty-hint">纯 PDF 导入的论文没有解析文本。可等原版对照就绪，或在论文库重导入获取 LaTeXML 全文。</div>
+        </div>
+      )}
       {blocks.map(b => (
         <Fragment key={b.pid}>
           <TvRow
